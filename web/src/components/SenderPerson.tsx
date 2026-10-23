@@ -1,7 +1,7 @@
 // "Add to person" for a sender with no person behind them (an unknown sender's notification in the
 // Inbox or the orchestrator's chat): add their identity to an existing person, or make a new person
 // with it. The same routes as Settings' People card (people/save, identities/add), so a person here
-// is the one there. The people list is one shared read per page (`usePeople`), refreshed after a change.
+// is the one there. The people list is one shared read (`usePeople`), made again when a menu opens.
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { UserPlus } from "lucide-react";
 import { api } from "../api";
@@ -24,10 +24,11 @@ const load = (): Promise<void> => (loading ??= api.integrations()
   .then((o) => { people = o.people; }, () => { people ??= []; })
   .finally(() => { loading = null; listeners.forEach((l) => l()); }));
 
-/** Every person, read once per page and again after a change here. Null until the first read. */
+/** Every person, re-read each time a menu that needs them mounts (it mounts only when opened), and
+ *  after a change here; the last list shows meanwhile. Null until the first read. */
 export function usePeople(): PersonRow[] | null {
   const list = useSyncExternalStore((l) => { listeners.add(l); return () => listeners.delete(l); }, () => people);
-  useEffect(() => { if (people === null) void load(); }, []);
+  useEffect(() => { void load(); }, []);
   return list;
 }
 

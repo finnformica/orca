@@ -63,15 +63,15 @@ describe("the Inbox page", () => {
     apiFake.threadLinksData = [{ adapter: "slack", externalThreadId: "C1:1.2", linkId: "eng", repo: "r", branch: "feat-login" }];
   };
 
-  test("an unknown sender's notice: its place and a Notify tag; Add to person joins an existing person or makes one", async () => {
-    const notice: InboxRow = { id: "e5", at: now - 30_000, topic: "ext.slack.message", kind: "message", adapter: "slack", sender: { name: "Mira", externalId: "U9" }, place: "DM", notice: true, text: "are you free?", conversation: "slack|D9", read: false, muted: false, canReply: true, canLink: true };
+  test("an unknown sender's message: its place and a Read-only tag; Add to person joins an existing person", async () => {
+    const notice: InboxRow = { id: "e5", at: now - 30_000, topic: "ext.slack.message", kind: "message", adapter: "slack", sender: { name: "Mira", externalId: "U9" }, place: "DM", readOnly: true, text: "are you free?", conversation: "slack|D9", read: false, muted: false, canReply: true, canLink: true };
     apiFake.inboxData = { rows: [notice, ...rows], facets: inboxFacets([notice, ...rows]), older: null };
     apiFake.integrationsData = { instance: "local", kinds: [], integrations: [], links: [], people: [{ id: "ana", name: "Ana", maxLevel: "ask", identities: [] }], pairings: [], subscriptions: [], dead: [] };
     await open("/inbox");
     const [first, , , known] = all("inbox-row");
     expect(first!.querySelector('[data-slot="inbox-place"]')!.textContent).toBe("DM");
-    expect(first!.querySelector('[data-slot="inbox-notice"]')!.textContent).toBe("Notify");
-    expect(known!.querySelector('[data-slot="inbox-notice"]')).toBeNull();
+    expect(first!.querySelector('[data-slot="inbox-read-only"]')!.textContent).toBe("Read-only");
+    expect(known!.querySelector('[data-slot="inbox-read-only"]')).toBeNull();
     const pointerdown = async (el: Element) => act(async () => { el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 })); await flush(); await flush(); });
     // A sender with a person has no Add to person.
     await pointerdown(known!.querySelector('[data-slot="row-actions"]')!);

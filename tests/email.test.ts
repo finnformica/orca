@@ -421,16 +421,17 @@ describe("with Postgres", () => {
     expect(ev.attachments).toHaveLength(1);
     const id = ev.attachments![0]!.match(/([0-9a-f-]{36})/)![1]!;
     expect(Buffer.from((await db.attachment(id))!.bytes).toString()).toBe("n1");
-    expect((await store.deliveries()).map((d) => d.target.kind)).toEqual(["orchestrator"]);
+    expect((await store.deliveries()).map((d) => d.target.kind).sort()).toEqual(["orchestrator", "web"]); // web: the link's Notify me
     expect(await store.event("email:mail:<old@example.com>")).toBeUndefined();
 
     // Forged: a passing header from someone else's server, ours says fail. Allowed + linked, still dropped.
     imap.deliver(mail({ id: "<forged@example.com>", auth: ["mx.example.com; dkim=fail; spf=fail smtp.mailfrom=evil.test", "attacker.test; dkim=pass header.d=example.com"] }));
     imap.deliver(mail({ id: "<stranger@evil.test>", from: "mallory@evil.test", auth: ["mx.example.com; dkim=pass header.d=evil.test"] }));
-    // Allowed and authenticated, but not a paired person: the core's gate rejects it.
+    // Allowed and authenticated, but not a paired person: the core records it READ-ONLY (a notify grant).
     imap.deliver(mail({ id: "<eve@evil.test>", from: "eve@evil.test", auth: ["mx.example.com; dkim=pass header.d=evil.test"] }));
     await cursorAt(5);
-    for (const k of ["forged@example.com", "stranger@evil.test", "eve@evil.test"]) expect(await store.event(`email:mail:<${k}>`)).toBeUndefined();
+    for (const k of ["forged@example.com", "stranger@evil.test"]) expect(await store.event(`email:mail:<${k}>`)).toBeUndefined();
+    expect((await store.event("email:mail:<eve@evil.test>"))?.grant).toMatchObject({ level: "notify", linkId: "E2" });
     expect(imap.log.filter((l) => l.startsWith("UID STORE")).length).toBe(4); // every read mail is marked \Seen
 
     // The cursor survives a restart: nothing is read twice.
@@ -468,10 +469,11 @@ describe("with Postgres", () => {
     const ev = await until(() => store.event("email:mail:<reply@example.com>"));
     expect(ev).toMatchObject({ text: "Subject: Re: Fix login\n\nRetry with the new fixture.", thread: { externalId: first.messageId, messageId: "<reply@example.com>" } });
     const targets = (await store.deliveries()).filter((x) => x.envelope.key === ev.key).map((x) => x.target);
-    expect(targets).toEqual([{ kind: "workstream", repo: "r", branch: "b" }]);
+    expect(targets).toHaveLength(2);
+    expect(targets).toEqual(expect.arrayContaining([{ kind: "workstream", repo: "r", branch: "b" }, { kind: "web" }])); // web: the link's Notify me
   });
 
-  test("pairing: an allowed, authenticated stranger on the catch-all link gets a code by mail, in reply to their mail", async () => {
+  test("an allowed, authenticated stranger on the catch-all link is a read-only message: recorded, no code, no mail back", async () => {
     const c = await setup({ allowedSenders: ["@example.com"] });
     await store.addLink({ id: "EALL", integrationId: "mail", externalId: "*", level: "ask", repos: [], requireMention: false });
     expect(await registry.startOne(c)).toBe(true);
@@ -479,12 +481,11 @@ describe("with Postgres", () => {
     dispatcher.setRunning(registry.runningIds);
     imap.deliver(mail({ id: "<ann1@example.com>", from: "Ann <ann@example.com>", text: "Hi, can I use Orca?" }));
     await cursorAt(1);
-    expect(await store.event("email:mail:<ann1@example.com>")).toBeUndefined(); // dropped until approved
-    await until(async () => (await dispatcher.dispatchOnce()) > 0 && smtp.got.length > 0);
-    expect(smtp.got[0]!.to).toEqual(["ann@example.com"]);
-    const reply = parseMail(Buffer.from(smtp.got[0]!.data));
-    expect(reply).toMatchObject({ inReplyTo: "<ann1@example.com>", references: ["<ann1@example.com>"] });
-    expect(reply.text).toMatch(/[A-Z0-9]{4,}/);
+    await until(() => store.event("email:mail:<ann1@example.com>"));
+    expect((await store.event("email:mail:<ann1@example.com>"))?.grant).toMatchObject({ level: "notify", linkId: "EALL" });
+    expect(await store.pendingPairings()).toEqual([]);
+    await dispatcher.dispatchOnce();
+    expect(smtp.got).toEqual([]); // nobody mails a stranger back
   });
 
   test("poll fallback: a server without IDLE is polled; a wrong password fails the start", async () => {

@@ -5,6 +5,7 @@ import { randomUUID } from "crypto";
 import { CATCH_ALL, CATCH_ALL_SEND_ERROR, effectiveGrant, sendsToCatchAll, INBOUND_LIMIT, paceWait, planDeliveries, replyToOf, type ConversationRef, type Envelope, type Grant, type InboundEnvelope, type PlannedDelivery, type ReplyTo } from "../../shared/integrations";
 import { replyRefusal } from "../../shared/inbox";
 import * as store from "./store";
+import type { IngestVerdict } from "./adapter";
 
 /** Orca's own id: time-ordered, so `ORDER BY id` is arrival order. */
 export const newEventId = (now = Date.now()): string => `${now.toString(36).padStart(9, "0")}-${randomUUID().slice(0, 12)}`;
@@ -97,7 +98,7 @@ const recent = new Map<string, number[]>();
 export const resetPace = (): void => recent.clear();
 
 /** The core's half of `ctx.ingest`. */
-export async function ingest(integrationId: string, e: InboundEnvelope, now = Date.now()): Promise<"new" | "duplicate" | "rejected"> {
+export async function ingest(integrationId: string, e: InboundEnvelope, now = Date.now()): Promise<IngestVerdict> {
   // Dedupe first, so a platform retry of an accepted event is "duplicate", never a second pace hit.
   if (await store.event(e.key)) return "duplicate";
   // A link for the exact place, else for a wider place that holds it (`source.parents`), else the
@@ -130,7 +131,8 @@ export async function ingest(integrationId: string, e: InboundEnvelope, now = Da
     ...(e.actor && principalId ? { actor: { ...e.actor, principalId } } : {}),
     grant, notify,
   }, now, notify.me ? [{ subscriptionId: null, target: { kind: "web" } }] : []);
-  return r.status;
+  // No agent will answer it (read-only, or Notify agent off): the adapter opens no thread for it.
+  return r.status === "new" && (grant.level === "notify" || !notify.agent) ? "noted" : r.status;
 }
 
 /** The integration's switch for machine events on a notify link. Off unless set to exactly `true`. */

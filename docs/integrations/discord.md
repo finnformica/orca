@@ -33,7 +33,7 @@ has it, the card says which servers do not have it.
     [Reply in place or threads](#reply-in-place-or-threads).
   - A direct message (DM) goes to the link that `config.dmLink` names. With no `dmLink`, it goes to
     the integration's catch-all link (`external_id` `*`). With neither link, the core drops it.
-  - An unknown person gets a pairing code from the core. The code is a reply to their message.
+  - An unknown person's message is read-only (ADAPTERS.md section 10). Orca opens no thread and sends no reply.
   - The adapter ignores messages from bots.
 - Outbound: a post to the link's channel.
   - A catch-all link (`external_id` `*`) names no channel. A reply to a message on it goes to
@@ -242,8 +242,8 @@ INSERT INTO channel_link (id, user_id, integration_id, external_id, level) VALUE
 UPDATE integration SET config = '{"dmLink":"discord-dm"}' WHERE id = 'discord';
 ```
 
-To let a new person in, approve their pairing code in Orca (`POST /api/integrations/pairing/approve`).
-You can also add `principal` and `identity` rows by hand.
+To give a new person a grant, add them on the People section of the Integrations page. You can
+also use Add to person on their message in the Inbox or the chat.
 
 The primary bridge reads the rows each minute. `GET /api/integrations` shows the health line:
 `connected as <bot name>`, or the reason it is down.

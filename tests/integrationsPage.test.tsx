@@ -106,21 +106,21 @@ describe("the Integrations page", () => {
     expect(all("link-level", second)[0]!.textContent).toBe("Viewer");
   });
 
-  test("each link's Unknown senders is a Select: Pairing request (the default) or Notify me; a notify link has none", async () => {
+  test("each link has two switches, Notify me and Notify agent, on unless the link says off; a click saves that one switch", async () => {
     const data = overview();
-    data.links = [
-      { ...data.links[0]!, pairing: "notify" } as typeof data.links[0],
-      data.links[1]!,
-      { id: "discord-feed", integrationId: "discord", externalId: "C2", label: "#feed", level: "notify", repos: [], requireMention: false },
-    ];
+    data.links = [{ ...data.links[0]!, notifyAgent: false } as typeof data.links[0], data.links[1]!];
     apiFake.integrationsData = data;
     await open("/integrations");
     const byLabel = (l: string) => all("integration-link").find((e) => e.textContent!.includes(l))!;
-    const trigger = (l: string) => byLabel(l).querySelector<HTMLElement>('[data-slot="link-pairing"] [role="combobox"]');
-    expect(trigger("#chan")!.textContent).toBe("Notify me");
-    expect(trigger("#chan")!.getAttribute("aria-label")).toBe("Unknown senders on #chan");
-    expect(trigger("All channels and DMs")!.textContent).toBe("Pairing request");
-    expect(trigger("#feed")).toBeNull();
-    expect(container!.textContent).not.toContain("Pairing requests");
+    const sw = (l: string, slot: string) => byLabel(l).querySelector<HTMLElement>(`[data-slot="${slot}"] [role="switch"]`)!;
+    expect(sw("#chan", "link-notify-me").getAttribute("aria-checked")).toBe("true");
+    expect(sw("#chan", "link-notify-agent").getAttribute("aria-checked")).toBe("false");
+    expect(sw("#chan", "link-notify-agent").getAttribute("aria-label")).toBe("Notify agent for #chan");
+    expect(sw("All channels and DMs", "link-notify-me").getAttribute("aria-checked")).toBe("true");
+    expect(sw("All channels and DMs", "link-notify-agent").getAttribute("aria-checked")).toBe("true");
+    expect(container!.textContent).not.toContain("Unknown senders");
+    await click(sw("All channels and DMs", "link-notify-me"));
+    expect(apiFake.integrationPosts).toEqual([{ path: "links/save", body: expect.objectContaining({ id: "discord-all", notifyMe: false }) }]);
+    expect(apiFake.integrationPosts[0]!.body.notifyAgent).toBeUndefined(); // only the switch you flipped
   });
 });

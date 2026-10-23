@@ -18,7 +18,7 @@
 // Your own messages never count, so a post Orca makes as you never comes back in. The thread is
 // `channel:thread_ts` (a channel mention starts one on itself); a top-level DM is the DM channel
 // itself, so the answer goes in the DM, not in a thread. Tokens are never logged, never in `raw`.
-import type { Adapter, AdapterContext, Connection } from "../adapter";
+import type { Adapter, AdapterContext, Connection, IngestVerdict } from "../adapter";
 import { ORCA_SECRETS } from "../../env";
 import { inboundEnvelope, secretRefRefusal, type Capabilities, type InboundEnvelope, type OutboundMessage, type SendResult, type Target } from "../../../shared/integrations";
 
@@ -351,7 +351,7 @@ export function slackAdapter(connection: Connection, opts: { openDms?: boolean }
   }
 
   /** One message event, from the socket or a poll: the envelope, the sender's name, the core. */
-  async function handle(ev: SlackEvent, team = ""): Promise<"new" | "duplicate" | "rejected" | undefined> {
+  async function handle(ev: SlackEvent, team = ""): Promise<IngestVerdict | undefined> {
     if (!ctx || ev.type !== "message" || !ev.user || ev.user === me.userId) return undefined;
     const opts = { known: (k: string) => k in cur.threads };
     const who = { team: team || me.team, userId: me.userId, name: me.name, integrationId: connection.id, url: me.url };
@@ -365,11 +365,10 @@ export function slackAdapter(connection: Connection, opts: { openDms?: boolean }
     const senderName = await nameOf(ev.user).catch(() => undefined);
     const e = senderName ? { ...made, actor: { external: { ...made.actor!.external, name: senderName } } } : made;
     const verdict = await ctx.ingest(e);
-    if (verdict === "new") {
-      state.lastEventAt = Date.now();
-      // A reply in its thread now needs no mention. A top-level DM is its own conversation: no thread.
-      if (e.thread?.externalId.includes(":")) talkIn(e.thread.externalId, ev.ts!);
-    }
+    if (verdict === "new" || verdict === "noted") state.lastEventAt = Date.now();
+    // A reply in its thread now needs no mention. A top-level DM is its own conversation: no thread.
+    // Not for a noted message: no agent answers there, so Orca does not talk in that thread.
+    if (verdict === "new" && e.thread?.externalId.includes(":")) talkIn(e.thread.externalId, ev.ts!);
     return verdict;
   }
 
@@ -407,7 +406,7 @@ export function slackAdapter(connection: Connection, opts: { openDms?: boolean }
       return r;
     };
     const limited = () => retryAfterMs > 0;
-    const take = async (ev: SlackEvent) => { if ((await handle(ev)) === "new") ingested++; };
+    const take = async (ev: SlackEvent) => { const v = await handle(ev); if (v === "new" || v === "noted") ingested++; };
 
     // (a) DMs and group DMs.
     const list = await dmList(call);

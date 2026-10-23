@@ -639,7 +639,7 @@ describe("Slack on the integrations core (Postgres)", () => {
     await settle();
     const e = await store.event("slack:T1:D1:1700000000.000100");
     expect(e).toMatchObject({ source: { linkId: "dm", channel: "D1" }, thread: { externalId: "D1" }, grant: { level: "ask", linkId: "dm", principalId: "saajan" } });
-    expect((await store.deliveries()).filter((d) => d.envelope.key === e!.key).map((d) => d.target)).toEqual([{ kind: "orchestrator" }]);
+    expect((await store.deliveries()).filter((d) => d.envelope.key === e!.key).map((d) => d.target.kind).sort()).toEqual(["orchestrator", "web"]); // web: the link's Notify me
     await router.replyToEvent(e!.id, "Yes, it merged an hour ago.");
     await dispatcher.dispatchOnce();
     const post = calls.filter((x) => x.method === "chat.postMessage");
@@ -689,13 +689,13 @@ describe("Slack on the integrations core (Postgres)", () => {
     expect((await store.deliveries()).length).toBe(deliveries);
   });
 
-  test("an unknown sender gets a bell row and NO automatic post in your name", async () => {
+  test("an unknown sender is a read-only message: a bell row, no pairing code, NO post in your name", async () => {
     FakeSocket.all[0]!.push(envelope("E1", ev({ channel: "D9", channel_type: "im", user: "USTRANGER", text: "hey" })));
     await settle();
-    const [pairing] = await store.pendingPairings();
-    expect(pairing).toMatchObject({ adapter: "slack", externalId: "USTRANGER", linkId: "dm" });
+    expect(await store.pendingPairings()).toEqual([]);
+    const key = (await store.deliveries()).find((d) => d.target.kind === "web")?.envelope.key;
+    expect((await store.event(key!))).toMatchObject({ grant: { level: "notify", linkId: "dm" }, notify: { me: true, agent: true } });
     await dispatcher.dispatchOnce();
     expect(calls.filter((x) => x.method === "chat.postMessage")).toEqual([]);
-    expect((await store.event(`pairing:${pairing!.code}`))?.text).toContain("did not send them the code");
   });
 });

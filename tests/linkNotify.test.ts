@@ -45,7 +45,8 @@ describe("link switches: Notify me and Notify agent", () => {
   test("both on by default: an unknown sender is a bell row, an Inbox row and a READ-ONLY wake; no pairing code", async () => {
     await link();
     expect(await store.link("all")).toMatchObject({ notifyMe: true, notifyAgent: true });
-    expect(await router.ingest("slack", msg("e1", "U-stranger"))).toBe("new");
+    // "noted": recorded, but no agent will answer it, so an adapter opens no thread for it.
+    expect(await router.ingest("slack", msg("e1", "U-stranger"))).toBe("noted");
     expect(await router.ingest("slack", msg("e1", "U-stranger"))).toBe("duplicate");
     expect(await store.pendingPairings()).toEqual([]);
     const ev = (await store.event("slack:e1"))!;
@@ -77,8 +78,8 @@ describe("link switches: Notify me and Notify agent", () => {
     // An orchestrator subscription takes nothing either; a web one is not a second row.
     await store.addSubscription({ topicPattern: "ext.slack.*", filter: {}, targetKind: "orchestrator" });
     await store.addSubscription({ topicPattern: "ext.slack.*", filter: {}, targetKind: "web" });
-    expect(await router.ingest("slack", msg("e1", "U-stranger"))).toBe("new");
-    expect(await router.ingest("slack", msg("e2", "U1"))).toBe("new");
+    expect(await router.ingest("slack", msg("e1", "U-stranger"))).toBe("noted");
+    expect(await router.ingest("slack", msg("e2", "U1"))).toBe("noted");
     expect(await targets("slack:e1")).toEqual(["web"]);
     expect(await targets("slack:e2")).toEqual(["web"]);
     expect((await store.event("slack:e2"))!.grant).toMatchObject({ level: "ask", principalId: "saajan" }); // the grant is unchanged
@@ -95,7 +96,7 @@ describe("link switches: Notify me and Notify agent", () => {
 
   test("Notify me off: no bell, no Inbox row, no notice; the agent still wakes. Both off: nothing is recorded", async () => {
     await link({ notifyMe: false });
-    expect(await router.ingest("slack", msg("e1", "U-stranger"))).toBe("new");
+    expect(await router.ingest("slack", msg("e1", "U-stranger"))).toBe("noted");
     expect(await targets("slack:e1")).toEqual(["orchestrator"]);
     expect(await store.inboxEvents({ limit: 10 })).toEqual([]);
     expect(await store.unreadWithoutCopy(10)).toBe(0);
