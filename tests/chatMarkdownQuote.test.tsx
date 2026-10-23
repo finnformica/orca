@@ -4,9 +4,10 @@
 // --tw-prose-invert-quotes/--tw-prose-invert-quote-borders, which the .prose class sets to literal
 // colours directly on the element — a declaration .log-themed's ancestor-level remap (styles.css)
 // can never reach, since an element's own matching rule always beats an inherited custom property.
-// The fix routes <blockquote> through Tailwind's own neutral tokens (prose-blockquote:text-neutral-400
-// prose-blockquote:border-neutral-800), which .log-themed DOES correctly remap, the same way
-// prose-strong/prose-headings/prose-code/prose-a already do.
+// The fix routes <blockquote> through Tailwind's own neutral tokens (prose-blockquote:text-neutral-400),
+// which .log-themed DOES correctly remap, the same way prose-strong/prose-headings/prose-code/prose-a
+// already do. The native border-left is a hard rectangle and can't take a border-radius on one side
+// alone, so it is dropped (border-s-0) in favour of a rounded `::before` pill (QUOTE_PILL in Chat.tsx).
 import { afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -52,14 +53,15 @@ test("a quote in an agent reply gets a visible colour and border class, not just
   expect(quote).toBeTruthy();
   expect(quote!.textContent).toContain("the Starcatcher org fails the same check");
 
-  // The colour and border come from the ancestor .prose element's prose-blockquote: variant, not a
-  // per-node class — the same pattern already used for strong/headings/code/links.
+  // The colour and the pill bar come from the ancestor .prose element's prose-blockquote: variant,
+  // not a per-node class — the same pattern already used for strong/headings/code/links.
   const prose = quote!.closest(".prose")!;
   expect(prose.className).toContain("prose-blockquote:text-neutral-400");
-  expect(prose.className).toContain("prose-blockquote:border-neutral-800");
+  expect(prose.className).toContain("prose-blockquote:border-s-0");
+  expect(prose.className).toContain("prose-blockquote:before:rounded-full");
 });
 
-test("a quote in the user's own bubble gets the same colour and border class", async () => {
+test("a quote in the user's own bubble gets the same colour and pill bar", async () => {
   apiFake.turnsData.set("r::feat", [
     { id: "run-1", provider: "claude", instruction: "please check this:\n\n> I can't change the access level", prompt: "", response: "done", finishedAt: 2 },
   ]);
@@ -73,5 +75,6 @@ test("a quote in the user's own bubble gets the same colour and border class", a
 
   const prose = quote!.closest(".prose")!;
   expect(prose.className).toContain("prose-blockquote:text-neutral-400");
-  expect(prose.className).toContain("prose-blockquote:border-neutral-800");
+  expect(prose.className).toContain("prose-blockquote:border-s-0");
+  expect(prose.className).toContain("prose-blockquote:before:rounded-full");
 });

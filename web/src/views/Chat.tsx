@@ -85,6 +85,14 @@ const tableComponents = { table: markdownTable, th: markdownCell("th"), td: mark
 /** Every fenced code block is a snippet card with a Copy button (components/Snippet.tsx). */
 const chatComponents = { img: markdownImg, ...tableComponents, pre: snippetPre({ img: markdownImg, ...tableComponents }) };
 
+/** A quote's left border, as a thin rounded pill instead of typography's square-edged bar: the
+ *  native border can't take a border-radius on one side alone, so this drops it (`border-s-0`) and
+ *  draws the bar as a `::before` pill instead — same soft neutral-600 (muted, theme-aware like the
+ *  text/border classes beside it) in both bubble and reply, light and dark. */
+const QUOTE_PILL = "prose-blockquote:relative prose-blockquote:border-s-0 " +
+  "prose-blockquote:before:absolute prose-blockquote:before:inset-y-0.5 prose-blockquote:before:start-0 " +
+  "prose-blockquote:before:w-1 prose-blockquote:before:rounded-full prose-blockquote:before:bg-neutral-600 prose-blockquote:before:content-['']";
+
 /** Markdown inside the terminal-styled log: prose spacing and readable lists, but sized and coloured
  *  to sit in the chat's window rather than looking like a pasted document. `tone` overrides the body
  *  text colour (a worker report's folded body reads dimmer than a turn's own reply) without forking
@@ -114,7 +122,7 @@ const ChatMarkdown = memo(({ children, tone = "text-neutral-300", breaks, outsid
     "prose-strong:text-neutral-200",
     "prose-code:text-sky-300 prose-code:before:content-none prose-code:after:content-none",
     "prose-pre:bg-neutral-900 prose-pre:text-[11px] prose-pre:text-neutral-200 prose-a:text-sky-400",
-    "prose-blockquote:text-neutral-400 prose-blockquote:border-neutral-800",
+    "prose-blockquote:text-neutral-400", QUOTE_PILL,
     "prose-hr:border-neutral-800 prose-th:border-neutral-800 prose-td:border-neutral-800 prose-figcaption:text-neutral-500",
     tone)}>
     <ReactMarkdown remarkPlugins={breaks ? [remarkGfm, remarkBreaks] : [remarkGfm]} components={outside ? outsideComponents : chatComponents}>{children}</ReactMarkdown>
@@ -145,14 +153,14 @@ const InlineMarkdown = memo(({ children }: { children: string }) => (
  *  sectionValue) still renders as its own block — a real nested list, or a heading — beneath the
  *  item's text. */
 const FacetMarkdown = memo(({ children }: { children: string }) => (
-  <div className="prose prose-invert prose-sm max-w-none wrap-anywhere text-neutral-300
+  <div className={`prose prose-invert prose-sm max-w-none wrap-anywhere text-neutral-300
     prose-headings:mt-1 prose-headings:mb-0.5 prose-headings:text-xs prose-headings:text-neutral-200
     prose-li:my-0.5 prose-ul:my-1 prose-ol:my-1
     prose-strong:text-neutral-200
     prose-code:text-sky-300 prose-code:before:content-none prose-code:after:content-none
     prose-pre:bg-neutral-900 prose-pre:text-[11px] prose-pre:text-neutral-200 prose-a:text-sky-400
-    prose-blockquote:text-neutral-400 prose-blockquote:border-neutral-800
-    prose-hr:border-neutral-800 prose-th:border-neutral-800 prose-td:border-neutral-800 prose-figcaption:text-neutral-500">
+    prose-blockquote:text-neutral-400 ${QUOTE_PILL}
+    prose-hr:border-neutral-800 prose-th:border-neutral-800 prose-td:border-neutral-800 prose-figcaption:text-neutral-500`}>
     <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ ...chatComponents, p: ({ children: c }) => <>{c}</> }}>{children}</ReactMarkdown>
   </div>
 ));
@@ -563,7 +571,12 @@ function Reply({ turn, loadSteps, compact }: { turn: AgentTurn; loadSteps?: () =
           {/* Rendered as markdown like the finished answer, closed first so a half-sent `**` or fence
               renders as it will once whole, not as glyphs that flip on the next delta. */}
           {draft && <div data-slot="turn-draft"><ChatMarkdown>{closeOpenMarkdown(draft)}</ChatMarkdown></div>}
-          {(!work.length || draft) && <span>▋ {draft || tail ? "" : "working…"}</span>}
+          {(!work.length || draft) && (
+            <span className="inline-flex items-center gap-1.5">
+              <Loader2 className="size-3 shrink-0 animate-spin motion-reduce:animate-none" />
+              {draft || tail ? "" : "working…"}
+            </span>
+          )}
         </div>
       ) : (
         <>
@@ -1345,7 +1358,9 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
         {unlanded.map((m) => (
           <UserBubble key={m.id} slot="chat-sending" textSlot="chat-sending-text" pending className="mb-4" text={m.text} clamp={false}
             files={m.attachments ?? []}
-            footer={<div className="text-muted-foreground text-[11px]">▋ sending…</div>} />
+            footer={<div className="text-muted-foreground inline-flex items-center gap-1.5 text-[11px]">
+              <Loader2 className="size-3 shrink-0 animate-spin motion-reduce:animate-none" />sending…
+            </div>} />
         ))}
         {pendingQueued.map((m) => (
           <Queued
