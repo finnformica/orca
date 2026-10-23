@@ -28,6 +28,8 @@ import * as mergeQueue from "./mergeQueue";
 import { pushToTemplate } from "./pushTemplate";
 import * as repos from "./repos";
 import * as handoff from "./handoff";
+import * as forms from "./forms";
+import * as secrets from "./secrets";
 import { selfServer } from "./servers";
 import { stateDir } from "./state";
 import { API_PORT } from "./ports";
@@ -549,6 +551,12 @@ const required = (args: ToolArgs, key: string): string => {
 
 export type ToolArgs = Record<string, unknown> & { _?: string[] };
 
+/** A tool result that carries an exit code (`orca secret pipe|env` gives the command's own): the
+ *  route answers `{ text, exitCode }` and bin/orca prints the text and exits with the code. */
+export class ToolExit extends Error {
+  constructor(readonly text: string, readonly exitCode: number) { super(text); }
+}
+
 /** `--attach` (repeatable) as stored references, ready for `withAttachments` — they ride the brief or
  *  message to the worker's instance, which materialises them at launch like any other attachment. */
 async function attachArgs(args: ToolArgs): Promise<string[]> {
@@ -746,6 +754,32 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
         title: "The orchestrator asks", text: question, link: { orchestrator: true },
       }, Date.now(), [{ subscriptionId: null, target: { kind: "web" } }]);
       return "Asked. The user sees it in Orca and on every channel subscribed to orca.question. End your turn; the answer comes as a message.";
+    }
+    case "ask-form": {
+      // `orca ask-form --title "…" [--intro "…"] [--scope s] --fields <json|@file>`: a form card in the
+      // Orca chat (server/forms.ts). Returns at once; the submit wakes it with the answers as JSON.
+      const f = await forms.ask(cfg, await forms.specFromArgs(args));
+      return forms.askedText(f);
+    }
+    case "secret": {
+      // `orca secret list | pipe <name> -- <cmd…> | env <name>[=VAR] -- <cmd…> | delete <name>`
+      // (server/secrets.ts). Names only: a value goes from the store into the one command, and the
+      // output comes back scrubbed. Owner only (grantRefusal: not a read or work verb).
+      const sub = words[0] ?? "";
+      const cmd = Array.isArray(args["--"]) ? (args["--"] as unknown[]).map(String) : [];
+      if (sub === "list") return secrets.listText(await secrets.list());
+      if (sub === "delete") {
+        if (!words[1]) throw new Error("usage: orca secret delete <name>");
+        return `Deleted secret ${await secrets.remove(words[1], "orchestrator")}.`;
+      }
+      if (sub === "pipe" || sub === "env") {
+        if (!words[1]) throw new Error(`usage: orca secret ${sub} <name>${sub === "env" ? "[=VAR]" : ""} -- <command…>`);
+        if (!cmd.length) throw new Error(`the command is required after --: orca secret ${sub} ${words[1]} -- <command…>`);
+        const { ref, variable } = sub === "env" ? secrets.envVarFor(words[1]) : { ref: words[1], variable: undefined };
+        const r = await secrets.run({ ref, mode: sub, variable, cmd, cwd: typeof args._cwd === "string" ? args._cwd : undefined, who: "orchestrator" });
+        throw new ToolExit(r.output, r.exitCode);
+      }
+      throw new Error("usage: orca secret list | pipe <name> -- <cmd…> | env <name>[=VAR] -- <cmd…> | delete <name>");
     }
     case "spawn": {
       const repo = repoNamed(cfg, args.repo);

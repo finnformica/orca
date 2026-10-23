@@ -250,6 +250,24 @@ log. The only writes are `rollback`, `delete`, `route add` and `route remove`: a
 `--confirm`, a `[cloudflare]` log line with it, and your own chat only (`cloudflareWriteName`). A 401/403
 names the token permission it needs (`PERMISSIONS`).
 
+## Forms in the chat and the secret store
+
+`orca ask-form --title … [--intro …] [--scope s] --fields <json|@file>` (`server/forms.ts`, rules
+pure in `shared/forms.ts`, table `form`, named step `20261023-forms-and-secrets`) asks the user for
+structured data. The tool prints `orca-form://<id>`; `/api/turns` links it like a handoff pack
+(`forms.linkTurns`, `turn.forms`) and the chat draws `FormCard` under that turn. A channel gets only
+the title and a link to the Orca chat (`formChannelText`, an `orca.question` event), never a field.
+The submit (`POST /api/orchestrator/forms/<id>/submit`) stores each `secret` field and wakes the
+orchestrator with the rest as JSON, a secret as `{ name, stored: true }` (`splitAnswers`).
+The secret store (`server/secrets.ts`, tables `secret` + `secret_use`) holds AES-256-GCM ciphertext;
+the key is `ORCA_SECRETS_KEY` (in `ORCA_SECRETS`, so no agent has it) else `~/.orca/secrets.key`,
+made on first use. `orca secret list|pipe|env|delete` (owner only) gives a value to ONE command run by
+the bridge; one audit row per use. `secrets.scrub` replaces every stored value in tool output,
+transcript steps, turns (also the outbox) and outbound channel posts. The composer's paste guard
+(`shared/secretGuard.ts` `secretFindings`) holds a key-like value with "Save as secret" / "Send
+anyway". The `ORCA_SECRET_*` integration tokens are a separate thing and stay env vars. Details and
+limits: `docs/secrets.md`.
+
 ## Multi-repo (aggregated)
 
 **Two GitHub accounts on one board** (a work account and a personal one for weekend repos): no

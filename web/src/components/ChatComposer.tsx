@@ -1,6 +1,6 @@
 import { useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { ArrowUp, FileText, GitBranch, Loader2, Mic, Paperclip, Square, X } from "lucide-react";
+import { ArrowUp, FileText, GitBranch, KeyRound, Loader2, Mic, Paperclip, Square, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ExpandableImage } from "@/components/ExpandableImage";
 import { Shortcut } from "@/components/ui/kbd";
@@ -17,6 +17,9 @@ import { enterSends, isCoarse, isMobile, keepComposerFocus } from "@/lib/viewpor
 import { Textarea } from "@/components/ui/textarea";
 import { appendTranscript, MAX_RECORD_MS, recordClock, useVoiceRecorder } from "@/lib/voice";
 import { notifyLocal } from "@/lib/notificationStore";
+import { Input } from "@/components/ui/input";
+import { api } from "@/api";
+import { replaceFindings, secretFindings, type SecretFinding } from "../../../shared/secretGuard";
 
 // historyKey's firstVisualRow/lastVisualRow, measured against the box's real layout — only for
 // ArrowUp/ArrowDown, and only for the line historyKey's own "\n" check would otherwise defer to (a
@@ -103,6 +106,17 @@ export function ChatComposer({
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const textRef = useRef<HTMLTextAreaElement>(null);
+
+  // The paste guard: text that looks like a key (sk-…, ghp_…, xox…, AKIA…, a long random string) is
+  // held before it is sent, with "Save as secret" (stored encrypted, the message gets only its name)
+  // or "Send anyway". `approved` holds the values you chose to send as they are.
+  const [guarded, setGuarded] = useState(false);
+  const [secretName, setSecretName] = useState("");
+  const [guardBusy, setGuardBusy] = useState(false);
+  const [guardError, setGuardError] = useState<string | null>(null);
+  const approved = useRef(new Set<string>());
+  const guardSend = useRef<((text: string, images: File[]) => Promise<void>) | undefined>(undefined);
+  const heldIn = (text: string): SecretFinding[] => secretFindings(text).filter((f) => !approved.current.has(f.value));
 
   // @ picker: the `@query` at the caret lists the board's cached PRs (open first) and its live
   // workstreams. Escape dismisses it for THAT `@` (until a new one is typed); a pick replaces the
@@ -249,7 +263,10 @@ export function ChatComposer({
       .filter((it) => it.kind === "file")
       .map((it) => it.getAsFile())
       .filter((f): f is File => Boolean(f));
-    if (files.length) { e.preventDefault(); addImages(files); }
+    if (files.length) { e.preventDefault(); addImages(files); return; }
+    // The paste guard warns at once; the send is what it holds (below).
+    const found = heldIn(e.clipboardData.getData("text/plain") ?? "");
+    if (found.length) { setGuarded(true); setGuardError(null); setSecretName((n) => n || found[0]!.suggestedName); }
   };
   const onDrop = (e: DragEvent) => {
     if (e.dataTransfer.files.length) { e.preventDefault(); addImages(e.dataTransfer.files); }
@@ -262,14 +279,24 @@ export function ChatComposer({
   // A tap on Send keeps the focus (and the phone's keyboard) in the box — see lib/viewport's
   // keepComposerFocus — so one tap sends once and the next message can be typed straight away.
   const canSubmit = Boolean(value.trim() || images.length);
-  const submit = async (send: (text: string, images: File[]) => Promise<void> = onSubmit) => {
-    if (!canSubmit) return;
+  const submit = async (send: (text: string, images: File[]) => Promise<void> = onSubmit, override?: string) => {
+    const text = (override ?? value).trim();
+    if (!text && !images.length) return;
+    // A key-like value you have not saved or approved is held here (the paste guard).
+    const found = heldIn(text);
+    if (found.length) {
+      guardSend.current = send;
+      setGuarded(true);
+      setSecretName((n) => n || found[0]!.suggestedName);
+      return;
+    }
+    setGuarded(false);
     // Optimistic: fire and return so the parent can close instantly; it owns draft + errors.
-    if (optimistic) return void send(value.trim(), images);
+    if (optimistic) return void send(text, images);
     // Clear NOW, not after onSubmit resolves: a box still holding the text you just sent reads as
     // "it didn't go". On failure the text (and attachments) come back — into the box if it is still
     // empty, else into the error line, so neither what you sent nor what you're typing is lost.
-    const sent = { text: value.trim(), images };
+    const sent = { text, images };
     setValue("");
     setImages([]);
     walk.current = NO_WALK;
@@ -284,6 +311,49 @@ export function ChatComposer({
       if (empty) { setValue(sent.text); setImages(sent.images); }
     }
   };
+  const held = guarded ? heldIn(value) : [];
+  const sendAnyway = () => {
+    for (const f of held) approved.current.add(f.value);
+    setGuarded(false);
+    void submit(guardSend.current ?? onSubmit, value);
+  };
+  // Each held value is stored as a secret in the "chat" scope; the message gets `[secret chat/<name> stored]`.
+  const saveAsSecret = async () => {
+    const base = secretName.trim();
+    if (!base) { setGuardError("Give the secret a name."); return; }
+    setGuardBusy(true); setGuardError(null);
+    try {
+      const refs: string[] = [];
+      for (const [i, f] of held.entries()) refs.push((await api.saveSecret({ name: i ? `${base}-${i + 1}` : base, scope: "chat", value: f.value })).ref);
+      const next = replaceFindings(value, held, (_, i) => `[secret ${refs[i]} stored]`);
+      setValue(next);
+      setGuarded(false);
+      setSecretName("");
+      await submit(guardSend.current ?? onSubmit, next);
+    } catch (err) {
+      setGuardError(err instanceof Error ? err.message : String(err));
+    } finally { setGuardBusy(false); }
+  };
+  const guardBar = held.length > 0 && (
+    <div data-slot="paste-guard" role="alert" className={cn("bg-geist-amber/10 space-y-2 rounded-md px-3 py-2 text-xs", quick ? "mx-2 mb-2" : "mt-1")}>
+      {/* The close button sits on the message's line, so it never wraps onto a line of its own (the
+          side panel is narrow). The name field takes the width left beside the two buttons. */}
+      <div data-slot="paste-guard-head" className="flex items-start gap-1.5">
+        <KeyRound className="text-geist-amber mt-0.5 size-3.5 shrink-0" aria-hidden />
+        <span className="min-w-0 flex-1">This looks like {held.length === 1 ? `${/^[aeiou]/i.test(held[0]!.kind) ? "an" : "a"} ${held[0]!.kind}` : `${held.length} keys (${[...new Set(held.map((f) => f.kind))].join(", ")})`}. Save it as a secret: the message then holds only its name.</span>
+        <Button type="button" size="icon" variant="ghost" className="-mt-1 -mr-1 size-7 shrink-0" aria-label="Dismiss" onClick={() => setGuarded(false)}><X className="size-4" /></Button>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <Input aria-label="Secret name" data-slot="paste-guard-name" className="h-8 min-w-0 flex-1 basis-24 font-mono" value={secretName} onChange={(e) => setSecretName(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void saveAsSecret(); } }} />
+        <Button type="button" size="sm" className="h-8 shrink-0" disabled={guardBusy} onClick={() => void saveAsSecret()} data-slot="paste-guard-save">
+          {guardBusy && <Loader2 className="size-3.5 animate-spin" />}Save as secret
+        </Button>
+        <Button type="button" size="sm" variant="outline" className="h-8 shrink-0" disabled={guardBusy} onClick={sendAnyway} data-slot="paste-guard-send">Send anyway</Button>
+      </div>
+      {guardError && <p className="text-destructive" data-slot="paste-guard-error">{guardError}</p>}
+    </div>
+  );
   const onKey = (e: KeyboardEvent) => {
     if (picking && !e.nativeEvent.isComposing) {
       const n = matches.length;
@@ -479,6 +549,7 @@ export function ChatComposer({
           </div>
         </div>
       </div>
+      {guardBar}
       {mentions && (quick && textRef.current ? createPortal(mentions, textRef.current.ownerDocument.body) : mentions)}
       {error && <p data-slot="chat-composer-error" className={cn("text-destructive text-xs break-words", quick ? "border-t px-3 py-1.5" : "mt-1 px-1")}>{error}</p>}
       {footer}

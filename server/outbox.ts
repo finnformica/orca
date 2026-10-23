@@ -22,6 +22,7 @@ import { existsSync, readdirSync, rmSync } from "fs";
 import { join } from "path";
 import type { AgentStep, AgentTurn, StopReason, TurnCheck } from "../shared/agent";
 import * as db from "./db";
+import { scrub, scrubValue } from "./secrets";
 import { readJsonDir, readJsonSync, statePath, stateDir, writeJsonSync } from "./state";
 
 type StartInput = Parameters<typeof db.startTurn>[0];
@@ -94,6 +95,8 @@ async function through(runId: string, direct: () => Promise<void>, journal: () =
 }
 
 export function startTurn(input: StartInput): Promise<"db" | "outbox"> {
+  // A stored secret value never reaches a turn, here or in the journal (server/secrets.ts).
+  input = { ...input, prompt: scrub(input.prompt), ...(input.instruction !== undefined ? { instruction: scrub(input.instruction) } : {}) };
   return through(input.runId, () => db.startTurn(input), () => {
     const j = journalFor(input.runId, input);
     j.start = input;
@@ -102,6 +105,7 @@ export function startTurn(input: StartInput): Promise<"db" | "outbox"> {
 }
 
 export function finishTurn(runId: string, input: FinishInput): Promise<"db" | "outbox"> {
+  input = { ...input, ...(input.response !== undefined ? { response: scrub(input.response) } : {}), ...(input.structured ? { structured: scrubValue(input.structured) } : {}), ...(input.identity ? { identity: scrubValue(input.identity) } : {}) };
   return through(runId, () => db.finishTurn(runId, input), () => {
     const j = journalFor(runId, input.identity);
     j.finish = input;

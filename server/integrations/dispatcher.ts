@@ -7,6 +7,7 @@ import { afterAttempt, attachmentRefusal, CATCH_ALL_SEND_ERROR, clip, deleteRefu
 import type { Adapter } from "./adapter";
 import * as router from "./router";
 import * as store from "./store";
+import { scrubValue } from "../secrets";
 
 export type Sinks = {
   /** A started adapter for an integration on this process, or undefined. */
@@ -72,7 +73,8 @@ async function sendOne(d: store.Delivery, now: number): Promise<SendResult | { d
         const refusal = deleteRefusal(a.kind, a.delete ? a.caps : {});
         return refusal ? { ok: false, retryable: false, error: refusal } : await a.delete!(place, d.envelope.deleteMessage);
       }
-      const msg = outbound(d.envelope);
+      // A stored secret value never leaves through a channel (server/secrets.ts).
+      const msg = scrubValue(outbound(d.envelope));
       const r = await a.send(place, { ...msg, text: clip(msg.text, a.caps.maxTextLength) }, String(d.id));
       // A post that starts a thread — the first post about a workstream (§3.6), or `--thread` on a
       // reply — stores it, so the next post continues there and a reply in it reaches the workstream.
