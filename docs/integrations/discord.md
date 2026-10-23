@@ -112,6 +112,37 @@ orca post --reply --thread --repo <repo> --branch <branch> "<text>"
 - In a thread or a DM, `--thread` changes nothing.
 - `orca post --link <id> --thread "<text>"` opens a thread on the post itself.
 
+### A named thread on request
+
+Open a thread only when the user asks for one. The default stays: Orca replies in place.
+
+```bash
+orca post --link <id> --new-thread "<name>" "<text>"
+orca post --reply --new-thread "<name>" "<text>"
+```
+
+- Orca posts the message where it goes today, then opens a thread with that name on the post.
+- It works with `config.threads` off. Discord cuts the name to 90 characters.
+- The verb prints the message id and the thread id. The thread id is the post's id.
+- If Discord refuses the thread, the post stays, and the verb says that no thread opened.
+
+### Delete a message
+
+```bash
+orca post --link <id> --delete <message id>
+orca post --link <catch-all id> --channel <channel id> [--thread <thread id>] --delete <message id>
+```
+
+- Orca reads the message first. It deletes the message only when the bot wrote it.
+- A person's message is refused with a clear error. Nothing is deleted.
+- The bot needs no extra permission to delete its own messages.
+
+### What `orca post` prints
+
+`orca post` waits for its delivery for about 15 seconds. Then it prints the Discord message id,
+and the thread id when there is one. If the send takes longer, it prints the delivery id. Orca
+still retries that delivery.
+
 `config.threads` stays. It is for a server where each request must get a thread. `--thread` is
 for one answer when the default is in place.
 
@@ -147,7 +178,7 @@ UPDATE integration SET config = config::jsonb || '{"threads": true}' WHERE id = 
    - View Channels
    - Send Messages
    - Send Messages in Threads
-   - Create Public Threads (for `config.threads` true, or `orca post --thread`)
+   - Create Public Threads (for `config.threads` true, `orca post --thread` or `--new-thread`)
    - Read Message History
 7. Open the URL that the page gives. Add the bot to the server.
 8. In Discord, open **User Settings → Advanced**. Turn on **Developer Mode**.

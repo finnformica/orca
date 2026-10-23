@@ -343,11 +343,24 @@ export async function claimDigest(key: string, now: number, leaseMs: number): Pr
 }
 
 /** Record the outcome of one attempt. `externalMsgId` is stored as soon as it is known (§3.5 rule 5). */
-export async function finishDelivery(id: number, r: { state: DeliveryState; nextAt: number; error?: string; externalMsgId?: string }): Promise<void> {
+export async function finishDelivery(id: number, r: { state: DeliveryState; nextAt: number; error?: string; externalMsgId?: string; threadId?: string }): Promise<void> {
   return db.withRetry(async (sql) => {
     await sql`UPDATE delivery SET state = ${r.state}, next_at = ${r.nextAt}, last_error = ${r.error ?? null},
-      external_msg_id = COALESCE(${r.externalMsgId ?? null}, external_msg_id)
+      external_msg_id = COALESCE(${r.externalMsgId ?? null}, external_msg_id),
+      external_thread_id = COALESCE(${r.threadId ?? null}, external_thread_id)
       WHERE user_id = ${user()} AND id = ${id}`;
+  });
+}
+
+/** One delivery's outcome so far (`orca post` waits on it): its state, the platform's message and
+ *  thread ids once sent, the last error. Undefined for an unknown id. */
+export async function deliveryResult(id: number): Promise<{ state: DeliveryState; externalMsgId?: string; threadId?: string; lastError?: string } | undefined> {
+  return db.withRetry(async (sql) => {
+    const [r] = await sql`SELECT state, external_msg_id, external_thread_id, last_error FROM delivery WHERE user_id = ${user()} AND id = ${id}` as { state: DeliveryState; external_msg_id: string | null; external_thread_id: string | null; last_error: string | null }[];
+    return r && {
+      state: r.state, ...(r.external_msg_id ? { externalMsgId: r.external_msg_id } : {}),
+      ...(r.external_thread_id ? { threadId: r.external_thread_id } : {}), ...(r.last_error ? { lastError: r.last_error } : {}),
+    };
   });
 }
 

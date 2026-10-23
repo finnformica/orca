@@ -43,7 +43,7 @@ import {
 } from "../web/src/workstream";
 import { activityLines, type AgentTurn } from "../shared/agent";
 import { providerOfModel } from "../shared/models";
-import { attachmentIdOf, attachmentRefusal, catchAllPostRefusal, grantKey, grantRefusal, repoScoped, type Grant, type ReplyTo } from "../shared/integrations";
+import { attachmentIdOf, attachmentRefusal, catchAllPostRefusal, deleteRefusal, grantKey, grantRefusal, repoScoped, type Grant, type ReplyTo } from "../shared/integrations";
 import * as integrationStore from "./integrations/store";
 import * as integrationRouter from "./integrations/router";
 import * as integrationRegistry from "./integrations/registry";
@@ -559,12 +559,34 @@ async function attachArgs(args: ToolArgs): Promise<string[]> {
   return refs;
 }
 
+/** A link's integration and its adapter's caps: of the adapter running here, else of its kind (it
+ *  may run on another instance). No caps for an unknown kind: the dispatcher refuses it. */
+async function linkCaps(integrationId: string) {
+  const conn = await integrationStore.integration(integrationId);
+  const caps = integrationRegistry.adapterFor(integrationId)?.caps ?? integrationRegistry.kinds().find((k) => k.kind === conn?.kind)?.caps;
+  return { conn, caps };
+}
+
+/** How long `orca post` waits for its delivery to be sent before it says "queued" (a test sets 0). */
+export const postWait = { ms: 15_000, everyMs: 250 };
+
+/** The delivery's outcome once it is sent or dead, else undefined when `postWait.ms` runs out. The
+ *  dispatcher may run on another instance, so this reads the row, not this process's state. */
+async function settledDelivery(id: number) {
+  const end = Date.now() + postWait.ms;
+  for (;;) {
+    const r = await integrationStore.deliveryResult(id);
+    if (r && (r.state === "sent" || r.state === "dead")) return r;
+    if (Date.now() >= end) return undefined;
+    await Bun.sleep(postWait.everyMs);
+  }
+}
+
 /** `orca post --attach`: refuse before anything is queued when the link's adapter cannot send these
  *  files (no file support, too many, one too large), with the reason the model can act on. The
  *  caps of the adapter running here, else of its kind (it may run on another instance). */
 async function refuseAttachments(integrationId: string, refs: string[]): Promise<void> {
-  const conn = await integrationStore.integration(integrationId);
-  const caps = integrationRegistry.adapterFor(integrationId)?.caps ?? integrationRegistry.kinds().find((k) => k.kind === conn?.kind)?.caps;
+  const { conn, caps } = await linkCaps(integrationId);
   const files = await Promise.all(refs.map(async (ref) => {
     const id = attachmentIdOf(ref);
     const row = id ? await db.attachment(id) : undefined;
@@ -642,7 +664,8 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       return args.json !== undefined ? JSON.stringify(report, null, 2) : machineText(report);
     }
     case "post": {
-      // `orca post --link <id> [--channel <id>] [--thread <id> | --repo r --branch b] [--thread] [--attach <id|path>]… "<text>"`: a durable delivery
+      // `orca post --link <id> [--channel <id>] [--thread <id> | --repo r --branch b] [--thread | --new-thread "<name>"] [--attach <id|path>]… "<text>"`,
+      // or `orca post --link <id> [--channel <id>] [--thread <id>] --delete <message id>`: a durable delivery
       // through the link's adapter, retried if it fails. With --repo/--branch it continues that
       // workstream's thread on the link, or starts it.
       // `--reply "<text>"` arrives as the flag's value (bin/orca takes the next word), so read it there too.
@@ -650,8 +673,20 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       // with no value, it is a switch, and `--reply --thread "<text>"` gives it the text.
       // `--attach` (repeatable) stores each file like `orca send --attach` and sends it as a file. The
       // delivery carries only the refs, so a retry reads the bytes again from the attachment table.
+      // `--new-thread "<name>"` posts, then opens a thread with that name on the post (even when the
+      // adapter's default is to reply in place). `--delete <message id>` removes one message the bot
+      // posted, with no text. Every post waits for its delivery (`postWait`) and prints the platform's
+      // message and thread ids; when the wait runs out it says the delivery is queued.
       const openThread = typeof args.thread === "string" && (reply !== undefined || !args.thread);
-      const text = (words.join(" ").trim() || (typeof args.reply === "string" ? args.reply.trim() : "") || (openThread && typeof args.thread === "string" ? args.thread.trim() : ""));
+      const newThreadName = typeof args["new-thread"] === "string" ? args["new-thread"].trim() : "";
+      if (args["new-thread"] !== undefined && !newThreadName) throw new Error('--new-thread needs the thread name: orca post --link <id> --new-thread "<name>" "<text>"');
+      const deleteId = typeof args.delete === "string" ? args.delete.trim() : "";
+      if (args.delete !== undefined && !deleteId) throw new Error("--delete needs the message id: orca post --link <id> --delete <message id>");
+      if (newThreadName && args.thread !== undefined) throw new Error("--new-thread opens a thread on a new post: leave out --thread");
+      if (deleteId && (newThreadName || args.attach !== undefined || words.length || typeof args.reply === "string" && args.reply.trim() || openThread)) {
+        throw new Error("--delete takes only the place (--link, --channel, --thread or --reply) and the message id: no text, --attach or --new-thread");
+      }
+      const text = deleteId ? `Delete message ${deleteId}` : (words.join(" ").trim() || (typeof args.reply === "string" ? args.reply.trim() : "") || (openThread && typeof args.thread === "string" ? args.thread.trim() : ""));
       const link = typeof args.link === "string" && args.link ? await integrationStore.link(args.link) : undefined;
       if (!link) throw new Error(`--link must name a channel link (orca channels lists them)${args.link ? `: no link "${args.link}"` : ""}`);
       if (!text) throw new Error('the message is required: orca post --link <id> "<text>"');
@@ -659,6 +694,10 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       const channel = typeof args.channel === "string" && args.channel.trim() ? args.channel.trim() : undefined;
       const placeRefusal = catchAllPostRefusal(link, { ...(channel ? { channel } : {}), reply: !!reply, grant: wakeGrant, wakeReplyTo: b.wakeReplyTo ?? null });
       if (placeRefusal) throw new Error(placeRefusal);
+      const { conn, caps } = await linkCaps(link.integrationId);
+      const kind = conn?.kind ?? "this";
+      if (deleteId && caps) { const refusal = deleteRefusal(kind, caps); if (refusal) throw new Error(refusal); }
+      if (newThreadName && caps && !caps.threads) throw new Error(`--new-thread: the ${kind} adapter has no threads`);
       // A wake an outside sender caused attaches stored ids only: a path would let a message ask Orca
       // to post any file on this machine to the outside.
       if (wakeGrant && (Array.isArray(args.attach) ? args.attach : args.attach === undefined ? [] : [args.attach]).some((v) => typeof v === "string" && !attachmentIdOf(v))) {
@@ -673,8 +712,18 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       const r = await integrationRouter.post(link, text, {
         ...(reply ? { reply } : threadId ? { threadId } : {}), ...(repo ? { scope: { repo, ...(branch ? { branch } : {}) } } : {}),
         ...(openThread ? { openThread } : {}), ...(files.length ? { attachments: files } : {}), ...(channel ? { channel } : {}),
+        ...(newThreadName ? { newThread: { name: newThreadName } } : {}), ...(deleteId ? { deleteMessage: deleteId } : {}),
       });
-      return `Queued for ${link.label ?? link.id}${r.externalId !== link.externalId ? ` ${r.externalId}` : ""}${r.threadId ? ` (thread ${r.threadId})` : ""}${openThread ? " in a new thread" : ""}${files.length ? ` with ${files.length} attachment${files.length === 1 ? "" : "s"}` : ""} as delivery ${r.delivery ?? "?"}; Orca retries it if the send fails.`;
+      const where = `${link.label ?? link.id}${r.externalId !== link.externalId ? ` ${r.externalId}` : ""}`;
+      const done = r.delivery !== undefined ? await settledDelivery(r.delivery) : undefined;
+      if (done?.state === "dead") throw new Error(`${deleteId ? `could not delete message ${deleteId}` : "the post failed"} (delivery ${r.delivery}): ${done.lastError ?? "no reason recorded"}`);
+      if (done && deleteId) return `Deleted ${kind} message ${deleteId} in ${where} (delivery ${r.delivery}).`;
+      if (done) {
+        const opened = newThreadName && done.threadId && done.threadId !== r.threadId;
+        return `Sent to ${where}: ${kind} message ${done.externalMsgId ?? "?"}${done.threadId ? `, ${opened ? `new thread "${newThreadName}"` : "thread"} ${done.threadId}` : ""}${newThreadName && !opened ? `. No thread was opened (the ${kind} adapter refused or has none): the post stands where it went` : ""} (delivery ${r.delivery}).`;
+      }
+      if (deleteId) return `Queued the delete of message ${deleteId} in ${where} as delivery ${r.delivery ?? "?"}; Orca retries it if the call fails.`;
+      return `Queued for ${where}${r.threadId ? ` (thread ${r.threadId})` : ""}${openThread || newThreadName ? " in a new thread" : ""}${files.length ? ` with ${files.length} attachment${files.length === 1 ? "" : "s"}` : ""} as delivery ${r.delivery ?? "?"}; Orca retries it if the send fails.`;
     }
     case "thread": {
       // `orca thread link <adapter> <thread-id> --repo r --branch b [--link <id>]`: replies in that

@@ -21,7 +21,10 @@
 // `msg.attachments` (`orca post --attach`) go as files on the same message: multipart/form-data with
 // `payload_json`, so an image shows inline. The bytes are read from the attachment table at each
 // send, so a retry sends them again. At most 10 files and 10 MiB a file (a bot's upload limit in a
-// server without boosts); more is refused, never cut. Edits PATCH the message. A 429 is retryable with Discord's `retry_after`. The bot token is
+// server without boosts); more is refused, never cut. `msg.newThread` (`orca post --new-thread
+// "<name>"`) posts as usual, then opens a thread with that name on the post, even with threads off;
+// the thread's id comes back. `delete` (`orca post --delete`) reads the message first and deletes it
+// only when the bot wrote it: a person's message is refused. Edits PATCH the message. A 429 is retryable with Discord's `retry_after`. The bot token is
 // `secretRef` (ORCA_SECRET_DISCORD_BOT) — never logged, never in `raw`.
 import type { Adapter, AdapterContext, Connection } from "../adapter";
 import * as db from "../../db";
@@ -40,7 +43,7 @@ const FATAL_CLOSE = new Set([4004, 4010, 4011, 4012, 4013, 4014]);
 export const DISCORD_MAX_FILES = 10;
 export const DISCORD_MAX_FILE_BYTES = 10 * 1024 * 1024;
 export const DISCORD_CAPS: Capabilities = {
-  inbound: "socket", outbound: true, threads: true, edits: true, reactions: false, attachments: true,
+  inbound: "socket", outbound: true, threads: true, edits: true, reactions: false, attachments: true, deletes: true,
   maxAttachments: DISCORD_MAX_FILES, maxAttachmentBytes: DISCORD_MAX_FILE_BYTES,
   maxTextLength: 2000, rate: { perTarget: 5, windowMs: 5_000 },
 };
@@ -292,6 +295,9 @@ const remember = (map: Map<string, string>, k: string, v: string) => {
   if (map.size > MAP_CAP) map.delete(map.keys().next().value!);
 };
 
+/** The name of a thread opened for a post: its title, else its first line. Pure. */
+const threadName = (msg: OutboundMessage): string => msg.title || msg.text.split("\n")[0] || "Orca";
+
 export function discordAdapter(connection: Connection): Adapter {
   const token = () => (connection.secretRef ? process.env[connection.secretRef] : undefined) ?? "";
   const dmLink = typeof connection.config.dmLink === "string" && connection.config.dmLink ? connection.config.dmLink : undefined;
@@ -316,10 +322,10 @@ export function discordAdapter(connection: Connection): Adapter {
   const newest = new Map<string, string>(); // chain key → the newest message in the chain
   const botRoles = new Map<string, string>(); // guild id → the bot's managed role id ("" = none)
 
-  /** Open a thread on message `on` in `channel`, named after the post. True when it exists after
-   *  (Discord's 160004 = a thread already exists there). */
-  async function openThreadOn(channel: string, on: string, msg: OutboundMessage): Promise<boolean> {
-    const t = await discordApi(token(), "POST", `/channels/${channel}/messages/${on}/threads`, { name: clip(msg.title || msg.text.split("\n")[0] || "Orca", 90), auto_archive_duration: 1440 });
+  /** Open a thread named `name` (clipped to Discord's 90 characters here) on message `on` in
+   *  `channel`. True when it exists after (Discord's 160004 = a thread already exists there). */
+  async function openThreadOn(channel: string, on: string, name: string): Promise<boolean> {
+    const t = await discordApi(token(), "POST", `/channels/${channel}/messages/${on}/threads`, { name: clip(name || "Orca", 90), auto_archive_duration: 1440 });
     if (t.ok || t.data.code === 160004) { parents.set(on, channel); return true; }
     ctx?.log(`could not open a thread on message ${on}: ${t.error}`);
     return false;
@@ -499,11 +505,24 @@ export function discordAdapter(connection: Connection): Adapter {
         const r = await api("PATCH", `/channels/${channel}/messages/${target.messageId}`, body);
         return r.ok ? { ok: true, externalMsgId: target.messageId, ...(target.threadId ? { threadId: target.threadId } : {}) } : failure(r);
       }
+      if (msg.newThread) {
+        // `orca post --new-thread "<name>"`: the post goes where it goes today (a Discord reply in its
+        // chain, or a plain post), then a thread with the caller's name opens on it, whatever
+        // `config.threads` says. The thread's id is the post's id.
+        const where = chain?.channel ?? channel;
+        const key = chain ? chainKey(chain.channel, chain.root) : undefined;
+        const r = await api("POST", `/channels/${where}/messages`, chain ? { ...body, message_reference: { message_id: newest.get(key!) ?? chain.root, fail_if_not_exists: false } } : body);
+        if (!r.ok) return failure(r);
+        const id = typeof r.data.id === "string" ? r.data.id : undefined;
+        if (id && await openThreadOn(where, id, msg.newThread.name)) return { ok: true, externalMsgId: id, threadId: id };
+        // No thread (no permission, a post already in a thread): the post stands where it went.
+        return { ok: true, ...(id ? { externalMsgId: id } : {}), ...(target.threadId ? { threadId: target.threadId } : {}) };
+      }
       if (chain && msg.thread) {
         // `orca post --reply --thread`: a thread on the mention (else the chain's newest message), and
         // the answer in it. The thread's id is that message's id: the conversation moves there.
         const on = msg.replyToExternalMsgId ?? newest.get(chainKey(chain.channel, chain.root)) ?? chain.root;
-        if (await openThreadOn(chain.channel, on, msg)) {
+        if (await openThreadOn(chain.channel, on, threadName(msg))) {
           const r = await api("POST", `/channels/${on}/messages`, body);
           if (!r.ok) return failure(r);
           return { ok: true, ...(typeof r.data.id === "string" ? { externalMsgId: r.data.id } : {}), threadId: on };
@@ -549,11 +568,26 @@ export function discordAdapter(connection: Connection): Adapter {
         remember(newest, chainKey(target.externalId, id), id);
         return { ok: true, externalMsgId: id, threadId: chainKey(target.externalId, id) };
       }
-      if (await openThreadOn(target.externalId, id, msg)) return { ok: true, externalMsgId: id, threadId: id };
+      if (await openThreadOn(target.externalId, id, threadName(msg))) return { ok: true, externalMsgId: id, threadId: id };
       if (threads) return { ok: true, externalMsgId: id };
       remember(roots, id, id);
       remember(newest, chainKey(target.externalId, id), id);
       return { ok: true, externalMsgId: id, threadId: chainKey(target.externalId, id) };
+    },
+    async delete(target: Target, externalMsgId: string): Promise<SendResult> {
+      if (!token()) return { ok: false, retryable: false, error: `${connection.secretRef ?? "the token variable"} is not set` };
+      const channel = parseChain(target.threadId)?.channel ?? target.threadId ?? target.externalId;
+      // Read it first: Orca deletes only what its bot wrote, never a person's message.
+      const m = await discordApi(token(), "GET", `/channels/${channel}/messages/${externalMsgId}`);
+      if (!m.ok) return failure(m);
+      const me = botId ?? (await discordApi(token(), "GET", "/users/@me")).data.id;
+      const author = m.data.author as DiscordAuthor | undefined;
+      if (!me || author?.id !== me) {
+        const who = author ? author.global_name || author.username || author.id : "an unknown author";
+        return { ok: false, retryable: false, error: `refused: message ${externalMsgId} was written by ${who}, not by Orca's bot. Orca deletes only its own messages.` };
+      }
+      const r = await discordApi(token(), "DELETE", `/channels/${channel}/messages/${externalMsgId}`);
+      return r.ok ? { ok: true, externalMsgId } : failure(r);
     },
     async health() {
       if (!token()) return { ok: false, detail: `${connection.secretRef ?? "token"} is not set` };
