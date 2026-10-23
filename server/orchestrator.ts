@@ -218,9 +218,11 @@ export async function onRunFinished(cfg: OrcaConfig, run: agent.RunFinished): Pr
   const step = await ladder(cfg, repo, branch, e, run); // counted even when an autofix takes over
   if (run.continued) return; // a queued follow-up (an autofix) took over — not idle yet
   const opened = await autoPr(cfg, repo, branch, run);
+  // After autoPr, which pushes: what is still only on this disk (a push that died with the run).
+  const unpushed = await git.unpushedHere(run.cwd);
   const text = workerEvent({
     repo, branch, title: e.title as string | undefined, runId: run.runId, status: run.status,
-    outcome: run.structured, response: run.result, check: run.check, denied: run.meta?.permissionDenials,
+    outcome: run.structured, response: run.result, check: run.check, denied: run.meta?.permissionDenials, unpushed,
   }) + (opened ? `\n${opened}` : "") + (step ? `\n${step}` : "");
   await report(cfg, text, run.key);
 }

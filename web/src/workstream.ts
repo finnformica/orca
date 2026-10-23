@@ -1384,12 +1384,16 @@ export function workerEvent(input: {
   outcome?: AgentOutcome; response?: string; check?: TurnCheck;
   /** Tool calls the CLI refused (RunMeta.permissionDenials) — a scoped run's rules said no. */
   denied?: string[];
+  /** HEAD's commits on no remote when the run ended (git.unpushedHere). */
+  unpushed?: number;
 }): string {
   const { outcome: o, check } = input;
   const list = (label: string, items: string[] | undefined) => (items?.length ? [`${label}:`, ...items.map((i) => `- ${i}`)] : []);
   return [
     `${WORKER_EVENT_MARKER} ${input.repo}/${input.branch}${input.title ? ` "${input.title}"` : ""} — ${input.status}`,
     ...(check ? [`Orca's check \`${check.command}\` ${check.ok ? "passed" : `FAILED (exit ${check.exitCode}):\n${clip(check.output, 600)}`}`] : []),
+    // After the check line: isWorkerProblem reads a failed check on line two.
+    ...(input.unpushed ? [`${input.unpushed} commit${input.unpushed === 1 ? "" : "s"} not pushed`] : []),
     ...(o ? [`Outcome: ${clip(o.outcome, 1500)}`, ...list("Remaining", o.remaining), ...list("Decisions", o.decisions), ...list("Commits", o.commits)]
       : [`Response: ${clip(input.response ?? "(none)", 1500)}`]),
     ...list("Denied tool calls (scoped mode — tell the user if the work needs them)", input.denied?.slice(0, 10)),

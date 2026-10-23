@@ -272,6 +272,16 @@ export async function unpushedCount(repoPath: string, ref: string, opts: { base?
   } catch { return 1; }
 }
 
+/** How many of the worktree's HEAD commits are on no remote — what a run report names as "not
+ *  pushed". Undefined when `cwd` is no checkout or has no remote at all (a local-only repo). */
+export async function unpushedHere(cwd: string): Promise<number | undefined> {
+  if (!existsSync(cwd)) return undefined;
+  try {
+    if (!(await git(cwd, "remote")).trim()) return undefined;
+    return (await git(cwd, "rev-list", "HEAD", "--not", "--remotes")).split("\n").filter(Boolean).length;
+  } catch { return undefined; }
+}
+
 /** What removing a worktree would lose: paths with uncommitted changes (tracked edits and untracked
  *  files, minus `ignore` — the repo's own copied/linked entries, e.g. a symlinked node_modules that a
  *  `node_modules/` pattern does not match) and the branch's commits that exist nowhere else. A
