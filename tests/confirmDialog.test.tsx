@@ -71,6 +71,24 @@ describe("confirmDialog", () => {
     expect(await no).toBe(false);
   });
 
+  test("the confirm button is focused on open, so Enter runs it once; Esc still cancels", async () => {
+    const yes = ask({ title: "Ship it?", description: "It goes to main.", confirmLabel: "Ship" });
+    const d = await waitFor(alertDialog);
+    const action = d.querySelector<HTMLElement>('[data-slot="alert-dialog-action"]')!;
+    expect(document.activeElement).toBe(action);
+    let clicks = 0;
+    action.addEventListener("click", () => { clicks++; });
+    await act(async () => { action.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); await flush(); });
+    expect(clicks).toBe(1);
+    expect(await yes).toBe(true);
+
+    const no = ask({ title: "Delete?", destructive: true });
+    const red = await waitFor(alertDialog);
+    expect(document.activeElement).toBe(red.querySelector('[data-slot="alert-dialog-action"]'));
+    await act(async () => { red.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); await flush(); });
+    expect(await no).toBe(false);
+  });
+
   test("Esc is a Cancel, and two questions asked at once show one after the other", async () => {
     const first = ask({ title: "First?" });
     const second = ask({ title: "Second?" });
