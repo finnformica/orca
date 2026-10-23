@@ -1,4 +1,5 @@
 import { mkdtemp, writeFile, readFile, chmod, appendFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { run } from "../server/run";
@@ -135,6 +136,8 @@ export function installFakeGithub(): void {
   fakeGithub ??= Bun.serve({
     port: 0, hostname: "127.0.0.1",
     async fetch(req) {
+      // A slow GitHub: every answer waits while the file `ORCA_FAKE_GH_HOLD` names exists.
+      for (let hold = env("ORCA_FAKE_GH_HOLD"); hold && existsSync(hold);) await Bun.sleep(20);
       const url = new URL(req.url);
       if (url.pathname === "/graphql" && req.method === "POST") {
         const body = await req.json() as { query: string; variables?: Record<string, unknown> };

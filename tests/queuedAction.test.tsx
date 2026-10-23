@@ -83,3 +83,20 @@ test("a genuinely failed launch still raises the error toast, not a queued one",
   // the point here is just that nothing queued-shaped was shown for a real failure.
   expect(seen.some((t) => t.title === "Queued" || t.label === "Queued")).toBe(false);
 });
+
+test("a follow-up queued behind a busy agent resolves at once, without waiting for the board to refresh", async () => {
+  // The chat drops its "sending…" bubble when followUp resolves. It used to wait on refresh() — every
+  // repo's agents, PRs and merged history — so a message the bridge had already queued sat in
+  // "sending…" for as long as GitHub took to answer.
+  apiFake.agentQueued = { id: 3, repo: "r", branch: "feat", worktreePath: "/wt/feat", instruction: "and this", attachments: [], createdAt: Date.now() };
+  apiFake.holdPrs = true; // the board's PR poll never answers until released
+  const before = performance.now();
+  const outcome = await Promise.race([
+    store.followUp(row, "and this").then(() => "resolved"),
+    new Promise((r) => setTimeout(() => r("still waiting"), 1_000)),
+  ]);
+  expect(outcome).toBe("resolved");
+  expect(performance.now() - before).toBeLessThan(500);
+  expect(apiFake.agentLaunches.length + apiFake.claudePrompts.length).toBeGreaterThan(0); // it reached the bridge
+  apiFake.releasePrs?.();
+});

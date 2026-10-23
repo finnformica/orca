@@ -113,6 +113,9 @@ const serial = <T>(fn: () => Promise<T>): Promise<T> => {
   return next;
 };
 
+/** Messages (`message`) waiting on the chain: while one is, a newer one must wait too, to keep order. */
+let messagesInChain = 0;
+
 export async function status(cfg: OrcaConfig): Promise<{ key: string; running: boolean; paused: boolean; notes: string; model: string; contextPct?: number; shell: boolean; lastWakeUsd?: number; hint?: string; startedAt?: number; queued: number }> {
   const b = await blob();
   const running = agent.isRunning(dir());
@@ -141,6 +144,22 @@ export async function setModel(model: unknown): Promise<void> {
  *  script, not a person) does not reset the wake count, so a script cannot keep it awake forever. */
 export function message(cfg: OrcaConfig, text: string, attachments: string[] = [], opts: { grant?: Grant; person?: boolean; replyTo?: ReplyTo } = {}): Promise<{ status: "running" | "queued" }> {
   const grant = opts.grant && opts.grant.level !== "full" ? opts.grant : undefined;
+  if (agent.isRunning(dir()) && !messagesInChain) {
+    // A wake is in flight: the message only has to reach the queue, so it is written NOW and the
+    // sender hears "queued" at once. Through the chain it waited behind whatever held it — a worker
+    // report's board read, the next wake's launch — and the chat showed "sending…" for seconds.
+    // The rest stays on the chain: the wake-count reset (a read-modify-write of the blob), and a
+    // drain in case the wake ended between the check and the insert, after its own drain had run.
+    // Only with no older message still waiting on the chain, which would then queue after this one.
+    return enqueue(text, attachments, grant, opts.replyTo).then(() => {
+      void serial(async () => {
+        if (opts.person !== false) await patch({ wakes: 0 });
+        if (!agent.isRunning(dir()) && primary.held()) await drain(cfg);
+      }).catch(db.logUnlessDown("orca: orchestrator drain after a queued message failed"));
+      return { status: "queued" as const };
+    });
+  }
+  messagesInChain++;
   return serial(async () => {
     if (opts.person !== false) await patch({ wakes: 0 });
     if (agent.isRunning(dir())) {
@@ -156,7 +175,7 @@ export function message(cfg: OrcaConfig, text: string, attachments: string[] = [
       throw e;
     }
     return { status: "running" as const };
-  });
+  }).finally(() => { messagesInChain--; });
 }
 
 /** Compact its session (the context ring's Compact button): `/compact` on a native resume, as the
