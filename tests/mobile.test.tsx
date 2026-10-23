@@ -312,7 +312,8 @@ describe("the phone layout (390px, touch)", () => {
     const sheet = $<HTMLDialogElement>('dialog[data-slot="filter-sheet"]')!;
     expect(sheet.open).toBe(true);
     expect(sheet.querySelectorAll('[data-slot="quick-filter"]').length).toBeGreaterThan(0);
-    await click(sheet.querySelector('[data-slot="quick-filter"][data-chip="status:attention"]')!);
+    expect(sheet.querySelector('[data-slot="quick-filter"][data-chip="pr:week"]')).not.toBeNull(); // the sheet lists every group's choices inline
+    await click(sheet.querySelector('[data-slot="quick-filter"][data-chip="status:attention"] [role="checkbox"]')!);
     expect(location.search).toContain("status=attention");
     expect($('[data-slot="filters-active"]')!.textContent).toBe("1");
   });

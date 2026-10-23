@@ -9,6 +9,7 @@ import {
   baseBranch, cliCommand, instanceChoices, modelFor, rerunAgent, thisInstance, setCardModel,
   useWorkstreams, useWorkstreamsLoaded, type Lane, type Row,
 } from "../store";
+import { mergedToday } from "../workstream";
 import { copyText } from "@/lib/dialogs";
 import { navigate } from "@/lib/route";
 import { Bot, Check, CircleStop, Copy, ExternalLink, Eye, Loader2, Play, Rows2, Rows3, SquareTerminal, X } from "lucide-react";
@@ -71,7 +72,8 @@ export function Board() {
   const filter = useAtomValue(repoFilterAtom);
   const rows = filter === "all" ? all : all.filter((r) => r.repo === filter);
   const cardsFor = (lane: Lane) => {
-    const cards = rows.filter((r) => r.lane === lane);
+    // The board holds a week of merged rows (the Agents page's "Merged this week"); this lane is today's.
+    const cards = rows.filter((r) => (lane === "DONE" ? mergedToday(r) : r.lane === lane));
     if (lane === "DONE") cards.sort((a, b) => (b.mergedAt ?? "").localeCompare(a.mergedAt ?? "")); // recent first
     return cards;
   };
