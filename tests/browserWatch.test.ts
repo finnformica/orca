@@ -10,6 +10,7 @@ import * as db from "../server/db";
 import * as transcript from "../server/transcript";
 import { browserProcess, isTestRunner, killStep, nextKillRecord, orphanRun, readProcs, recordKills, sweep, sweepOrphanScopes, watchVerdict, type ProcInfo } from "../server/browserWatch";
 import * as lease from "../server/lease";
+import { defaultScopeOwner, runScopeOf, runScopeUnit, scopeOwner } from "../server/cgroup";
 import { browserKillLabel, rowStatus, BROWSER_KILL_SHOW_MS } from "../web/src/workstream";
 import { freshSchema, type TestDb } from "./pg";
 
@@ -144,7 +145,7 @@ test("recordKills flags the run's workstream and writes the warning into its tra
 // killed. Only that one pid is looked at, so nothing else on the box is touched.
 const ownCgroup = (() => { try { return readFileSync("/proc/self/cgroup", "utf8"); } catch { return ""; } })();
 // Under the test queue (`bun test` through orca-run) the test is in an exempt `orca-heavy-` scope.
-const inRunScope = ownCgroup.includes("/orca-agents.slice/") && /\/orca-run-[0-9a-f-]{36}\.scope/.test(ownCgroup) && !/\/orca-(shot|heavy)-/.test(ownCgroup);
+const inRunScope = ownCgroup.includes("/orca-agents.slice/") && runScopeOf(ownCgroup) !== undefined && !/\/orca-(shot|heavy)-/.test(ownCgroup);
 test.skipIf(!inRunScope)("a real `chrome` process in an agent's scope is killed", async () => {
   const dir = mkdtempSync(join(tmpdir(), "orca-bw-bin-"));
   try {
@@ -161,20 +162,40 @@ test.skipIf(!inRunScope)("a real `chrome` process in an agent's scope is killed"
 });
 
 // ---- orphan run scopes (2026-10-19: six fake claudes of a test looped in real run scopes) ----
+// 2026-10-23: a test bridge with its own state dir killed the live bridge's workers. A run scope's
+// unit names its owner (`orca-run-<owner>-<runId>`, the owner a hash of the state dir).
 const OTHER = "0b7a2f4e-1c3d-4e5f-8a9b-0c1d2e3f4a5b";
-const inOther = `${SLICE}/orca-run-${OTHER}.scope`;
+/** A run scope of THIS test's state dir (set in beforeEach), so call it inside a test. */
+const own = (runId: string) => `${SLICE}/${runScopeUnit(runId)}.scope`;
 
-test("an orphan is a process in a run scope of the agents' slice that no lease names", () => {
+test("a run scope's unit names its owner; an untagged one belongs to ~/.orca", () => {
+  expect(scopeOwner("/a/state")).toMatch(/^[0-9a-f]{12}$/);
+  expect(scopeOwner("/a/state")).toBe(scopeOwner("/a/state/"));
+  expect(scopeOwner("/a/state")).not.toBe(scopeOwner("/b/state"));
+  expect(runScopeUnit(OTHER, "abcdef123456")).toBe(`orca-run-abcdef123456-${OTHER}`);
+  expect(runScopeOf(`${SLICE}/orca-run-abcdef123456-${OTHER}.scope/sub`)).toEqual({ runId: OTHER, owner: "abcdef123456" });
+  expect(runScopeOf(`${SLICE}/orca-run-${OTHER}.scope`)).toEqual({ runId: OTHER, owner: defaultScopeOwner() });
+  expect(runScopeOf(`${SLICE}/orca-heavy-1.scope`)).toBeUndefined();
+});
+
+test("an orphan is a process in a run scope of this bridge's owner in the agents' slice that no lease names", () => {
   const known = new Set([RUN]);
+  const inOther = own(OTHER);
   expect(orphanRun(proc(["sh", "claude"], inOther), known)).toBe(OTHER);
   expect(orphanRun(proc(["sh", "claude"], `${inOther}/sub`), known)).toBe(OTHER);
-  expect(orphanRun(proc(["sh", "claude"]), known)).toBeUndefined(); // leased
+  expect(orphanRun(proc(["sh", "claude"], own(RUN)), known)).toBeUndefined(); // leased
   expect(orphanRun(proc(["sh"], `${SLICE}/orca-heavy-1.scope`), known)).toBeUndefined(); // a queue slot
-  expect(orphanRun(proc(["sh"], `/system.slice/orca-run-${OTHER}.scope`), known)).toBeUndefined(); // not the agents' slice
+  expect(orphanRun(proc(["sh"], `/system.slice/${runScopeUnit(OTHER)}.scope`), known)).toBeUndefined(); // not the agents' slice
   expect(orphanRun({ ...proc(["sh"], inOther), pid: 7 }, known, 7)).toBeUndefined(); // never itself
+  // Another bridge's scope (another state dir) is never an orphan here, leased or not.
+  expect(orphanRun(proc(["sh"], `${SLICE}/${runScopeUnit(OTHER, scopeOwner("/other/state"))}.scope`), known)).toBeUndefined();
+  // An untagged scope (older code) is the default state dir's: only that bridge may stop it.
+  expect(orphanRun(proc(["sh"], `${SLICE}/orca-run-${OTHER}.scope`), known)).toBeUndefined();
+  expect(orphanRun(proc(["sh"], `${SLICE}/orca-run-${OTHER}.scope`), known, process.pid, defaultScopeOwner())).toBe(OTHER);
 });
 
 test("an orphan scope is killed on the second pass that sees it; a run leased in between is kept; no lease read kills nothing", () => {
+  const inOther = own(OTHER), inRun = own(RUN);
   const procs: ProcInfo[] = [
     { pid: 1, cgroup: inOther, argv: ["/bin/sh", "/opt/orca/bin/worker/bun", "/tmp/x/claude"], comm: "sh" },
     { pid: 2, cgroup: `${inOther}/sub`, argv: ["sleep", "60"], comm: "sleep" },
@@ -212,6 +233,7 @@ test("a real process in an orphan scope dies; a leased run's process is kept", a
   const leased = Bun.spawn(["sleep", "30"]);
   try {
     lease.acquire({ key: "/w/leased", worktreePath: "/w/leased", provider: "claude", runId: RUN, pid: leased.pid, startedAt: Date.now() });
+    const inOther = own(OTHER), inRun = own(RUN);
     const procs = (): ProcInfo[] => [
       { pid: orphan.pid, cgroup: inOther, argv: ["sleep", "30"], comm: "sleep" },
       { pid: leased.pid, cgroup: inRun, argv: ["sleep", "30"], comm: "sleep" },

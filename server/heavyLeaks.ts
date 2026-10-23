@@ -11,7 +11,7 @@
 import { readFileSync } from "fs";
 import { basename } from "path";
 import { isTestRunner, readProcs, type ProcInfo } from "./browserWatch";
-import { AGENTS_SLICE } from "./cgroup";
+import { AGENTS_SLICE, runScopeOf } from "./cgroup";
 
 export const LEAK_INTERVAL_MS = 15_000;
 
@@ -56,7 +56,6 @@ export function hasSlot(environ: string): boolean {
 export type Leak = { pid: number; name: string; runId?: string };
 export type LeakReport = { at: number; count: number; names: string[]; leaks: Leak[] };
 
-const RUN_SCOPE = /\/orca-run-([0-9a-f-]{36})\.scope(\/|$)/;
 
 /** The unqueued heavy processes among `procs`: in the agents' slice, outside a slot's scope, heavy,
  *  with no slot in their environment, and with no such process above them. `environ` returns null
@@ -86,7 +85,7 @@ export function findLeaks(procs: ProcInfo[], environ: (pid: number) => string | 
       if (leakName(q)) { top = false; break; }
     }
     if (!top) continue;
-    const runId = p.cgroup.match(RUN_SCOPE)?.[1];
+    const runId = runScopeOf(p.cgroup)?.runId;
     out.push({ pid: p.pid, name, ...(runId ? { runId } : {}) });
   }
   return out;

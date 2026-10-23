@@ -827,7 +827,8 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
   // Every run gets its own memory/CPU-limited scope when one is available (server/cgroup.ts) — so
   // THIS worker's runaway build or browser gets killed by the kernel alone, not the box. No-op on
   // darwin or an unprovisioned Linux box (no systemd-run, or no reachable user bus).
-  const scopeUnit = `orca-run-${runId}`;
+  // The unit names its owner (this bridge's state dir), so only this bridge's sweep may stop it.
+  const scopeUnit = cgroup.runScopeUnit(runId);
   const memoryMaxGb = options.memoryMaxGb ?? cgroup.DEFAULT_MEMORY_MAX_GB;
   const cpuWeight = options.cpuWeight ?? cgroup.DEFAULT_CPU_WEIGHT;
   const linux = cgroup.linux();
@@ -1217,10 +1218,12 @@ export function adoptLeases(
   return adopted.length;
 }
 
-/** Stop a finished run's scope (`orca-run-<runId>.scope`): every process still in it is killed. A
- *  scope that is already gone is fine. Bounded, and never throws: the run is recorded either way. */
+/** Stop a finished run's scope (`orca-run-<owner>-<runId>.scope`, or the untagged
+ *  `orca-run-<runId>.scope` of a run adopted from older code): every process still in it is killed.
+ *  A scope that is already gone is fine. Bounded, and never throws: the run is recorded either way. */
 export async function stopRunScope(runId: string, env: Record<string, string | undefined>): Promise<void> {
-  await runCmd(["systemctl", "--user", "stop", `orca-run-${runId}.scope`], { env, allowFail: true, timeoutMs: 10_000 }).catch(() => undefined);
+  await Promise.all([cgroup.runScopeUnit(runId), `orca-run-${runId}`].map((unit) =>
+    runCmd(["systemctl", "--user", "stop", `${unit}.scope`], { env, allowFail: true, timeoutMs: 10_000 }).catch(() => undefined)));
 }
 
 async function finishAdopted(l: lease.Lease, recover: Parameters<typeof adoptLeases>[0]): Promise<void> {

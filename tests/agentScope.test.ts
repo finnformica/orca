@@ -101,6 +101,7 @@ test.skipIf(!linux)("a finished run's scope is stopped, so processes it left in 
   expect((await finished("leftover")).response).toBe("done");
   const c = await calls();
   const unit = c.match(/--unit=(orca-run-\S+)/)![1];
+  expect(unit).toStartWith(`orca-run-${cgroup.scopeOwner()}-`); // the owner: this state dir
   expect(c).toContain(`systemctl --user stop ${unit}.scope`);
   expect(c.indexOf(`systemctl --user stop ${unit}.scope`)).toBeGreaterThan(c.indexOf("-p Result")); // after the OOM read
   process.kill(Number((await readFile(join(dir, "leftover.pid"), "utf8")).trim())); // the fake systemctl kills nothing

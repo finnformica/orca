@@ -18,9 +18,12 @@
 // enabled, so `available()`'s bus-socket check keeps this a no-op there rather than breaking every
 // run. `prlimit` was considered and rejected: it bounds one process's own address space, not a whole
 // process tree (a build's child processes, Chrome's many), so it would not have stopped the incident.
+import { createHash } from "crypto";
 import { existsSync, readFileSync } from "fs";
-import { totalmem, userInfo } from "os";
+import { homedir, totalmem, userInfo } from "os";
+import { join, resolve } from "path";
 import { runCmd } from "./run";
+import { stateDir } from "./state";
 
 export const DEFAULT_MEMORY_MAX_GB = 4;
 export const DEFAULT_CPU_WEIGHT = 50;
@@ -35,6 +38,35 @@ export const DEFAULT_CPU_WEIGHT = 50;
 /** The scopes' slice under the user manager. The dash makes it orca.slice/orca-agents.slice. */
 export const AGENTS_SLICE = "orca-agents.slice";
 export const DEFAULT_OOM_SCORE_ADJ = 500;
+
+// ---- run scope ownership ----
+// 2026-10-23: a test bridge with its own state dir read no leases, so its orphan sweep killed every
+// run scope on the box, the live bridge's workers too (exit 137, no OOM). A run scope's unit name now
+// carries its OWNER: a short hash of the launching bridge's state dir, `orca-run-<owner>-<runId>`.
+// The sweep only stops scopes of its own owner. A scope without an owner (started before the tag)
+// belongs to the default state dir, `~/.orca`.
+
+/** The owner tag of a state dir: 12 hex characters of its resolved path's sha256. Pure. */
+export function scopeOwner(dir: string = stateDir()): string {
+  return createHash("sha256").update(resolve(dir)).digest("hex").slice(0, 12);
+}
+
+/** The owner of a run scope with no tag: the default state dir's. */
+export const defaultScopeOwner = (): string => scopeOwner(join(homedir(), ".orca"));
+
+/** A run's scope unit, without `.scope`. Pure. */
+export function runScopeUnit(runId: string, owner: string = scopeOwner()): string {
+  return `orca-run-${owner}-${runId}`;
+}
+
+const RUN_SCOPE = /\/orca-run-(?:([0-9a-f]{12})-)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.scope(\/|$)/;
+
+/** The run scope a cgroup path is in: its run id and owner (the default owner when untagged). Pure. */
+export function runScopeOf(cgroup: string, defaultOwner: string = defaultScopeOwner()): { runId: string; owner: string } | undefined {
+  const m = cgroup.match(RUN_SCOPE);
+  return m ? { runId: m[2]!, owner: m[1] ?? defaultOwner } : undefined;
+}
+
 /** The agents' slice limit as a share of RAM when `ORCA_AGENTS_SLICE_MAX_GB` is unset. */
 export const AGENTS_SLICE_SHARE = 0.55;
 
