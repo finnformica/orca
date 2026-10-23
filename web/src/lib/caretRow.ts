@@ -34,8 +34,17 @@ export function lineVisualRow(el: HTMLTextAreaElement, lineText: string, offset:
     document.createTextNode(lineText.slice(offset) || "​"),
   );
   document.body.appendChild(mirror);
-  const lineHeight = parseFloat(getComputedStyle(mirror).lineHeight || "") || marker.offsetHeight;
-  const result = lineHeight ? { row: Math.round(marker.offsetTop / lineHeight), rowCount: Math.max(1, Math.round(mirror.scrollHeight / lineHeight)) } : null;
+  const mirrorStyle = getComputedStyle(mirror);
+  const lineHeight = parseFloat(mirrorStyle.lineHeight || "") || marker.offsetHeight;
+  // offsetTop and scrollHeight both count the box's padding. Take it out, or a box with half a line
+  // of top padding (the chat box: 10px over 20px rows) puts the caret on "row 1" of an empty box and
+  // ↑ never recalls a message.
+  const padTop = parseFloat(mirrorStyle.paddingTop || "") || 0;
+  const padBottom = parseFloat(mirrorStyle.paddingBottom || "") || 0;
+  const result = lineHeight ? {
+    row: Math.max(0, Math.round((marker.offsetTop - padTop) / lineHeight)),
+    rowCount: Math.max(1, Math.round((mirror.scrollHeight - padTop - padBottom) / lineHeight)),
+  } : null;
   document.body.removeChild(mirror);
   return result;
 }
