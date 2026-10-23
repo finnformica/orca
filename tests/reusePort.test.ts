@@ -34,8 +34,8 @@ const drain = (p: Bun.Subprocess): { text: () => string } => {
   void (async () => { for (;;) { const { done, value } = await reader.read(); if (done) break; text += dec.decode(value); } })();
   return { text: () => text };
 };
-// Linux shares a port's new connections between SO_REUSEPORT listeners (what autodeploy.sh's pid
-// handshake relies on); macOS hands them all to one listener until it closes. CI is Linux.
+// On Linux a second SO_REUSEPORT listener takes new connections at once (what autodeploy.sh's pid
+// handshake relies on); macOS hands them all to the first listener until it closes. CI is Linux.
 const LINUX = process.platform === "linux";
 
 const pidOf = async (base: string): Promise<number | undefined> => {
