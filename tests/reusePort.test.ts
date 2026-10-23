@@ -29,7 +29,9 @@ function spawnBridge(state: string, port: number, reuse: boolean): Bun.Subproces
 /** Drain a bridge's stderr as it comes (a full pipe would block it), keeping the text. */
 const drain = (p: Bun.Subprocess): { text: () => string } => {
   let text = "";
-  void (async () => { for await (const chunk of p.stderr as ReadableStream<Uint8Array>) text += new TextDecoder().decode(chunk); })();
+  const reader = (p.stderr as ReadableStream<Uint8Array>).getReader();
+  const dec = new TextDecoder();
+  void (async () => { for (;;) { const { done, value } = await reader.read(); if (done) break; text += dec.decode(value); } })();
   return { text: () => text };
 };
 // Linux shares a port's new connections between SO_REUSEPORT listeners (what autodeploy.sh's pid
