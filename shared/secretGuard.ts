@@ -39,8 +39,18 @@ export const KEY_PATTERNS: { kind: string; name: string; re: RegExp }[] = [
  *  single case, or under 32 chars) into a finding — a context rule for the shapes above's gap: a
  *  hex-only or single-case key with no known prefix. Optional quotes and a separator (`=`, `:` or a
  *  space) may sit between the keyword and the token; a bare commit sha or UUID has no such keyword,
- *  so it stays unflagged. */
-const CONTEXT_KEY_RE = /(?<=\b(?:api[_-]?key|key|token|secret|password|passwd|pwd|auth|bearer)\b[ \t]*[:=]?[ \t]*["']?)[A-Za-z0-9_-]{16,}/gi;
+ *  so it stays unflagged. The gap on each side of the separator is capped at 3 characters, so the
+ *  match stays linear in the input length (CodeQL flagged the uncapped version as slow). The value
+ *  must also hold a digit (checked below, not here): without that, prose like "the token
+ *  internationalization" is held too. */
+const CONTEXT_KEY_RE = /(?<=\b(?:api[_-]?key|key|token|secret|password|passwd|pwd|auth|bearer)\b[ \t]{0,3}[:=]?[ \t]{0,3}["']?)[A-Za-z0-9_-]{16,}/gi;
+
+/** True when `text` just before `start` ends with a base64 data URI header (`data:<mime>;base64,`),
+ *  so the payload after it — which reads as high-entropy mixed-case-plus-digit noise, or sits right
+ *  after a word like "key" in a mime type — is never treated as a credential. Pure. */
+function afterDataUriHeader(text: string, start: number): boolean {
+  return /data:[\w.+-]+\/[\w.+-]+;base64,[ \t]{0,3}["']?$/i.test(text.slice(Math.max(0, start - 200), start));
+}
 
 /** Shannon entropy of a string, in bits per character. Pure. */
 export function entropy(s: string): number {
@@ -75,13 +85,15 @@ export function secretFindings(text: string): SecretFinding[] {
   }
   for (const m of text.matchAll(/[A-Za-z0-9+/=_-]{32,}/g)) {
     const start = m.index!, end = start + m[0].length;
-    if (!taken(start, end) && looksRandom(m[0])) out.push({ start, end, value: m[0], kind: "long random string", suggestedName: "secret" });
+    if (!taken(start, end) && !afterDataUriHeader(text, start) && looksRandom(m[0])) out.push({ start, end, value: m[0], kind: "long random string", suggestedName: "secret" });
   }
-  // Last: only a token the fallback above left alone (hex-only, single case, or under 32 chars)
-  // and that sits right after one of the keywords in CONTEXT_KEY_RE.
+  // Last: only a token the fallback above left alone (hex-only, single case, or under 32 chars),
+  // that holds a digit, is not a base64 data URI payload, and sits right after one of the
+  // keywords in CONTEXT_KEY_RE.
   for (const m of text.matchAll(CONTEXT_KEY_RE)) {
     const start = m.index!, end = start + m[0].length;
-    if (!taken(start, end)) out.push({ start, end, value: m[0], kind: "key-like value", suggestedName: "secret" });
+    if (taken(start, end) || !/[0-9]/.test(m[0]) || afterDataUriHeader(text, start)) continue;
+    out.push({ start, end, value: m[0], kind: "key-like value", suggestedName: "secret" });
   }
   return out.sort((a, b) => a.start - b.start);
 }

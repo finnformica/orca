@@ -182,6 +182,24 @@ describe("paste guard heuristics", () => {
     expect(secretFindings(`token ${random}`)).toMatchObject([{ value: random, kind: "long random string" }]);
   });
 
+  test("the keyword rule needs a digit in the value: plain prose is not held", () => {
+    expect(secretFindings("the token internationalization is held")).toEqual([]);
+  });
+
+  test("a base64 data URI payload is not held, by the fallback or the keyword rule", () => {
+    // High entropy, mixed case plus digits: the fallback alone would hold this as a long random string.
+    const payload = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mJk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+    expect(looksRandom(payload)).toBe(true);
+    expect(secretFindings(`data:image/png;base64,${payload}`)).toEqual([]);
+    expect(secretFindings(`key: data:image/png;base64,${payload}`)).toEqual([]);
+  });
+
+  test("the keyword separator caps its spaces at three on each side: far more is not held", () => {
+    const hex32 = "0123456789abcdef0123456789abcdef";
+    expect(secretFindings(`token${" ".repeat(10)}${hex32}`)).toEqual([]); // past the cap on both sides
+    expect(secretFindings(`token   ${hex32}`)).toMatchObject([{ value: hex32 }]); // 3 spaces: still held
+  });
+
   test("a commit sha, a UUID, a path, English prose and a base64 image prefix are not held", () => {
     for (const text of [
       "commit 3f2a9c1d7e5b4a6f8c0d2e4f6a8b0c2d4e6f8a0b", // a sha alone, no keyword
