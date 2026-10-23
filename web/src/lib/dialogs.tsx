@@ -61,6 +61,7 @@ export function execCopy(text: string, doc: Document = document): boolean {
   const active = doc.activeElement instanceof HTMLElement ? doc.activeElement : null;
   const sel = doc.getSelection();
   const ranges = sel ? Array.from({ length: sel.rangeCount }, (_, i) => sel.getRangeAt(i)) : [];
+  // native-input-ok: an unseen textarea for execCommand("copy"), never a control on screen
   const field = doc.createElement("textarea");
   field.value = text;
   field.readOnly = true; // no on-screen keyboard on a phone

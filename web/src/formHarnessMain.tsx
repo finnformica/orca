@@ -6,6 +6,7 @@
 // key and press Enter to show the paste guard).
 import { createRoot } from "react-dom/client";
 import "./styles.css";
+import "./lib/theme"; // applies the OS theme, so `orca-shot --dark` shows the dark card
 import { FormBody } from "@/components/FormCard";
 import { ChatComposer } from "@/components/ChatComposer";
 import { parseFormSpec, splitAnswers, type FormView } from "../../shared/forms";

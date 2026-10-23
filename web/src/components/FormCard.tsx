@@ -8,8 +8,10 @@ import { ClipboardList, Eye, EyeOff, KeyRound, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { DatePicker, DateTimePicker } from "./DateField";
 import { api } from "../api";
 import { answerErrors, type FormAnswers, type FormField, type FormView } from "../../../shared/forms";
 
@@ -148,13 +150,13 @@ function Field({ field: f, value, onChange, onBlur, error }: { field: FormField;
       input = <Textarea {...common} rows={3} className="min-h-16 text-sm" placeholder={f.placeholder} value={str} onChange={(e) => onChange(e.target.value)} maxLength={typeof f.max === "number" ? f.max : undefined} />;
       break;
     case "select":
-      input = (
-        <select {...common} data-slot="form-select" value={str} onChange={(e) => onChange(e.target.value)}
-          className="border-input focus-visible:border-ring focus-visible:ring-ring/40 aria-invalid:border-geist-red bg-card h-8 w-full rounded-md border px-2 text-base outline-none focus-visible:ring-2 md:text-sm">
-          <option value="">{f.placeholder ?? "Choose…"}</option>
-          {f.options?.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-        </select>
-      );
+      input = <FieldSelect common={common} field={f} value={str} onChange={onChange} />;
+      break;
+    case "date":
+      input = <DatePicker common={common} value={str} onChange={onChange} min={f.min} max={f.max} required={f.required} placeholder={f.placeholder} />;
+      break;
+    case "datetime":
+      input = <DateTimePicker common={common} value={str} onChange={onChange} min={f.min} max={f.max} required={f.required} />;
       break;
     case "multiselect": {
       const chosen = Array.isArray(value) ? (value as string[]) : [];
@@ -185,9 +187,11 @@ function Field({ field: f, value, onChange, onBlur, error }: { field: FormField;
       input = <SecretInput common={common} placeholder={f.placeholder} value={str} onChange={onChange} />;
       break;
     default: {
-      const type = f.type === "datetime" ? "datetime-local" : f.type === "text" ? "text" : f.type;
-      const bounds = f.type === "number" || f.type === "date" || f.type === "datetime" ? { min: f.min, max: f.max } : { maxLength: typeof f.max === "number" ? f.max : undefined };
-      input = <Input {...common} type={type} inputMode={f.type === "number" ? "decimal" : undefined} placeholder={f.placeholder} value={str} onChange={(e) => onChange(e.target.value)} {...bounds} />;
+      const type = f.type === "text" ? "text" : f.type;
+      const bounds = f.type === "number" ? { min: f.min, max: f.max } : { maxLength: typeof f.max === "number" ? f.max : undefined };
+      // A number keeps its arrow keys but not the browser's spinner, which clashes with the Input.
+      input = <Input {...common} type={type} inputMode={f.type === "number" ? "decimal" : undefined} placeholder={f.placeholder} value={str} onChange={(e) => onChange(e.target.value)} {...bounds}
+        className={f.type === "number" ? "[appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none" : undefined} />;
     }
   }
   return (
@@ -224,3 +228,26 @@ function SecretInput({ common, placeholder, value, onChange }: { common: Record<
   );
 }
 
+
+/** The value of the "no choice" item: Radix gives an item no empty value, so an optional select clears
+ *  through this one. Never a form answer: it maps back to "". */
+const NO_CHOICE = "__orca_no_choice__";
+
+/** A select field: shadcn's Select. Its trigger takes the field's id (the label's htmlFor), name and
+ *  ARIA. Its close counts as the field's blur, so the "required" error waits for a choice. */
+function FieldSelect({ common, field: f, value, onChange }: { common: Record<string, unknown> & { onBlur: () => void }; field: FormField; value: string; onChange: (v: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const { onBlur, ...trigger } = common;
+  return (
+    <Select value={value} onValueChange={(v) => onChange(v === NO_CHOICE ? "" : v)} open={open} onOpenChange={(o) => { setOpen(o); if (!o) onBlur(); }}>
+      <SelectTrigger {...trigger} data-slot="form-select" data-value={value} onBlur={() => { if (!open) onBlur(); }}
+        className="aria-invalid:border-geist-red data-[placeholder]:text-muted-foreground w-full text-base md:text-sm">
+        <SelectValue placeholder={f.placeholder ?? "Choose…"} />
+      </SelectTrigger>
+      <SelectContent className="min-w-(--radix-select-trigger-width)">
+        {!f.required && value && <SelectItem value={NO_CHOICE} className="text-muted-foreground">None</SelectItem>}
+        {f.options?.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+      </SelectContent>
+    </Select>
+  );
+}

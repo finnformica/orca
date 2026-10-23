@@ -515,6 +515,7 @@ export function ChatComposer({
         ) : textarea}
         <div data-slot="chat-composer-toolbar" className={cn("flex min-w-0 items-center gap-1", quick ? "px-2 pt-1 pb-2" : "p-2 pt-0")}>
           {leading && <div data-slot="chat-composer-leading" className="min-w-0 flex-1 overflow-hidden">{leading}</div>}
+          {/* native-input-ok: hidden file input; the attach Button opens it */}
           <input ref={fileRef} type="file" multiple hidden onChange={(e) => { addImages(e.target.files ?? []); e.target.value = ""; }} />
           <div data-slot="chat-composer-actions" className="ml-auto flex shrink-0 items-center gap-1">
             {onCancel && <Button type="button" size="sm" variant="ghost" onClick={cancel}>Cancel</Button>}
