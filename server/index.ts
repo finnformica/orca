@@ -111,7 +111,14 @@ async function resolvePrDescription(
 process.on("unhandledRejection", (e) => console.error("orca: unhandled rejection", e instanceof Error ? e.message : e));
 process.on("uncaughtException", (e) => console.error("orca: uncaught exception", e instanceof Error ? e.stack ?? e.message : e));
 const PREVIEW_BRIDGE = db.previewBridge();
-if (!PREVIEW_BRIDGE && !(await portFree(API_PORT)) && reclaimBridgePort(API_PORT)) {
+// ORCA_REUSE_PORT=1 (the box's .env, deploy/bootstrap.sh): SO_REUSEPORT, so a deploy's NEW bridge
+// listens BESIDE the old one on the same port and the old is stopped only once the new answers
+// (deploy/autodeploy.sh reads `bridge.pid` off /api/config) — no second with nothing on 8787. Off by
+// default: on a laptop a second bridge on the port should fail loudly, not share it.
+const REUSE_PORT = process.env.ORCA_REUSE_PORT === "1";
+// With it, the bridge on the port is the old slot that must keep serving until this one answers: never
+// reclaim the port from it.
+if (!PREVIEW_BRIDGE && !REUSE_PORT && !(await portFree(API_PORT)) && reclaimBridgePort(API_PORT)) {
   console.log(`orca: reclaimed :${API_PORT} from a stale bridge`);
   await waitForPortFree(API_PORT);
 }
@@ -1703,11 +1710,6 @@ async function serveStatic(url: URL): Promise<Response> {
 // instance must reach binds loopback (its own UI, the Vite proxy) AND its tailnet address. Never
 // 0.0.0.0, or the same process is also served to whatever café wifi the machine is on.
 const BIND = (process.env.ORCA_BIND || "127.0.0.1").split(",").map((h) => h.trim()).filter(Boolean);
-// ORCA_REUSE_PORT=1 (the box's .env, deploy/bootstrap.sh): SO_REUSEPORT, so a deploy's NEW bridge
-// listens BESIDE the old one on the same port and the old is stopped only once the new answers
-// (deploy/autodeploy.sh reads `bridge.pid` off /api/config) — no second with nothing on 8787. Off by
-// default: on a laptop a second bridge on the port should fail loudly, not share it.
-const REUSE_PORT = process.env.ORCA_REUSE_PORT === "1";
 for (const hostname of BIND) Bun.serve<terminal.TerminalData>({
   port: API_PORT,
   hostname,
