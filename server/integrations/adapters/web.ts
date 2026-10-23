@@ -10,8 +10,9 @@ import type { NotificationInput } from "../../../shared/notifications";
 export const WEB_CAPS: Capabilities = { inbound: "none", outbound: true, threads: false, edits: false, reactions: false, attachments: false, maxTextLength: 10_000 };
 
 /** The notification an event shows as in the web. */
-export function webNotification(e: Pick<Envelope, "key" | "topic" | "scope" | "title" | "text" | "actor" | "link" | "source">): NotificationInput {
+export function webNotification(e: Pick<Envelope, "key" | "topic" | "scope" | "title" | "text" | "actor" | "link" | "source" | "display">): NotificationInput {
   const sender = e.actor?.external.name ?? e.actor?.external.id;
+  const place = e.display?.place;
   return {
     key: e.key,
     kind: e.topic === "orca.integration.failed" ? "integration_failed"
@@ -19,7 +20,7 @@ export function webNotification(e: Pick<Envelope, "key" | "topic" | "scope" | "t
       : e.topic === "orca.question" ? "needs_input"
       : "external_message",
     repo: e.scope?.repo ?? "", ...(e.scope?.branch ? { branch: e.scope.branch } : {}),
-    title: e.title ?? (sender ? `${sender} via ${e.source.adapter}` : e.source.adapter),
+    title: e.title ?? (sender ? `${sender} via ${e.source.adapter}${place ? ` · ${place}` : ""}` : e.source.adapter),
     body: e.text.replace(/\s+/g, " ").trim().slice(0, 140),
     ...(e.link ? { link: e.link } : e.topic === "orca.question" ? { link: { orchestrator: true } } : {}),
   };

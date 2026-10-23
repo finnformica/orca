@@ -2,9 +2,10 @@
 // gate the sender against its link (§3.7), then `publish`. `publish` is everyone's: record the event
 // once by its key and plan its deliveries in the same transaction, then kick the dispatcher.
 import { randomUUID } from "crypto";
-import { CATCH_ALL, CATCH_ALL_SEND_ERROR, effectiveGrant, sendsToCatchAll, INBOUND_LIMIT, paceWait, pairingCode, pairingReply, planDeliveries, postsAsUser, replyToOf, PAIRING_CODE_LENGTH, type ConversationRef, type Envelope, type Grant, type InboundEnvelope, type PlannedDelivery, type ReplyTo } from "../../shared/integrations";
+import { CATCH_ALL, CATCH_ALL_SEND_ERROR, effectiveGrant, sendsToCatchAll, INBOUND_LIMIT, paceWait, planDeliveries, replyToOf, type ConversationRef, type Envelope, type Grant, type InboundEnvelope, type PlannedDelivery, type ReplyTo } from "../../shared/integrations";
 import { replyRefusal } from "../../shared/inbox";
 import * as store from "./store";
+import type { IngestVerdict } from "./adapter";
 
 /** Orca's own id: time-ordered, so `ORDER BY id` is arrival order. */
 export const newEventId = (now = Date.now()): string => `${now.toString(36).padStart(9, "0")}-${randomUUID().slice(0, 12)}`;
@@ -30,7 +31,9 @@ export async function publish(input: InboundEnvelope & { grant?: Grant }, now = 
   ]);
   const kinds = new Map(conns.map((c) => [c.id, c.kind]));
   const links = new Map(allLinks.map((l) => [l.id, { integrationId: l.integrationId, adapter: kinds.get(l.integrationId) ?? "?", externalId: l.externalId }]));
-  const planned = [...planDeliveries(e, subs, links, threads, inbound), ...extra];
+  const plan = planDeliveries(e, subs, links, threads, inbound);
+  // The web shows an event once: an explicit web target beside a subscription's is the same row.
+  const planned = [...plan, ...extra.filter((d) => d.target.kind !== "web" || !plan.some((p) => p.target.kind === "web"))];
   const r = await store.recordEvent(e, planned, now);
   if (r.status === "new" && r.deliveries.length) kick();
   return { ...r, id: e.id };
@@ -95,7 +98,7 @@ const recent = new Map<string, number[]>();
 export const resetPace = (): void => recent.clear();
 
 /** The core's half of `ctx.ingest`. */
-export async function ingest(integrationId: string, e: InboundEnvelope, now = Date.now()): Promise<"new" | "duplicate" | "rejected"> {
+export async function ingest(integrationId: string, e: InboundEnvelope, now = Date.now()): Promise<IngestVerdict> {
   // Dedupe first, so a platform retry of an accepted event is "duplicate", never a second pace hit.
   if (await store.event(e.key)) return "duplicate";
   // A link for the exact place, else for a wider place that holds it (`source.parents`), else the
@@ -108,26 +111,28 @@ export async function ingest(integrationId: string, e: InboundEnvelope, now = Da
   const times = recent.get(who) ?? [];
   if (paceWait(times, now, INBOUND_LIMIT.count, INBOUND_LIMIT.windowMs) > 0) return "rejected";
   recent.set(who, [...times.filter((t) => now - t < INBOUND_LIMIT.windowMs), now]);
-  // A person is gated on who they are (an unknown sender gets nothing until paired); a sender with no
-  // person behind it (a webhook, a poller) is authenticated by its integration and takes the link's level.
+  // A link's switches (both on by default): Notify me shows the message to you, Notify agent lets
+  // it wake an agent. Both off: nothing is recorded.
+  const notify = { me: link.notifyMe !== false, agent: link.notifyAgent !== false };
+  if (!notify.me && !notify.agent) return "rejected";
+  // A person keeps the grant of who they are; an unknown sender (no principal) gets `notify`: a
+  // READ-ONLY wake (no verb, no reply) and a notification. No pairing code: People is the manual way.
+  // A sender with no person behind it (a webhook, a poller) is authenticated by its integration and
+  // takes the link's level.
   const principal = e.actor ? await store.principalFor(e.actor.external.adapter, e.actor.external.id) : undefined;
-  if (e.actor && !principal) {
-    // `pairing: "off"` (a mention catch-all, say): drop them silently — no code, no bell row, no reply.
-    if (link.level !== "notify" && link.pairing !== "off") await requestPairing(integrationId, link.id, e, now);
-    return "rejected";
-  }
   const grant: Grant = e.actor ? effectiveGrant(link, principal) : { level: link.level, repos: link.repos, linkId: link.id };
-  // A notify link takes nothing in — except, when its integration says so (`config.machineEventsOnNotify`),
-  // a machine event (no person: a poller, a webhook). That event is recorded and fans out to its
-  // subscriptions (the web, other links) with the grant "notify", so no agent acts on it.
-  if (grant.level === "notify" && (e.actor || !(await machineEventsOnNotify(integrationId)))) return "rejected";
+  // A notify link takes no machine event in — except, when its integration says so
+  // (`config.machineEventsOnNotify`): recorded and fanned out to its subscriptions with the grant
+  // "notify", so no agent acts on it (shared/integrations.ts agentMay).
+  if (grant.level === "notify" && !e.actor && !(await machineEventsOnNotify(integrationId))) return "rejected";
   const principalId = grant.principalId;
   const r = await publish({
     ...e, source: { ...e.source, integrationId, linkId: link.id },
     ...(e.actor && principalId ? { actor: { ...e.actor, principalId } } : {}),
-    grant,
-  }, now);
-  return r.status;
+    grant, notify,
+  }, now, notify.me ? [{ subscriptionId: null, target: { kind: "web" } }] : []);
+  // No agent will answer it (read-only, or Notify agent off): the adapter opens no thread for it.
+  return r.status === "new" && (grant.level === "notify" || !notify.agent) ? "noted" : r.status;
 }
 
 /** The integration's switch for machine events on a notify link. Off unless set to exactly `true`. */
@@ -138,31 +143,4 @@ async function machineEventsOnNotify(integrationId: string): Promise<boolean> {
 async function firstLink(integrationId: string, places: string[]): Promise<store.Link | undefined> {
   for (const p of places) { const l = await store.linkFor(integrationId, p); if (l) return l; }
   return undefined;
-}
-
-/** An unknown sender on a linked place: their pending code, or a new one. A NEW code is sent back to
- *  them on the same place (a durable delivery, so a send failure retries; never where Orca posts as
- *  you, `postsAsUser`) and shown in the bell. The
- *  message itself is dropped: they send it again once you approve (POST /api/integrations/pairing/approve). */
-async function requestPairing(integrationId: string, linkId: string, e: InboundEnvelope, now: number): Promise<void> {
-  const who = e.actor!.external;
-  const { pairing, fresh } = await store.pairingFor(
-    { integrationId, adapter: who.adapter, externalId: who.id, name: who.name, linkId },
-    () => pairingCode(crypto.getRandomValues(new Uint8Array(PAIRING_CODE_LENGTH))), now);
-  if (!fresh) return;
-  const name = who.name ?? who.id;
-  const source = { adapter: "orca", integrationId, linkId };
-  // Slack posts as you: no automatic reply in your name. The code is in the bell only.
-  const silent = postsAsUser(e.source.adapter);
-  if (!silent) await publish({
-    key: `pairing:${pairing.code}:reply`, topic: "orca.message", at: now, source, text: pairingReply(pairing.code),
-    ...(e.thread ? { thread: e.thread } : {}),
-  }, now, [{ subscriptionId: null, target: {
-    kind: "link", integrationId, adapter: e.source.adapter, linkId,
-    externalId: e.source.channel ?? (await store.link(linkId))?.externalId ?? "", ...(e.thread ? { threadId: e.thread.externalId } : {}),
-  } }]);
-  await publish({
-    key: `pairing:${pairing.code}`, topic: "orca.pairing.requested", at: now, source, actor: e.actor,
-    title: `Pairing request from ${name}`, text: `${name} (${who.adapter}:${who.id}) wants to talk to Orca. Approve code ${pairing.code} to pair.${silent ? " Orca posts there as you, so it did not send them the code: ask them to send the message again once you approve." : ""}`,
-  }, now, [{ subscriptionId: null, target: { kind: "web" } }]);
 }

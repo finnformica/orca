@@ -13,7 +13,7 @@ import * as store from "../server/integrations/store";
 import { context } from "../server/integrations/registry";
 import { discordAdapter, gateway, type WebSocketLike } from "../server/integrations/adapters/discord";
 import type { Connection } from "../server/integrations/adapter";
-import { CATCH_ALL_POST_ERROR, CATCH_ALL_SEND_ERROR, pairingReply, replyToOf } from "../shared/integrations";
+import { CATCH_ALL_POST_ERROR, CATCH_ALL_SEND_ERROR, replyToOf } from "../shared/integrations";
 import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO } from "../web/src/workstream";
 import type { OrcaConfig } from "../server/config";
 import { native } from "./happydom";
@@ -130,16 +130,16 @@ for (const threads of [true, false]) describe(`Discord on the integrations core 
   const onTest = threads ? test : test.skip;
   const offTest = threads ? test.skip : test;
 
-  onTest("an unknown sender's mention gets the pairing code in the thread of that message", async () => {
+  onTest("an unknown sender's mention is a read-only message: recorded, no code, no thread, nothing posted", async () => {
     FakeSocket.last!.push(msg("M10", "U-new", "<@BOT> can you fix the footer?"));
     await settle();
-    const [pairing] = await store.pendingPairings();
-    expect(pairing).toMatchObject({ adapter: "discord", externalId: "U-new", linkId: "L1" });
-    // The gate rejected the message, so ingest opened no thread; the reply's send opens it.
+    expect(await store.pendingPairings()).toEqual([]);
+    expect((await store.event("discord:M10"))?.grant).toMatchObject({ level: "notify", linkId: "L1" });
+    // No agent answers it ("noted"), so ingest opened no thread for it.
     expect(discord.channels.has("M10")).toBe(false);
     await dispatcher.dispatchOnce();
-    expect(discord.channels.get("M10")).toMatchObject({ parent: "C1", posts: [pairingReply(pairing!.code)] });
-    expect(discord.channels.get("C1")!.posts).toEqual([]); // nothing in the channel itself
+    expect(discord.channels.get("C1")!.posts).toEqual([]);
+    expect(discord.calls.some((c) => c.endsWith("/threads"))).toBe(false);
   });
 
   onTest("a paired person's mention opens its thread, and orca post with that thread id lands in it", async () => {
@@ -166,12 +166,12 @@ for (const threads of [true, false]) describe(`Discord on the integrations core 
     ]);
   });
 
-  offTest("an unknown sender's mention gets the pairing code as a reply to that message, in the channel", async () => {
+  offTest("an unknown sender's mention is a read-only message: no code, nothing posted in the channel", async () => {
     FakeSocket.last!.push(msg("M10", "U-new", "<@BOT> can you fix the footer?"));
     await settle();
-    const [pairing] = await store.pendingPairings();
+    expect(await store.pendingPairings()).toEqual([]);
     await dispatcher.dispatchOnce();
-    expect(discord.channels.get("C1")).toMatchObject({ posts: [pairingReply(pairing!.code)], replyTo: ["M10"] });
+    expect(discord.channels.get("C1")?.posts ?? []).toEqual([]);
     expect(discord.channels.has("M10")).toBe(false);
     expect(discord.calls.some((c) => c.endsWith("/threads"))).toBe(false);
   });

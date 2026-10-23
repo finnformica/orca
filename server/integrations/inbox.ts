@@ -6,7 +6,7 @@ import * as orchestrator from "../orchestrator";
 import * as verbs from "../verbs";
 import type { OrcaConfig } from "../config";
 import * as store from "./store";
-import { fenceExternal, integrationMetaLine, integrationPlace, integrationUrl, replyToOf, type Envelope, type SendResult } from "../../shared/integrations";
+import { agentMay, fenceExternal, integrationMetaLine, integrationPlace, integrationUrl, replyToOf, type Envelope, type SendResult } from "../../shared/integrations";
 
 /** The text an event becomes for an agent: an outside sender's fenced as data, Orca's own as is. */
 export const agentText = (e: Envelope): string => (e.grant ? fenceExternal(e) : e.title ? `${e.title}: ${e.text}` : e.text);
@@ -27,9 +27,12 @@ export async function withSource(e: Envelope): Promise<string> {
  *  report: management by exception, batched like the rest. */
 export async function toOrchestrator(cfg: OrcaConfig, e: Envelope): Promise<SendResult> {
   if (e.grant) {
-    if (e.grant.level === "notify") return { ok: false, retryable: false, error: "notify links send nothing inbound" };
-    const replyTo = replyToOf(e);
-    await orchestrator.message(cfg, await withSource(e), e.attachments ?? [], { grant: e.grant, person: Boolean(e.actor ?? e.display?.sender), ...(replyTo ? { replyTo } : {}) });
+    if (!agentMay(e)) return { ok: false, retryable: false, error: "this message may not wake an agent (notify agent is off, or a machine event under notify)" };
+    // A `notify` grant is READ-ONLY: the wake may only tell you about it. No reply target (it may not
+    // answer as you), and it does not reset the wake count (a stranger cannot keep it awake).
+    const readOnly = e.grant.level === "notify";
+    const replyTo = readOnly ? undefined : replyToOf(e);
+    await orchestrator.message(cfg, await withSource(e), e.attachments ?? [], { grant: e.grant, person: !readOnly && Boolean(e.actor ?? e.display?.sender), ...(replyTo ? { replyTo } : {}) });
   } else {
     await orchestrator.deliverReport(cfg, agentText(e));
   }

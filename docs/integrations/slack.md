@@ -12,7 +12,7 @@ the permission checks. See [ADAPTERS.md](ADAPTERS.md).
   - a reply in a thread where Orca already talks (a mention came there, or Orca posted there).
 - **Out.** Orca posts only when the orchestrator tells it to: `orca post --reply`, `orca post
   --link …`, or `orca slack post`. Nothing posts by itself. There are no automatic replies and no
-  read receipts. An unknown sender gets no pairing code in Slack (section 6).
+  read receipts. An unknown sender's message is read-only (section 6).
 - **Read.** The orchestrator reads history and searches messages with `orca slack` (section 7).
 
 Your own messages never reach Orca. A post that Orca makes as you does not come back in.
@@ -138,9 +138,10 @@ If the card shows an error, these are the usual causes:
 
 - **Key:** `slack:<team>:<channel>:<ts>`. A message that Orca reads two times has one key, so the
   core records one event.
-- **Pairing:** an unknown sender gets a pairing code in the bell only. Orca does not send them the
-  code, because a post on Slack is in your name. Approve the code, then ask them to send the
-  message again.
+- **Unknown senders:** a message from a person who is not paired is read-only. It shows in the
+  bell, the Inbox and the chat (Notify me). It wakes the orchestrator to tell you about it (Notify
+  agent). The orchestrator does not act on it and does not reply in your name. Add the sender as
+  a person to give them a grant.
 
 ## 6a. How the poll works
 

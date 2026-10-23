@@ -3989,6 +3989,27 @@ export function chatItems<T extends Sourced>(turns: T[], keepOut?: T): ChatItem<
   return out;
 }
 
+/** A chat item, or a notice: an unknown sender's message shown read-only (shared/inbox.ts Notice). */
+export type ChatEntry<T, N> = ChatItem<T> | { kind: "notice"; notice: N };
+
+/** The chat's items with the notices placed between them by time, oldest first. Only notices in
+ *  [from, to) go in: the time span of the mounted window, so a notice never sits beside turns it is
+ *  not between. An item's time is its first turn's start; one with none keeps its place. Pure. */
+export function withNotices<T extends { startedAt?: number }, N extends { id: string; at: number }>(
+  items: ChatItem<T>[], notices: readonly N[], from = -Infinity, to = Infinity,
+): ChatEntry<T, N>[] {
+  const queue = notices.filter((n) => n.at >= from && n.at < to).sort((a, b) => a.at - b.at || (a.id < b.id ? -1 : 1));
+  const out: ChatEntry<T, N>[] = [];
+  let i = 0;
+  for (const item of items) {
+    const at = (item.kind === "agents" ? item.turns[0] : item.turn)?.startedAt;
+    if (at !== undefined) while (i < queue.length && queue[i]!.at < at) out.push({ kind: "notice", notice: queue[i++]! });
+    out.push(item);
+  }
+  while (i < queue.length) out.push({ kind: "notice", notice: queue[i++]! });
+  return out;
+}
+
 /** The two messages a chat never clamps or folds: your newest message (the newest turn you spoke in)
  *  and the newest answer (the newest finished turn). Older ones keep their clamp. */
 export function newestMessages<T extends Sourced>(turns: T[]): { said?: T; answer?: T } {

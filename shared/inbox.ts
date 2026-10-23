@@ -74,6 +74,11 @@ export type InboxRow = {
   kind: "message" | "question" | "event";
   adapter: string; integrationId?: string; linkId?: string;
   sender?: Sender;
+  /** Where it was said, for a person: DM, Group DM, #channel (the adapter's `display.place`). */
+  place?: string;
+  /** A person's message under a `notify` grant (an unknown sender): an agent may read it and tell
+   *  you, never act on it or reply. */
+  readOnly?: boolean;
   title?: string; text: string; url?: string;
   /** conversationParam; empty for a row that is not part of a conversation (it has `open`). */
   conversation: string;
@@ -147,7 +152,8 @@ export function workstreamOf(e: Pick<Envelope, "thread" | "scope">, links: reado
 
 /** The inbox rows, newest first, from the core's event, delivery and thread_link rows. */
 export function inboxRows(events: readonly Envelope[], outbound: readonly OutboundRecord[], links: readonly ThreadLinkRecord[], principals: ReadonlyMap<string, string>, state: InboxState = NO_STATE): InboxRow[] {
-  return events.filter((e) => isInboxTopic(e.topic)).map((e) => {
+  // A message whose link has Notify me off is not shown to you (`envelope.notify`).
+  return events.filter((e) => isInboxTopic(e.topic) && e.notify?.me !== false).map((e) => {
     const conv = inboundConversation(e);
     const kind = inboxKind(e.topic);
     let reply: OutboundRecord | undefined;
@@ -162,6 +168,8 @@ export function inboxRows(events: readonly Envelope[], outbound: readonly Outbou
       ...(e.source.integrationId ? { integrationId: e.source.integrationId } : {}),
       ...(e.source.linkId ? { linkId: e.source.linkId } : {}),
       ...(sender ? { sender } : {}),
+      ...(e.display?.place ? { place: e.display.place } : {}),
+      ...(isReadOnly(e) ? { readOnly: true } : {}),
       ...(e.title ? { title: e.title } : {}),
       text: clip(e.text, INBOX_TEXT_MAX),
       ...(e.link?.url ? { url: e.link.url } : {}),
@@ -174,6 +182,35 @@ export function inboxRows(events: readonly Envelope[], outbound: readonly Outbou
       canLink: kind !== "question" && !conv.id.startsWith(OWN_EVENT) && !links.some((l) => l.adapter === conv.adapter && l.externalThreadId === conv.id),
     };
   }).sort((a, b) => b.at - a.at || (a.id < b.id ? 1 : -1));
+}
+
+/** A person's message under a `notify` grant: an unknown sender's (server/integrations/router.ts).
+ *  An agent may read it and tell you; it may not act on it or reply (shared/integrations.ts GRANT_ALLOWS). */
+export const isReadOnly = (e: Pick<Envelope, "topic" | "actor" | "grant">): boolean =>
+  inboxKind(e.topic) === "message" && !!e.actor && e.grant?.level === "notify";
+
+/** A message shown to you that no agent took (GET /api/inbox/notices picks them: Notify me on, no
+ *  orchestrator or workstream delivery), as the orchestrator's chat shows it between the turns, read-only.
+ *  `sender.externalId` is set for a person (`personId` once paired); `conversation` is the stable
+ *  conversationParam of its thread or place, so a later "tell me when they answer" can key on it. */
+export type Notice = {
+  id: string; at: number; adapter: string; text: string;
+  sender: { name: string; adapter: string; externalId?: string; personId?: string };
+  place?: string; url?: string; conversation: string; read: boolean;
+};
+
+export function noticeOf(e: Envelope, read = false, principals: ReadonlyMap<string, string> = new Map()): Notice | undefined {
+  if (inboxKind(e.topic) !== "message") return undefined;
+  const who = senderOf(e, principals);
+  return {
+    id: e.id, at: e.at, adapter: e.source.adapter, text: e.text,
+    sender: {
+      name: who?.name ?? e.source.adapter, adapter: e.actor?.external.adapter ?? e.source.adapter,
+      ...(who?.externalId ? { externalId: who.externalId } : {}), ...(who?.principalId ? { personId: who.principalId } : {}),
+    },
+    ...(e.display?.place ? { place: e.display.place } : {}), ...(e.link?.url ? { url: e.link.url } : {}),
+    conversation: conversationParam(inboundConversation(e)), read,
+  };
 }
 
 /** A row id for an Orca notification. Event ids never start with it. */
