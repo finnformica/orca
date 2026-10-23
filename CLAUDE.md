@@ -694,7 +694,12 @@ space/bracket lists the board's polled PRs; a pick inserts `#123`, or `repo#123`
 markdown list line (`- `, `* `, `1. `, `- [ ] `) starts the next item with the same marker and
 indent, and Enter on an empty item removes the marker (`listContinuation`); there it does not send,
 but ⌘/Ctrl+Enter does. It opened on `#`
-until Finn asked for `@`; `#` now opens nothing. It is NOT a live shell — it renders the turns Orca already records, so nothing tmux is
+until Finn asked for `@`; `#` now opens nothing. A `/` that opens a line opens the **`/` command menu**
+(`slashTrigger`; never mid-sentence or in a path): the registry is `SLASH_COMMANDS` in `workstream.ts`
+(name, description, where it applies) plus `components/SlashCommands.tsx` (icon, action) — compact,
+stop, clear-queue, model, attach, secret, and for a worker chat preview, merge (confirmed) and
+rename. A command that does not apply is hidden; none sends a message; `/secret`'s value stays in its
+dialog and the request body. It is NOT a live shell — it renders the turns Orca already records, so nothing tmux is
 involved. Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every
 board action uses. A turn written at launch but not yet finished renders as `▋ working…` (that's how
 an interrupted run stays visible); a turn with a parsed outcome renders its sections. A Claude run's
