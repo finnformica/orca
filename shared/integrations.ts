@@ -35,9 +35,15 @@ export type ConversationRef = { adapter: string; externalId: string; messageId?:
  *  `admin` is for a trusted person: every verb on the link's repos, plus move, sweep and repo add. */
 export type Level = "notify" | "ask" | "work" | "admin" | "full";
 
-/** What a link does with an unknown sender: `request` gives them a pairing code (the bell shows it),
- *  `off` drops their message silently — no code, no bell row, no reply. Absent means `request`. */
-export type LinkPairing = "request" | "off";
+/** What a link does with an unknown sender (no person behind them): `request` gives them a pairing
+ *  code (the bell shows it) and drops the message; `notify` records the message and shows it to you
+ *  as a read-only notification (the chat, the Inbox, the bell) — no code, no agent run, no reply.
+ *  Absent means `request`. (`off`, which dropped it silently, became `notify`: named step
+ *  20261023-link-pairing-notify.) */
+export type LinkPairing = "request" | "notify";
+export const LINK_PAIRINGS: readonly LinkPairing[] = ["request", "notify"];
+/** The Settings names of the two values. */
+export const PAIRING_LABEL: Record<LinkPairing, string> = { request: "Pairing request", notify: "Notify me" };
 export const LEVELS: readonly Level[] = ["notify", "ask", "work", "admin", "full"];
 /** The levels a link or a person can hold: every one but `full`, which is only you. */
 export type LinkLevel = Exclude<Level, "full">;
@@ -73,9 +79,9 @@ export type Envelope = {
   link?: { url?: string; pr?: number; orchestrator?: boolean };
   /** A chat message that @-mentions Orca. `false` on a link with require_mention is dropped. */
   mentioned?: boolean;
-  /** How a person sees a message with no `actor` (a poller reads names but gates on the link, not on
-   *  a person): the sender's name and a place narrower than the link (Linear: the issue's key and
-   *  title). Display only — the gate never reads it. */
+  /** How a person sees a message: the sender's name when there is no `actor` (a poller reads names
+   *  but gates on the link, not on a person), and a place narrower than the link (Linear: the issue's
+   *  key and title; Slack: DM, Group DM or #channel). Display only — the gate never reads it. */
   display?: { sender?: string; place?: string };
   grant?: Grant; // set by the gate on ingest; never by an adapter
   /** `orca post --thread`: open a thread for this post where the place allows one (Discord: on the

@@ -16,10 +16,13 @@ import remarkBreaks from "remark-breaks";
 import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, refresh, setCardModel, type Row } from "../store";
-import { RECENT_FULL, TAIL_WINDOW, reportShots, turnHandoffs, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, longMessage, newestMessages, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, formatDuration, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, undeliveredQueued, composerHistory, integrationPreview, integrationState, anchorShift, eagerFrom, estimateItemHeight } from "../workstream";
+import { RECENT_FULL, TAIL_WINDOW, reportShots, turnHandoffs, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, longMessage, newestMessages, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, formatDuration, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, undeliveredQueued, composerHistory, integrationPreview, integrationState, anchorShift, eagerFrom, estimateItemHeight, withNotices } from "../workstream";
 import { HandoffWidget } from "./Handoffs";
 import { integrationMessage, shownPlace, type IntegrationMessage } from "../../../shared/integrations";
 import { useCatchAllLabels } from "@/lib/catchAllLabels";
+import { useNotifications } from "@/lib/notificationStore";
+import { AddToPersonButton } from "@/components/SenderPerson";
+import type { Notice } from "../../../shared/inbox";
 import { BrandIcon, brandTitle } from "@/components/BrandIcon";
 import { activityCounts, closeOpenMarkdown, createHold, runLabel, stepDuration, stepInFlight, stepKey, stepRow, stepRuns, toolDetail, toolLabel, workedLabel, workSteps, type StepStatus } from "../steps";
 import { agentLabel, groupSteps, outcomeLead, withoutFinalEcho } from "../../../shared/agent";
@@ -777,7 +780,9 @@ const STATE_TONE = { answered: "text-geist-green", "in progress": "text-geist-bl
 
 /** The collapsed line of an outside message: logo, sender, place, one line of what they wrote, the
  *  time and the state. The same tinted card as worker traffic, with the service's logo for the ⚙. */
-function IntegrationHead({ m, more, time, state }: { m: IntegrationMessage; more: number; time: string; state: keyof typeof STATE_TONE | "queued" }) {
+type CardState = keyof typeof STATE_TONE | "queued" | "notified";
+
+function IntegrationHead({ m, more, time, state }: { m: IntegrationMessage; more: number; time: string; state: CardState }) {
   const place = shownPlace(m.place, useCatchAllLabels());
   return (
     <>
@@ -786,7 +791,7 @@ function IntegrationHead({ m, more, time, state }: { m: IntegrationMessage; more
       {place && <span className="shrink-0" data-slot="integration-place">{place}</span>}
       <span className="min-w-0 flex-1 truncate" data-slot="integration-preview"><InlineMarkdown>{integrationPreview(m.text)}</InlineMarkdown>{more > 0 ? ` · +${more} more` : ""}</span>
       {time && <span className="shrink-0 text-[11px]">{time}</span>}
-      <span data-slot="integration-state" className={cn("flex shrink-0 items-center gap-1 text-[11px]", state === "queued" ? "" : STATE_TONE[state])}>
+      <span data-slot="integration-state" className={cn("flex shrink-0 items-center gap-1 text-[11px]", state === "queued" || state === "notified" ? "" : STATE_TONE[state])}>
         {state === "in progress" && <Loader2 className="size-3 animate-spin" />}{state}
       </span>
     </>
@@ -797,7 +802,7 @@ function IntegrationHead({ m, more, time, state }: { m: IntegrationMessage; more
  *  opens in place. A delivered message's wake (IntegrationBlock) and a queued one (Queued, `pending`:
  *  faded) are the same card, so it looks the same before and after it runs. */
 function IntegrationCard({ slot, messages, time, state, pending, children }: {
-  slot: string; messages: IntegrationMessage[]; time: string; state: keyof typeof STATE_TONE | "queued"; pending?: boolean; children: ReactNode;
+  slot: string; messages: IntegrationMessage[]; time: string; state: CardState; pending?: boolean; children: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -847,6 +852,32 @@ const IntegrationBlock = memo(function IntegrationBlock({ turn, messages, loadSt
     </IntegrationCard>
   );
 });
+
+/** An unknown sender's message a `notify` pairing link recorded (shared/inbox.ts Notice): the same
+ *  card as an outside message's wake, state "notified", read-only — no agent ran and no reply went
+ *  out. Open, it shows the message with its link, and Add to person for its sender. */
+const NoticeCard = memo(function NoticeCard({ notice: n }: { notice: Notice }) {
+  const m: IntegrationMessage = { adapter: n.adapter, sender: n.sender.name, text: n.text, ...(n.place ? { place: n.place } : {}), ...(n.url ? { url: n.url } : {}) };
+  return (
+    <IntegrationCard slot="integration-notice" messages={[m]} time={clockOf(n.at)} state="notified">
+      <IntegrationMessages messages={[m]} />
+      <div className="text-muted-foreground flex flex-wrap items-center gap-2 text-[11px]" data-slot="notice-footer">
+        <span>Notification only. No agent ran.</span>
+        <AddToPersonButton sender={n.sender} />
+      </div>
+    </IntegrationCard>
+  );
+});
+
+/** Re-reads the notices when a new outside message reaches the bell. Its own component, so a
+ *  notification never re-renders the chat. */
+function NoticeWatch({ onNew }: { onNew: () => void }) {
+  const newest = useNotifications().list.find((x) => x.kind === "external_message")?.id;
+  const latest = useRef(onNew);
+  latest.current = onNew;
+  useEffect(() => { if (newest !== undefined) latest.current(); }, [newest]);
+  return null;
+}
 
 /** `send` replaces the follow-up launch for a conversation that isn't a branch's agent — the
  *  orchestrator's, which goes to its own route. The composer's toolbar always carries the model
@@ -1088,6 +1119,14 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
     if ("onscrollend" in el) el.addEventListener("scrollend", land, { once: true });
     setTimeout(land, 1000); // no scrollend (Safari), or nothing to scroll
   };
+  // The orchestrator's chat only: the notices since the oldest loaded turn (all of them once the
+  // first turn is loaded), re-read when a new outside message reaches the bell (NoticeWatch).
+  const [notices, setNotices] = useState<Notice[]>([]);
+  const noticeSince = older ? turns?.[0]?.startedAt ?? Date.now() : 0;
+  const loadNotices = useCallback(() => {
+    if (outbox) api.inboxNotices(noticeSince).then((r) => setNotices(r.notices), () => {});
+  }, [outbox, noticeSince]);
+  useEffect(() => { loadNotices(); }, [loadNotices]);
   const [queued, setQueued] = useState<QueuedMessage[]>([]);
   // Only the NEWEST read applies: a slow read from before a dispatch must not restore the entry.
   const queuedSeq = useRef(0);
@@ -1200,19 +1239,23 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
   const newest = newestMessages(turns ?? []);
   const loadStepsFor = useCallback((turn: AgentTurn) => api.turnSteps(row.repo, row.branch, turn.id, 0).then((r) => withoutFinalEcho(r.steps, turn.response)), [row.repo, row.branch]);
   const chatTurn = (turn: AgentTurn) => <ChatTurn key={turn.id} turn={turn} loadStepsFor={loadStepsFor} compact={(position.get(turn.id) ?? 0) < compactBefore && turn !== newest.answer} newestSaid={turn === newest.said} onQuote={onQuote} author={author} />;
+  // The orchestrator's chat places notices between the mounted turns, by time: only those inside
+  // the window's span, so one never sits beside turns it is not between.
+  const noticeFrom = range.start > 0 || older ? shownTurns?.[0]?.startedAt ?? -Infinity : -Infinity;
+  const noticeTo = hiddenBelow > 0 ? turns?.[range.end]?.startedAt ?? Infinity : Infinity;
   const renderTurns = (list: AgentTurn[]) => {
-    const items = chatItems(list, newest.answer);
+    const items = withNotices(chatItems(list, newest.answer), outbox ? notices : [], noticeFrom, noticeTo);
     // The newest items that fill about one and a half screens mount at once; the rest as they near
     // the viewport. Your newest message and the newest answer are full height (never compact).
-    const estimates = items.map((item) => item.kind !== "turn" ? estimateItemHeight(0, { folded: true }) // a collapsed row: worker reports, an outside message
+    const estimates = items.map((item) => item.kind !== "turn" ? estimateItemHeight(0, { folded: true }) // a collapsed row: worker reports, an outside message, a notice
       : estimateItemHeight((item.turn.instruction?.length ?? 0) + (item.turn.response?.length ?? 0),
         { compact: (position.get(item.turn.id) ?? 0) < compactBefore && item.turn !== newest.answer }));
     const eager = eagerFrom(estimates, 1.5 * (scroller.current?.clientHeight || (typeof window === "undefined" ? 900 : window.innerHeight)));
     let prev: number | undefined;
     return items.map((item, i) => {
-      const first = item.kind === "agents" ? item.turns[0]! : item.turn;
+      const first = item.kind === "notice" ? { id: `notice:${item.notice.id}`, startedAt: item.notice.at } : item.kind === "agents" ? item.turns[0]! : item.turn;
       const divider = first.startedAt && (prev === undefined || !sameDay(prev, first.startedAt));
-      prev = (item.kind === "agents" ? item.turns[item.turns.length - 1]! : item.turn).startedAt ?? prev;
+      prev = (item.kind === "notice" ? first : item.kind === "agents" ? item.turns[item.turns.length - 1]! : item.turn).startedAt ?? prev;
       return (
         <LazyItem key={first.id} id={first.id} eager={i >= eager} estimate={estimates[i]! + (divider ? 40 : 0)}>
           {divider && (
@@ -1220,7 +1263,8 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
               <span className="h-px flex-1 bg-border" /><span>{dayLabel(first.startedAt!)}</span><span className="h-px flex-1 bg-border" />
             </div>
           )}
-          {item.kind === "turn" ? chatTurn(item.turn)
+          {item.kind === "notice" ? <NoticeCard notice={item.notice} />
+            : item.kind === "turn" ? chatTurn(item.turn)
             : item.kind === "integration" ? <IntegrationBlock turn={item.turn} messages={item.messages} loadStepsFor={loadStepsFor} />
             : <AgentsMarker turns={item.turns} render={chatTurn} />}
         </LazyItem>
@@ -1230,6 +1274,7 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
   return (
     // log-themed: the page's theme (styles.css remaps the dark palette in light mode).
     <div className="log-themed flex h-full flex-col" data-slot="chat-panel" data-size={size}>
+      {outbox && <NoticeWatch onNew={loadNotices} />}
       <div
         ref={scroller}
         data-slot="chat-log"

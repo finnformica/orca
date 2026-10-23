@@ -192,3 +192,15 @@ export function identityProblem(i: { principal?: string; adapter?: string; exter
   if (!i.externalId?.trim()) return "the platform id is required";
   return undefined;
 }
+
+/** A person id from a name, unique among `taken` (the server keeps ids as given). */
+export const newPersonId = (name: string, taken: string[]): string => {
+  const base = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "person";
+  let id = base;
+  for (let n = 2; taken.includes(id); n++) id = `${base}-${n}`;
+  return id;
+};
+
+/** The person an identity belongs to now, if any: a sender with none can be added to one. */
+export const personOf = (people: readonly PersonRow[], adapter: string, externalId: string): PersonRow | undefined =>
+  people.find((p) => p.identities.some((i) => i.adapter === adapter && i.externalId === externalId));

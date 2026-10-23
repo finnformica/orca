@@ -23,16 +23,21 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Empty, Pill, SectionTitle, StatusDot, VCard } from "@/components/console";
 import {
-  SUBSCRIPTION_PRESETS, deadTargetLabel, filterText, healthLine, healthTone, identityLabel, identityProblem, instanceText, integrationProblem, linkProblem, parseFilter, targetLabel,
+  SUBSCRIPTION_PRESETS, deadTargetLabel, filterText, healthLine, healthTone, identityLabel, identityProblem, instanceText, newPersonId as personId, integrationProblem, linkProblem, parseFilter, targetLabel,
   type IntegrationCard, type InstanceOption, type IntegrationsOverview, type LinkRow, type Pairing, type PersonRow,
 } from "../../../shared/integrationSettings";
-import { AUTO_INSTANCE, CATCH_ALL, LEVEL_LABEL, LINK_LEVELS as LEVELS, isAutomatic, repoScoped, type AdapterMeta, type LinkLevel } from "../../../shared/integrations";
+import { AUTO_INSTANCE, CATCH_ALL, LEVEL_LABEL, LINK_LEVELS as LEVELS, LINK_PAIRINGS, PAIRING_LABEL, isAutomatic, repoScoped, type AdapterMeta, type LinkLevel, type LinkPairing } from "../../../shared/integrations";
 
 type Overview = IntegrationsOverview;
 // Friendly names (Notify, Viewer, Editor, Admin); the stored values stay notify / ask / work / admin.
 const LINK_LEVELS: { value: LinkLevel; label: string }[] = LEVELS.map((value) => ({ value, label: LEVEL_LABEL[value] }));
 // Pairing approval is unchanged: it takes up to "work" (POST /api/integrations/pairing/approve). Set Admin on the person after.
 const PAIRING_LEVELS = LINK_LEVELS.filter((l) => l.value !== "admin");
+// What each value of a link's "Unknown senders" does, under the link dialog's Select.
+const PAIRING_HINT: Record<LinkPairing, string> = {
+  request: "An unknown sender gets a pairing code, and the bell shows it. Orca drops the message.",
+  notify: "Orca shows the message to you in the chat and the Inbox. No code, no agent run, no reply.",
+};
 const LEVEL_TONE = { notify: "default", ask: "blue", work: "green", admin: "purple" } as const;
 // The page's own copy of server/env.ts ORCA_SECRETS (the server checks again): enough to warn early.
 const STRIPPED = ["SLACK_TOKEN"] as const;
@@ -176,8 +181,7 @@ function LinkRowView({ link: l, onEdit, onChange }: { link: LinkRow; onEdit: () 
     setTest(r ? { state: String(r.state), ...(typeof r.error === "string" ? { error: r.error } : {}) } : {});
   };
   const [ask, confirmNode] = useConfirm();
-  const pairing = l.pairing !== "off";
-  const setPairing = (on: boolean) => void act(`${on ? "Turn on" : "Turn off"} pairing for ${l.label ?? l.externalId}`, "links/save", { ...l, pairing: on ? "request" : "off" }, onChange);
+  const setPairing = (v: LinkPairing) => void act(`Set unknown senders for ${l.label ?? l.externalId}`, "links/save", { ...l, pairing: v }, onChange);
   return (
     <li data-slot="integration-link" className="flex flex-col gap-2 px-4 py-3 text-sm md:flex-row md:items-center md:gap-4">
       <div className="min-w-0 flex-1">
@@ -196,9 +200,12 @@ function LinkRowView({ link: l, onEdit, onChange }: { link: LinkRow; onEdit: () 
         </div>}
       </div>
       <div className="flex items-center gap-1">
-        {l.level !== "notify" && <div data-slot="link-pairing" className="mr-2 flex items-center gap-2">
-          <Label htmlFor={`link-pairing-${l.id}`} className="text-muted-foreground text-xs font-normal">Pairing requests</Label>
-          <Switch id={`link-pairing-${l.id}`} checked={pairing} onCheckedChange={setPairing} aria-label={`Pairing requests for ${l.label ?? l.externalId}`} />
+        {l.level !== "notify" && <div data-slot="link-pairing" className="mr-2 flex items-center gap-2 max-md:flex-1">
+          <Label htmlFor={`link-pairing-${l.id}`} className="text-muted-foreground shrink-0 text-xs font-normal">Unknown senders</Label>
+          <Select value={l.pairing ?? "request"} onValueChange={(v) => setPairing(v as LinkPairing)}>
+            <SelectTrigger id={`link-pairing-${l.id}`} size="sm" className="w-36 max-md:h-10 max-md:flex-1" aria-label={`Unknown senders on ${l.label ?? l.externalId}`}><SelectValue /></SelectTrigger>
+            <SelectContent>{LINK_PAIRINGS.map((v) => <SelectItem key={v} value={v}>{PAIRING_LABEL[v]}</SelectItem>)}</SelectContent>
+          </Select>
         </div>}
         {l.externalId !== CATCH_ALL && <Button variant="secondary" size="sm" disabled={test.busy} onClick={() => void run()} className="max-md:h-10 max-md:flex-1">Test</Button>}
         <Button variant="ghost" size="sm" onClick={onEdit} className="max-md:h-10">Edit</Button>
@@ -321,10 +328,10 @@ function LinkDialog({ integration: c, meta, link, onClose, onSaved }: { integrat
   const [level, setLevel] = useState<LinkLevel>(link?.level ?? "notify");
   const [chosen, setChosen] = useState<string[]>(link?.repos ?? []);
   const [mention, setMention] = useState(link?.requireMention ?? true);
-  const [pairing, setPairing] = useState(link?.pairing !== "off");
+  const [pairing, setPairing] = useState<LinkPairing>(link?.pairing ?? "request");
   const [busy, setBusy] = useState(false);
   const id = link?.id ?? `${c.id}-${(label || externalId).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")}`.slice(0, 63);
-  const body = { id, integrationId: c.id, externalId, label, level, repos: repoScoped(level) ? chosen : [], requireMention: mention, pairing: pairing ? "request" as const : "off" as const };
+  const body = { id, integrationId: c.id, externalId, label, level, repos: repoScoped(level) ? chosen : [], requireMention: mention, pairing };
   const problem = linkProblem(body);
   const place = meta?.place ?? "place";
   const save = async () => { setBusy(true); const r = await act(`Save link ${label || externalId}`, "links/save", body, onSaved); setBusy(false); if (r) onClose(); };
@@ -357,26 +364,17 @@ function LinkDialog({ integration: c, meta, link, onClose, onSaved }: { integrat
         <Label htmlFor="link-mention">Only when @-mentioned</Label>
         <Switch id="link-mention" checked={mention} onCheckedChange={setMention} />
       </div>
-      {level !== "notify" && <div className="space-y-1.5">
-        <div className="flex items-center justify-between gap-4">
-          <Label htmlFor="link-pairing">Pairing requests</Label>
-          <Switch id="link-pairing" checked={pairing} onCheckedChange={setPairing} />
-        </div>
-        <div className="text-muted-foreground text-xs">{pairing ? "An unknown sender gets a pairing code, and the bell shows it." : "Orca drops a message from an unknown sender. No code, no bell row, no reply."}</div>
-      </div>}
+      {level !== "notify" && <Field label="Unknown senders" htmlFor="link-pairing" hint={PAIRING_HINT[pairing]}>
+        <Select value={pairing} onValueChange={(v) => setPairing(v as LinkPairing)}>
+          <SelectTrigger id="link-pairing" className="w-full"><SelectValue /></SelectTrigger>
+          <SelectContent>{LINK_PAIRINGS.map((v) => <SelectItem key={v} value={v}>{PAIRING_LABEL[v]}</SelectItem>)}</SelectContent>
+        </Select>
+      </Field>}
     </FormDialog>
   );
 }
 
 // ── people and pairing ───────────────────────────────────────────────────────────────────────────
-
-/** A person id from a name, unique among `taken` (the server keeps ids as given). */
-const personId = (name: string, taken: string[]): string => {
-  const base = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "person";
-  let id = base;
-  for (let n = 2; taken.includes(id); n++) id = `${base}-${n}`;
-  return id;
-};
 
 /** People are global: one person has identities on every adapter (Discord, Slack, email…), one
  *  level for all of them, and a pairing from any adapter can join an existing person. */

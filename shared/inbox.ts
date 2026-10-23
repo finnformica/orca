@@ -74,6 +74,10 @@ export type InboxRow = {
   kind: "message" | "question" | "event";
   adapter: string; integrationId?: string; linkId?: string;
   sender?: Sender;
+  /** Where it was said, for a person: DM, Group DM, #channel (the adapter's `display.place`). */
+  place?: string;
+  /** A read-only notification: an unknown sender on a link whose pairing is `notify`. No agent ran. */
+  notice?: boolean;
   title?: string; text: string; url?: string;
   /** conversationParam; empty for a row that is not part of a conversation (it has `open`). */
   conversation: string;
@@ -162,6 +166,8 @@ export function inboxRows(events: readonly Envelope[], outbound: readonly Outbou
       ...(e.source.integrationId ? { integrationId: e.source.integrationId } : {}),
       ...(e.source.linkId ? { linkId: e.source.linkId } : {}),
       ...(sender ? { sender } : {}),
+      ...(e.display?.place ? { place: e.display.place } : {}),
+      ...(isNotice(e) ? { notice: true } : {}),
       ...(e.title ? { title: e.title } : {}),
       text: clip(e.text, INBOX_TEXT_MAX),
       ...(e.link?.url ? { url: e.link.url } : {}),
@@ -174,6 +180,31 @@ export function inboxRows(events: readonly Envelope[], outbound: readonly Outbou
       canLink: kind !== "question" && !conv.id.startsWith(OWN_EVENT) && !links.some((l) => l.adapter === conv.adapter && l.externalThreadId === conv.id),
     };
   }).sort((a, b) => b.at - a.at || (a.id < b.id ? 1 : -1));
+}
+
+/** An unknown sender's message that a `notify` pairing link let through as a notification only:
+ *  a person (`actor`) with no principal, under a `notify` grant (server/integrations/router.ts). */
+export const isNotice = (e: Pick<Envelope, "topic" | "actor" | "grant">): boolean =>
+  inboxKind(e.topic) === "message" && !!e.actor && !e.actor.principalId && e.grant?.level === "notify";
+
+/** One such message as the orchestrator's chat shows it (GET /api/inbox/notices): read-only, between
+ *  the turns by time. `conversation` is the stable conversationParam of its thread or place, so a
+ *  later "tell me when they answer" can key on it. */
+export type Notice = {
+  id: string; at: number; adapter: string; text: string;
+  sender: { name: string; adapter: string; externalId: string };
+  place?: string; url?: string; conversation: string; read: boolean;
+};
+
+export function noticeOf(e: Envelope, read = false): Notice | undefined {
+  if (!isNotice(e)) return undefined;
+  const ext = e.actor!.external;
+  return {
+    id: e.id, at: e.at, adapter: e.source.adapter, text: e.text,
+    sender: { name: ext.name ?? ext.id, adapter: ext.adapter, externalId: ext.id },
+    ...(e.display?.place ? { place: e.display.place } : {}), ...(e.link?.url ? { url: e.link.url } : {}),
+    conversation: conversationParam(inboundConversation(e)), read,
+  };
 }
 
 /** A row id for an Orca notification. Event ids never start with it. */

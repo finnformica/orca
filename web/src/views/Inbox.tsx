@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Empty, RowSkeleton, StatusDot, VCard, type DotTone } from "@/components/console";
 import { SourceChip } from "@/components/SourceChip";
+import { AddToPersonSub, NewPersonDialog, type SenderRef } from "@/components/SenderPerson";
 import { api, type InboxPage, type InboxQuery, type InboxThread } from "../api";
 import { useWorkstreams } from "../store";
 import { ago } from "../workstream";
@@ -245,10 +246,13 @@ const KIND_LABEL: Record<InboxRow["kind"], string | undefined> = { message: unde
 
 /** The actions one event offers: in a row's ⋯ and in the thread view's ⋯. Reply only opens the
  *  composer (the caller's); the others act here. */
-function ActionsMenu({ eventId, canReply, canLink, sender, read, onReply, onMarkRead, onChanged, slot, ws }: {
+function ActionsMenu({ eventId, canReply, canLink, sender, read, onReply, onMarkRead, onChanged, slot, ws, addSender }: {
   eventId: string; canReply: boolean; canLink: boolean; sender?: { name: string; muted: boolean }; read?: boolean;
   onReply?: () => void; onMarkRead?: (read: boolean) => void; onChanged: () => void; slot: string; ws?: { repo: string; branch: string };
+  /** A sender with no person: Add to person (components/SenderPerson.tsx). */
+  addSender?: SenderRef;
 }) {
+  const [newPerson, setNewPerson] = useState(false);
   const workstreams = useWorkstreams().filter((r) => r.lane !== "DONE");
   const link = (repo: string, branch: string) => api.inboxLink(eventId, repo, branch).then(onChanged, (e) => failed("Link to workstream", e, { repo, branch }));
   const mute = (on: boolean) => api.inboxMute(eventId, on).then(onChanged, (e) => failed(on ? "Mute sender" : "Unmute sender", e, ws));
@@ -285,7 +289,10 @@ function ActionsMenu({ eventId, canReply, canLink, sender, read, onReply, onMark
             </DropdownMenuItem>
           </>
         )}
+        {addSender && <AddToPersonSub sender={addSender} onNew={() => setNewPerson(true)} onDone={onChanged} />}
       </DropdownMenuContent>
+      {/* A portal's clicks bubble through React's tree: keep them off the row, which opens its thread. */}
+      {newPerson && addSender && <span className="contents" onClick={(e) => e.stopPropagation()}><NewPersonDialog sender={addSender} onClose={() => setNewPerson(false)} onDone={onChanged} /></span>}
     </DropdownMenu>
   );
 }
@@ -339,12 +346,15 @@ function InboxRowView({ row, selected, onOpen, onMarkRead, onChanged }: {
       <div className="min-w-0 flex-1 space-y-1">
         <div className="flex min-w-0 items-center gap-2">
           <span data-slot="inbox-sender" className={cn("min-w-0 truncate", row.read ? "font-medium" : "font-semibold")}>{who}</span>
+          {row.place && <span data-slot="inbox-place" className="text-muted-foreground shrink-0 text-xs">{row.place}</span>}
           {kind && <span className="bg-muted text-muted-foreground shrink-0 rounded px-1 text-[10px] leading-4 font-medium uppercase">{kind}</span>}
+          {row.notice && <Tip label="An unknown sender. Orca shows the message only: no agent ran, no reply went out."><span data-slot="inbox-notice" className="bg-muted text-muted-foreground shrink-0 rounded px-1 text-[10px] leading-4 font-medium uppercase">Notify</span></Tip>}
           {row.badge && <span data-slot="inbox-badge" data-tone={row.badge.tone} className={cn("shrink-0 rounded px-1 text-[10px] leading-4 font-medium uppercase", BADGE_TONE[row.badge.tone])}>{row.badge.label}</span>}
           <span className="ml-auto" />
           <When at={row.at} />
           <ActionsMenu slot="row-actions" eventId={row.id} canReply={row.canReply} canLink={row.canLink} read={row.read} ws={row.workstream}
             sender={row.sender ? { name: row.sender.name, muted: row.muted } : undefined}
+            addSender={row.sender && !row.sender.principalId && row.sender.externalId && row.kind === "message" ? { adapter: row.adapter, externalId: row.sender.externalId, name: row.sender.name } : undefined}
             onReply={() => setReplying(true)} onMarkRead={(read) => onMarkRead([row.id], read)} onChanged={onChanged} />
         </div>
         {row.title && who !== row.title && <div className="truncate text-[13px]">{row.title}</div>}

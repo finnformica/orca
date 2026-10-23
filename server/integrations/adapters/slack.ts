@@ -139,9 +139,23 @@ export const placeOf = (ev: Pick<SlackEvent, "channel" | "channel_type">): "im" 
 export const threadKeyOf = (ev: Pick<SlackEvent, "channel" | "channel_type" | "ts" | "thread_ts">): string =>
   ev.thread_ts ? `${ev.channel}:${ev.thread_ts}` : placeOf(ev) === "channel" ? `${ev.channel}:${ev.ts}` : ev.channel!;
 
+/** A link that opens one message in Slack: the workspace URL (auth.test's `url`), the channel and
+ *  the ts; a reply in a thread names its thread too. Undefined without the workspace URL. Pure. */
+export function slackPermalink(base: string | undefined, ev: Pick<SlackEvent, "channel" | "ts" | "thread_ts">): string | undefined {
+  if (!base || !ev.channel || !ev.ts) return undefined;
+  const root = base.replace(/\/+$/, "");
+  const thread = ev.thread_ts && ev.thread_ts !== ev.ts ? `?thread_ts=${ev.thread_ts}&cid=${ev.channel}` : "";
+  return `${root}/archives/${ev.channel}/p${ev.ts.replace(".", "")}${thread}`;
+}
+
+/** The place a person reads: DM, Group DM, else `#name` when the channel's name is known. Pure. */
+export const placeLabel = (place: "im" | "mpim" | "channel", channelName?: string): string | undefined =>
+  place === "im" ? "DM" : place === "mpim" ? "Group DM" : channelName ? `#${channelName}` : undefined;
+
 /** One Socket Mode `message` event as the core's envelope, or undefined when it is not for Orca. Pure.
- *  `me` is the token's own user; `known` says whether Orca already talks in a thread key. */
-export function slackInbound(ev: SlackEvent, me: { team: string; userId: string; name?: string; integrationId: string }, o: { known?: (threadKey: string) => boolean; senderName?: string } = {}): InboundEnvelope | undefined {
+ *  `me` is the token's own user (`url`: its workspace, for the message's link); `known` says whether
+ *  Orca already talks in a thread key; `channelName` names a channel for the place. */
+export function slackInbound(ev: SlackEvent, me: { team: string; userId: string; name?: string; integrationId: string; url?: string }, o: { known?: (threadKey: string) => boolean; senderName?: string; channelName?: string } = {}): InboundEnvelope | undefined {
   if (ev.type !== "message") return undefined;
   if (!PERSON_SUBTYPES.has(ev.subtype ?? "") || ev.bot_id || !ev.user || ev.user === me.userId) return undefined;
   if (!ev.channel || !ev.ts) return undefined;
@@ -162,8 +176,10 @@ export function slackInbound(ev: SlackEvent, me: { team: string; userId: string;
     ...(Number(ev.ts) ? { at: Math.round(Number(ev.ts) * 1000) } : {}),
     raw: { channel: ev.channel, ts: ev.ts, channel_type: ev.channel_type }, // ids only: no content twice, never a token
   });
+  const url = slackPermalink(me.url, ev), shown = placeLabel(place, o.channelName);
+  const out: InboundEnvelope = { ...e, ...(url ? { link: { url } } : {}), ...(shown ? { display: { place: shown } } : {}) };
   // A DM's or group DM's channel id is new for each person: a link on `im` / `mpim` takes them all.
-  return place === "channel" ? e : { ...e, source: { ...e.source, parents: [place === "im" ? DM_PLACE : GROUP_DM_PLACE] } };
+  return place === "channel" ? out : { ...out, source: { ...out.source, parents: [place === "im" ? DM_PLACE : GROUP_DM_PLACE] } };
 }
 
 /** The WebSocket constructor Socket Mode uses, and the first reconnect wait. A test swaps in a fake. */
@@ -302,13 +318,14 @@ export function slackAdapter(connection: Connection, opts: { openDms?: boolean }
   let attempt = 0;
   let stopped = false;
   let running: "poll" | "socket" | "off" = "off";
-  let me = { team: "", userId: "", name: "" };
+  let me = { team: "", userId: "", name: "", url: "" };
   let state: { ok: boolean; detail?: string; lastEventAt?: number; lastPollAt?: number } = { ok: false, detail: "not started" };
   let cur: SlackCursor = parseCursor(undefined, Date.now()); // the threads live here in both modes
   let conversations: { at: number; list: { id: string; place: "im" | "mpim" }[] } | undefined;
   let turn = 0; // where the quiet DMs' turns go on
   let inFlight: Promise<SlackPollResult> | undefined;
   const names = new Map<string, string>(); // user id → display name
+  const channels = new Map<string, string>(); // channel id → name
 
   const setState = (s: typeof state) => { state = { ...state, ...s }; void ctx?.status(state).catch(() => {}); };
   const saveCursor = () => ctx?.cursor.set(JSON.stringify(cur)) ?? Promise.resolve();
@@ -324,11 +341,27 @@ export function slackAdapter(connection: Connection, opts: { openDms?: boolean }
     return name || undefined;
   }
 
+  async function channelName(id: string): Promise<string | undefined> {
+    const known = channels.get(id);
+    if (known !== undefined) return known || undefined;
+    const r = await slackRead(token(), "conversations.info", { channel: id });
+    const name = r.ok ? String((r.channel as { name?: string } | undefined)?.name ?? "") : "";
+    if (r.ok) remember(channels, id, name);
+    return name || undefined;
+  }
+
   /** One message event, from the socket or a poll: the envelope, the sender's name, the core. */
   async function handle(ev: SlackEvent, team = ""): Promise<"new" | "duplicate" | "rejected" | undefined> {
     if (!ctx || ev.type !== "message" || !ev.user || ev.user === me.userId) return undefined;
-    const made = slackInbound(ev, { team: team || me.team, userId: me.userId, name: me.name, integrationId: connection.id }, { known: (k) => k in cur.threads });
+    const opts = { known: (k: string) => k in cur.threads };
+    const who = { team: team || me.team, userId: me.userId, name: me.name, integrationId: connection.id, url: me.url };
+    let made = slackInbound(ev, who, opts);
     if (!made) return undefined;
+    // A channel's name, for the place a person reads (a DM and a group DM need no call).
+    if (placeOf(ev) === "channel") {
+      const name = await channelName(ev.channel!).catch(() => undefined);
+      if (name) made = slackInbound(ev, who, { ...opts, channelName: name }) ?? made;
+    }
     const senderName = await nameOf(ev.user).catch(() => undefined);
     const e = senderName ? { ...made, actor: { external: { ...made.actor!.external, name: senderName } } } : made;
     const verdict = await ctx.ingest(e);
@@ -531,7 +564,7 @@ export function slackAdapter(connection: Connection, opts: { openDms?: boolean }
       if (!token()) throw new Error(`${connection.secretRef ?? "the token variable"} is not set`);
       const auth = await slackRead(token(), "auth.test");
       if (!auth.ok || typeof auth.user_id !== "string") throw new Error(`Slack refused the user token (auth.test: ${auth.error ?? "no user_id"})`);
-      me = { team: String(auth.team_id ?? ""), userId: auth.user_id, name: String(auth.user ?? "") };
+      me = { team: String(auth.team_id ?? ""), userId: auth.user_id, name: String(auth.user ?? ""), url: String(auth.url ?? "") };
       // The cursor: the threads Orca talks in (both modes) and where each poll stopped. A first start begins now.
       const raw = await c.cursor.get();
       cur = parseCursor(raw, Date.now());

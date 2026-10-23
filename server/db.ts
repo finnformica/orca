@@ -1026,6 +1026,15 @@ export const MIGRATIONS: MigrationStep[] = [
     // them a pairing code, as every link did before; 'off' drops their message silently.
     sql: `ALTER TABLE channel_link ADD COLUMN IF NOT EXISTS pairing TEXT NOT NULL DEFAULT 'request' CHECK (pairing IN ('request','off'));`,
   },
+  {
+    name: "20261023-link-pairing-notify",
+    idempotent: true,
+    // `off` (drop an unknown sender's message) became `notify` (show it to you, read-only). The
+    // column of 20261023-link-pairing stays; only its value set and CHECK change. Drop first, so a re-run is a no-op.
+    sql: `ALTER TABLE channel_link DROP CONSTRAINT IF EXISTS channel_link_pairing_check;
+      UPDATE channel_link SET pairing = 'notify' WHERE pairing = 'off';
+      ALTER TABLE channel_link ADD CONSTRAINT channel_link_pairing_check CHECK (pairing IN ('request','notify'));`,
+  },
 ];
 
 export type MigrationMismatch = { id: number; recorded: string; expected: string; idempotent: boolean };

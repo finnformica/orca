@@ -27,7 +27,7 @@ import * as integrations from "./integrations/registry";
 import * as dispatcher from "./integrations/dispatcher";
 import * as inbox from "./integrations/inbox";
 import * as integrationStore from "./integrations/store";
-import { filterInbox, inboundConversation, inboxFacets, inboxRows, inboxWindow, muteKey, notificationIdOf, notificationRows, notificationSender, OWN_EVENT, parseConversation, threadActions, threadItems, workstreamOf } from "../shared/inbox";
+import { filterInbox, inboundConversation, inboxFacets, inboxRows, inboxWindow, muteKey, noticeOf, notificationIdOf, notificationRows, notificationSender, OWN_EVENT, parseConversation, threadActions, threadItems, workstreamOf } from "../shared/inbox";
 import { replyToEvent } from "./integrations/router";
 import * as integrationAdmin from "./integrations/admin";
 import { deadNotification, webAdapter } from "./integrations/adapters/web";
@@ -353,6 +353,7 @@ const EMPTY_WHEN_DOWN: Record<string, () => unknown> = {
   "/api/queued": () => [],
   "/api/notifications": () => [],
   "/api/inbox/unread": () => ({ others: 0, mutedKinds: [] }),
+  "/api/inbox/notices": () => ({ notices: [] }),
   "/api/health/history": () => [],
   "/api/config/document": () => ({}),
 };
@@ -396,6 +397,8 @@ const notEnabled = (repo: RepoConfig, feature: string) =>
 
 /** How many inbox events one /api/inbox answer reads (a window; `older` pages past it). */
 const INBOX_WINDOW = 300;
+/** How many notices one /api/inbox/notices answer reads. */
+const NOTICE_WINDOW = 200;
 
 // Routes served by ANY instance because they read only Postgres — history stays readable even when
 // the machine that produced it is asleep. Everything else touches a worktree or spawns a process and
@@ -419,7 +422,7 @@ const DATABASE_ONLY = new Set([
   // The notification centre: one table, written once by the instance where each event happened.
   "/api/notifications", "/api/notifications/read",
   // The unified inbox: the integrations' event, delivery and thread_link rows.
-  "/api/inbox", "/api/inbox/unread", "/api/inbox/thread", "/api/inbox/threads",
+  "/api/inbox", "/api/inbox/unread", "/api/inbox/thread", "/api/inbox/threads", "/api/inbox/notices",
   "/api/inbox/reply", "/api/inbox/read", "/api/inbox/mute", "/api/inbox/link",
 ]);
 
@@ -817,6 +820,14 @@ async function api(req: Request, url: URL): Promise<Response> {
     const flag = (k: string) => url.searchParams.get(k) === "1";
     const rows = filterInbox(all, { source: url.searchParams.get("source") || undefined, person: url.searchParams.get("person") || undefined, unread: flag("unread"), muted: flag("muted") });
     return json({ rows, facets: inboxFacets(all), older });
+  }
+  // The orchestrator's chat shows each unknown sender's message a `notify` pairing link recorded
+  // (shared/inbox.ts Notice), read-only, between its turns: those since `?since=` (ms), newest first.
+  if (req.method === "GET" && p === "/api/inbox/notices") {
+    const sinceRaw = Number(url.searchParams.get("since"));
+    const events = await integrationStore.noticeEvents({ since: Number.isFinite(sinceRaw) && sinceRaw > 0 ? sinceRaw : 0, limit: NOTICE_WINDOW });
+    const read = await integrationStore.readEvents(events.map((e) => e.id));
+    return json({ notices: events.map((e) => noticeOf(e, read.has(e.id))).filter(Boolean) });
   }
   // The inbox's half of the one unread count (the bell adds its own rows), and the notification
   // kinds you muted, which the bell leaves out of its count.

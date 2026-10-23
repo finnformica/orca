@@ -497,6 +497,16 @@ export async function inboxEvents(opts: { before?: string; beforeAt?: number; li
   });
 }
 
+/** The notices (shared/inbox.ts isNotice) at or after `since`, newest first: an unknown sender's
+ *  message a `notify` pairing link recorded. The orchestrator's chat shows them between its turns. */
+export async function noticeEvents(opts: { since: number; limit: number }): Promise<Envelope[]> {
+  return db.withRetry(async (sql) => {
+    const rows = await sql`SELECT envelope FROM event WHERE user_id = ${user()} AND topic LIKE 'ext.%' AND created_at >= ${opts.since}
+      AND envelope->'grant'->>'level' = 'notify' AND envelope ? 'actor' ORDER BY id DESC LIMIT ${opts.limit}`;
+    return (rows as { envelope: Envelope }[]).map((r) => r.envelope);
+  });
+}
+
 type OutboundRow = { id: number; event_id: string; subscription_id: number | null; created_at: number; state: DeliveryState; attempts: number; last_error: string | null; target: DeliveryTarget; envelope: Envelope };
 const toOutbound = (r: OutboundRow): OutboundRecord => ({
   deliveryId: Number(r.id), eventId: r.event_id, ...(r.subscription_id != null ? { subscriptionId: Number(r.subscription_id) } : {}), at: Number(r.created_at), state: r.state, attempts: Number(r.attempts),

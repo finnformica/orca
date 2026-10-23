@@ -30,7 +30,9 @@ export async function publish(input: InboundEnvelope & { grant?: Grant }, now = 
   ]);
   const kinds = new Map(conns.map((c) => [c.id, c.kind]));
   const links = new Map(allLinks.map((l) => [l.id, { integrationId: l.integrationId, adapter: kinds.get(l.integrationId) ?? "?", externalId: l.externalId }]));
-  const planned = [...planDeliveries(e, subs, links, threads, inbound), ...extra];
+  const plan = planDeliveries(e, subs, links, threads, inbound);
+  // The web shows an event once: an explicit web target beside a subscription's is the same row.
+  const planned = [...plan, ...extra.filter((d) => d.target.kind !== "web" || !plan.some((p) => p.target.kind === "web"))];
   const r = await store.recordEvent(e, planned, now);
   if (r.status === "new" && r.deliveries.length) kick();
   return { ...r, id: e.id };
@@ -112,8 +114,16 @@ export async function ingest(integrationId: string, e: InboundEnvelope, now = Da
   // person behind it (a webhook, a poller) is authenticated by its integration and takes the link's level.
   const principal = e.actor ? await store.principalFor(e.actor.external.adapter, e.actor.external.id) : undefined;
   if (e.actor && !principal) {
-    // `pairing: "off"` (a mention catch-all, say): drop them silently — no code, no bell row, no reply.
-    if (link.level !== "notify" && link.pairing !== "off") await requestPairing(integrationId, link.id, e, now);
+    if (link.level === "notify") return "rejected";
+    // `pairing: "notify"`: show it to you, read-only — the machine event's path below (a "notify"
+    // grant, so no agent target is planned) plus one web delivery, so the bell and the Inbox show it
+    // without a subscription. No code, no pairing row, no reply.
+    if (link.pairing === "notify") {
+      const r = await publish({ ...e, source: { ...e.source, integrationId, linkId: link.id }, grant: { level: "notify", repos: [], linkId: link.id } },
+        now, [{ subscriptionId: null, target: { kind: "web" } }]);
+      return r.status;
+    }
+    await requestPairing(integrationId, link.id, e, now);
     return "rejected";
   }
   const grant: Grant = e.actor ? effectiveGrant(link, principal) : { level: link.level, repos: link.repos, linkId: link.id };
