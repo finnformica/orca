@@ -15,8 +15,8 @@ import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
-import { followUp, modelFor, refresh, setCardModel, type Row } from "../store";
-import { RECENT_FULL, TAIL_WINDOW, reportShots, turnHandoffs, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, longMessage, newestMessages, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, formatDuration, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, undeliveredQueued, composerHistory, integrationPreview, integrationState, anchorShift, eagerFrom, estimateItemHeight, withNotices } from "../workstream";
+import { followUp, modelFor, previewsEnabled, refresh, setCardModel, type Row } from "../store";
+import { ORCHESTRATOR_REPO, RECENT_FULL, TAIL_WINDOW, reportShots, turnHandoffs, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, longMessage, newestMessages, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, formatDuration, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, undeliveredQueued, composerHistory, integrationPreview, integrationState, anchorShift, eagerFrom, estimateItemHeight, withNotices } from "../workstream";
 import { HandoffWidget } from "./Handoffs";
 import { FormCard } from "@/components/FormCard";
 import { stickToTail } from "@/lib/stickToTail";
@@ -30,6 +30,7 @@ import { BrandIcon, brandTitle } from "@/components/BrandIcon";
 import { activityCounts, closeOpenMarkdown, createHold, runLabel, stepDuration, stepInFlight, stepKey, stepRow, stepRuns, toolDetail, toolLabel, workedLabel, workSteps, type StepStatus } from "../steps";
 import { agentLabel, groupSteps, outcomeLead, withoutFinalEcho } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
+import { useSlashCommands } from "@/components/SlashCommands";
 import { ExpandableImage } from "@/components/ExpandableImage";
 import { ShotThumbs } from "@/components/Screenshots";
 import { snippetPre } from "@/components/Snippet";
@@ -1252,6 +1253,21 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
   const ctl = controls ?? {
     model: modelFor(row), onModel: (m: string) => setCardModel(row, m), ran: row.agentMeta?.model, contextPct: row.agentMeta?.contextPct,
   };
+  // The composer's `/` menu: only the commands that apply to this chat right now.
+  const [modelOpen, setModelOpen] = useState(false);
+  const orchestrator = row.repo === ORCHESTRATOR_REPO;
+  const slash = useSlashCommands({
+    row,
+    ctx: {
+      orchestrator, compactable: ctl.contextPct !== undefined && compacting === null, running, stoppable: Boolean(row.worktreePath),
+      attach: true, queued: pendingQueued.length, previews: !orchestrator && previewsEnabled(row.repo),
+      pr: Boolean(row.prNumber) && row.lane !== "DONE", mergeQueued: Boolean(row.mergeWhenGreen || row.autoMergeEnabled),
+    },
+    onCompact, onStop,
+    // Drop, not cancel-and-restore: unlike a queued message's own ✕, the text does not come back.
+    onClearQueue: async () => { for (const m of pendingQueued) await api.cancelQueued(row.repo, m.id); await loadQueued(); },
+    openModel: () => setModelOpen(true),
+  });
   // Only the mounted window renders.
   const range = windowRange(turns ?? [], win);
   const hiddenAbove = range.start, hiddenBelow = (turns?.length ?? 0) - range.end;
@@ -1382,7 +1398,8 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
       <div data-slot="chat-composer-dock" className={size === "page" ? "border-t p-4" : cn("border-t p-2", !pip && "max-md:p-3")}>
       <ChatComposer
         className="shadow-none"
-        leading={<ChatControls {...ctl} compact={ctl.contextPct === undefined && compacting === null ? undefined
+        commands={slash.commands}
+        leading={<ChatControls {...ctl} picker={{ open: modelOpen, onOpenChange: setModelOpen }} compact={ctl.contextPct === undefined && compacting === null ? undefined
           : { onCompact, pending: compacting !== null, busy: running, error: compactError }} />}
         persistKey={`orca.chat.${row.repo}::${row.branch}`}
         repo={row.repo}
@@ -1411,6 +1428,7 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
           },
         } : undefined}
       />
+      {slash.ui}
       </div>
     </div>
   );

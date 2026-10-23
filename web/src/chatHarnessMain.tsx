@@ -7,20 +7,24 @@
 // `?view=` picks the state to render: "quote" (default, PR #430) — a finished turn with a quote in
 // both the user's own bubble and the agent's reply; "working" — a live turn with no response yet,
 // for the spinner on its status line; "sending" — a `send` prop that never resolves, so typing a
-// message into the composer and pressing Enter leaves it in the "sending…" state.
+// message into the composer and pressing Enter leaves it in the "sending…" state; "slash" — a worker
+// chat with a PR, for the composer's `/` menu; "orchestrator" — the orchestrator's chat.
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import "./lib/theme"; // applies the OS theme, so `orca-shot --dark` shows the dark card
 import { api } from "@/api";
 import { ChatPanel } from "@/views/Chat";
 import type { Row } from "@/store";
+import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO } from "@/workstream";
 import type { AgentTurn } from "../../shared/agent";
 
 const view = new URLSearchParams(location.search).get("view") ?? "quote";
 
-const row: Row = {
+const row: Row = view === "orchestrator" ? {
+  repo: ORCHESTRATOR_REPO, hasRemote: false, branch: ORCHESTRATOR_BRANCH, title: "Orca", prompt: "", lane: "LOCAL", worktreePath: "/state/orchestrator", agentStatus: "idle",
+} : {
   repo: "demo", hasRemote: true, branch: "fix-admin-access", title: "Fix admin access bug",
-  prompt: "", lane: "IN_REVIEW", worktreePath: "/wt/demo", agentProvider: "claude",
+  prompt: "", lane: "IN_REVIEW", worktreePath: "/wt/demo", agentProvider: "claude", ...(view === "slash" && { prNumber: 7 }),
 };
 
 const quoteTurn: AgentTurn = {
@@ -43,7 +47,7 @@ const send = view === "sending" ? () => new Promise<void>(() => {}) : undefined;
 createRoot(document.getElementById("root")!).render(
   <div className="bg-background flex min-h-screen items-center justify-center p-6">
     <div className="bg-card text-foreground h-[80vh] w-[90vw] max-w-2xl overflow-hidden rounded-lg border">
-      <ChatPanel row={row} send={send} />
+      <ChatPanel row={row} send={send} author={view === "orchestrator" ? "Orca" : undefined} />
     </div>
   </div>,
 );
