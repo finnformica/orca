@@ -119,18 +119,19 @@ describe("with Postgres", () => {
     ...(thread ? { thread: { adapter: "slack", externalId: thread } } : {}),
   });
 
-  test("pairing: an unknown sender gets ONE code on their own place and a bell row; approval binds them and the next message is accepted", async () => {
+  test("pairing: an unknown Slack sender gets ONE bell row and no code in Slack (Orca posts there as you); approval binds them and the next message is accepted", async () => {
     expect(await router.ingest("slack-work", msg("p1", "U9", "C1", "C1:5.5"), 1_000)).toBe("rejected");
     expect(await router.ingest("slack-work", msg("p2", "U9"), 2_000)).toBe("rejected"); // same pending code: no second reply
     const [pairing, ...more] = await store.pendingPairings(2_000);
     expect(more).toEqual([]);
     expect(pairing).toMatchObject({ adapter: "slack", externalId: "U9", name: "Saajan", linkId: "L1", expiresAt: 1_000 + PAIRING_TTL_MS });
     await dispatcher.dispatchOnce(3_000);
-    expect(sent).toHaveLength(1);
-    expect(sent[0]!.target).toMatchObject({ externalId: "C1", threadId: "C1:5.5" }); // answered where they wrote
-    expect(sent[0]!.msg.text).toBe(pairingReply(pairing!.code));
+    // Slack posts as you: no automatic reply in your name (Discord's code-on-place: discordCore.test.ts).
+    expect(sent).toHaveLength(0);
+    expect(sent.map((d) => d.msg.text)).not.toContain(pairingReply(pairing!.code));
     expect(web.map((e) => [e.topic, e.title])).toEqual([["orca.pairing.requested", "Pairing request from Saajan"]]);
     expect(web[0]!.text).toContain(`Approve code ${pairing!.code}`);
+    expect(web[0]!.text).toContain("did not send them the code");
 
     await expect(store.approvePairing("NOPE22", { id: "x" }, 3_000)).rejects.toThrow("no pairing code NOPE22");
     const approved = await store.approvePairing(pairing!.code.toLowerCase(), { id: "saajan" }, 3_000);
@@ -165,7 +166,7 @@ describe("with Postgres", () => {
     const [p] = await store.pendingPairings();
     expect(p).toMatchObject({ externalId: "U7", linkId: "Lstar" });
     await dispatcher.dispatchOnce();
-    expect(sent.map((s) => s.target.externalId)).toEqual(["D-dm"]); // the reply goes to the DM, not to "*"
+    expect(sent).toEqual([]); // Slack posts as you: no code in the DM (a pairing reply on its place: discordCore.test.ts)
   });
 
   test("a place resolves to its own link, then each parent place in order, then the catch-all link", async () => {

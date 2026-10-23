@@ -188,7 +188,7 @@ adapter: `docs/integrations/ADAPTERS.md`). Every event is a keyed envelope in `e
 writes one beside each NEW notification, same key). `subscription` rows plan `delivery` rows in the
 same transaction; the dispatcher (primary only) claims them `FOR UPDATE SKIP LOCKED`, backs off 5 s →
 1 h and marks a row dead after 6 attempts (`orca.integration.failed`, an `integration_failed`
-notification). Adapters (`web`, `webhook`, `slack` outbound so far) start only on a primary bridge:
+notification). Adapters (`web`, `webhook`, `slack`, `discord`, `email`, `linear`) start only on a primary bridge:
 the one of `integration.instance`, or for Automatic (`*`, the default) the primary with the secret
 that holds the row's lease (`status.auto`, 150 s, renewed each sync — the failover when it lapses). Secrets stay in env vars named `ORCA_SECRET_*` (stripped from agents); a
 row holds only the name. An outside sender's message gets a grant (min of link level and person) that
@@ -217,6 +217,16 @@ mention or another person's comment on your issue is `ext.linear.message` in the
 has no `actor` (the link's level is the grant, no pairing); `Envelope.display` gives the activity row
 its sender and the issue as the place. `orca post --reply` comments as you under that comment
 (`parentId`); a thread-linked issue gets PR state. The card shows `last poll` (`lastPollAt`).
+**Slack** (`adapters/slack.ts`, `docs/integrations/slack.md`) is two-way AS YOU: the row's token is your
+user token (`SLACK_TOKEN`, xoxp) — the ONLY token (Finn's call: no app-level token, no Socket Mode
+setup). Inbound POLLS every `pollSeconds` (60): DMs and group DMs by `conversations.history` (hot ones
+each poll, quiet ones in turns, `historyBudget`), mentions by `search.messages` (5 min overlap), thread
+replies by `conversations.replies`; one JSON cursor in `integration_cursor`; a 429 ends the poll.
+Socket Mode is optional, only with `SLACK_APP_TOKEN`. In: another person's mention of you, a DM
+(place `im`), a group DM (`mpim`) or a reply in a thread Orca talks in; your own messages never. Out: only when the
+orchestrator posts — a user id is a DM opened first. `postsAsUser` keeps the core from posting by
+itself there (no pairing code). `orca slack conversations|read|search|post` (`server/slackTool.ts`)
+is your own chat only.
 **Cloudflare** (`server/cloudflare.ts`, `docs/integrations/cloudflare.md`) is not an adapter: it is
 the `orca cloudflare` verb. The bridge calls the REST and GraphQL API with an account token
 (`ORCA_SECRET_CLOUDFLARE`, account `ORCA_CLOUDFLARE_ACCOUNT_ID`, both stripped from agents). Reads

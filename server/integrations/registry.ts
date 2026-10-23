@@ -27,7 +27,10 @@ export function register(kind: AdapterKind, factory: AdapterFactory, meta?: Omit
   factories.set(kind, factory);
   if (meta) metas.set(kind, { kind, ...meta });
 }
-register("slack", slackAdapter, { label: "Slack", caps: SLACK_CAPS, place: "channel", secretExample: "ORCA_SECRET_SLACK_BOT", help: "A bot token (xoxb-…). Invite the bot to each linked channel." });
+register("slack", slackAdapter, {
+  label: "Slack", caps: SLACK_CAPS, place: "channel", secretExample: "SLACK_TOKEN",
+  help: "Your user token (xoxp-…): Orca posts as you and polls your mentions, DMs and group DMs each minute. Link `im` / `mpim` for DMs. Setup: docs/integrations/slack.md.",
+});
 register("webhook", webhookAdapter, { label: "Webhook", caps: WEBHOOK_CAPS, place: "hook", secretExample: "ORCA_SECRET_WEBHOOK", help: "Signed POSTs to /api/integrations/<id>/inbound (HMAC sha256 of the body)." });
 register("discord", discordAdapter, {
   label: "Discord", caps: DISCORD_CAPS, place: "channel", secretExample: "ORCA_SECRET_DISCORD_BOT",
