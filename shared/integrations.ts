@@ -35,7 +35,7 @@ export type ConversationRef = { adapter: string; externalId: string; messageId?:
  *  `admin` is for a trusted person: every verb on the link's repos, plus move, sweep and repo add. */
 export type Level = "notify" | "ask" | "work" | "admin" | "full";
 
-/** A link's two switches (named step 20261023-link-notify-switches; both on by default). `me`: the
+/** A link's two switches (named step 20261023-link-switches; both on by default). `me`: the
  *  message shows to you (a bell row, the Inbox, a notice in the orchestrator's chat when no agent
  *  took it). `agent`: it may wake an agent (the orchestrator, or a thread's workstream). The gate
  *  stamps them on every envelope it records (`Envelope.notify`). */

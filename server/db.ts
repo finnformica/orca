@@ -1027,7 +1027,7 @@ export const MIGRATIONS: MigrationStep[] = [
     sql: `ALTER TABLE channel_link ADD COLUMN IF NOT EXISTS pairing TEXT NOT NULL DEFAULT 'request' CHECK (pairing IN ('request','off'));`,
   },
   {
-    name: "20261023-link-notify-switches",
+    name: "20261023-link-switches",
     idempotent: true,
     // A link's two switches (shared/integrations.ts LinkNotify): show a message to you, and let it wake
     // an agent. Both on for every link, the old ones too. `pairing` (20261023-link-pairing) is unused now:
