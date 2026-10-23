@@ -96,7 +96,7 @@ test("P2: a refresh re-fetches only the newest page and keeps the older pages yo
   expect(apiFake.turnPageCalls.at(-1)).toEqual({ branch: "long", limit: TURN_PAGE_SIZE });
   // …and the result is the whole loaded conversation plus the new turn, nothing dropped or doubled.
   expect(shown()).toEqual(Array.from({ length: 81 }, (_, i) => i));
-  expect(el.textContent).toContain("▋ working…");
+  expect(el.textContent).toContain("working…");
 });
 
 test("P3: the log follows the tail only while you are at it; scrolled up, new output lights a jump button", async () => {

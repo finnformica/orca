@@ -274,7 +274,7 @@ test("a retried write cannot duplicate a step", async () => {
 });
 
 // A bridge killed mid-run writes the turn at launch and never reaches its exit handler, so the turn
-// renders "▋ working…" forever. A long-lived (deployed) bridge accretes these, which is exactly
+// renders "working…" forever. A long-lived (deployed) bridge accretes these, which is exactly
 // where a permanently-working card misleads most.
 test("turns orphaned by a dead bridge are closed at startup; genuinely live ones are left alone", async () => {
   await start("run-dead", "interrupted");

@@ -799,14 +799,14 @@ test("a sent message shows in the log at once, and gives way to the real turn wh
   await mount(base);
   await sendText("add a retry");
 
-  expect(sendingText()).toEqual(["add a retry▋ sending…"]); // a bubble, like the message it becomes
+  expect(sendingText()).toEqual(["add a retrysending…"]); // a bubble, like the message it becomes
   expect(container!.querySelector("textarea")!.value).toBe(""); // the box is already clear
 
   apiFake.turnsData.set("r::feat", [{ id: "run-9", provider: "claude", instruction: "add a retry", prompt: "p", response: "" }]);
   await act(async () => { apiFake.releaseClaude!(); await flush(); await flush(); await flush(); });
   expect(sendingText()).toEqual([]);
   expect(text()).toContain("add a retry"); // now the recorded turn, working
-  expect(text()).toContain("▋ working…");
+  expect(text()).toContain("working…");
 });
 
 test("if the turn lands over the stream first, the message is not shown twice", async () => {
