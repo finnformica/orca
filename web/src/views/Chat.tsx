@@ -19,6 +19,7 @@ import { followUp, modelFor, refresh, setCardModel, type Row } from "../store";
 import { RECENT_FULL, TAIL_WINDOW, reportShots, turnHandoffs, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, longMessage, newestMessages, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, formatDuration, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, undeliveredQueued, composerHistory, integrationPreview, integrationState, anchorShift, eagerFrom, estimateItemHeight } from "../workstream";
 import { HandoffWidget } from "./Handoffs";
 import { FormCard } from "@/components/FormCard";
+import { stickToTail } from "@/lib/stickToTail";
 import { turnForms } from "../../../shared/forms";
 import { integrationMessage, shownPlace, type IntegrationMessage } from "../../../shared/integrations";
 import { useCatchAllLabels } from "@/lib/catchAllLabels";
@@ -1064,14 +1065,12 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
     if (follow.current) scroller.current?.scrollTo({ top: scroller.current.scrollHeight });
     else if (!anchor.current && !loadingOlderRef.current) setUnseen(true);
   }, [turns, sending, outgoing]);
-  // The scroller shrinking (the phone's keyboard opening, the composer growing) must not leave the
-  // newest message under the composer: a reader at the tail stays at it.
+  // The scroller shrinking (the phone's keyboard opening, the composer growing) or its content growing
+  // after it rendered (a form card or a handoff pack that loads) must not leave the newest message
+  // below the fold: a reader at the tail stays at it (lib/stickToTail).
   useEffect(() => {
     const el = scroller.current;
-    if (!el || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(() => { if (follow.current) el.scrollTo({ top: el.scrollHeight }); });
-    ro.observe(el);
-    return () => ro.disconnect();
+    return el ? stickToTail(el, () => follow.current) : undefined;
   }, []);
   const jumpToLatest = () => {
     follow.current = true;

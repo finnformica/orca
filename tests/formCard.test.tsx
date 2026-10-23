@@ -165,4 +165,19 @@ describe("paste guard", () => {
     expect(sent).toHaveLength(1);
     expect(q("[data-slot=paste-guard]")!.textContent).toContain("AWS access key");
   });
+
+  test("the close button sits on the message's line (it never wraps alone in the narrow side panel) and closes the bar", async () => {
+    const el = await mount([]);
+    await paste(el, SECRET);
+    const head = q("[data-slot=paste-guard-head]")!;
+    expect(head.textContent).toContain("This looks like");
+    const close = head.querySelector("[aria-label=Dismiss]")!;
+    expect(close).not.toBeNull();
+    expect(close.className).toContain("shrink-0");
+    // The name field takes the width left beside the buttons, not a fixed width that pushes them over.
+    expect(q("[data-slot=paste-guard-name]")!.className).toContain("flex-1");
+    await click(close);
+    expect(q("[data-slot=paste-guard]")).toBeNull();
+    expect(el.value).toBe(SECRET); // closing keeps the text; the next send is held again
+  });
 });

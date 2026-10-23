@@ -336,18 +336,20 @@ export function ChatComposer({
   };
   const guardBar = held.length > 0 && (
     <div data-slot="paste-guard" role="alert" className={cn("bg-geist-amber/10 space-y-2 rounded-md px-3 py-2 text-xs", quick ? "mx-2 mb-2" : "mt-1")}>
-      <p className="flex items-start gap-1.5">
+      {/* The close button sits on the message's line, so it never wraps onto a line of its own (the
+          side panel is narrow). The name field takes the width left beside the two buttons. */}
+      <div data-slot="paste-guard-head" className="flex items-start gap-1.5">
         <KeyRound className="text-geist-amber mt-0.5 size-3.5 shrink-0" aria-hidden />
-        <span>This looks like {held.length === 1 ? `${/^[aeiou]/i.test(held[0]!.kind) ? "an" : "a"} ${held[0]!.kind}` : `${held.length} keys (${[...new Set(held.map((f) => f.kind))].join(", ")})`}. Save it as a secret: the message then holds only its name.</span>
-      </p>
+        <span className="min-w-0 flex-1">This looks like {held.length === 1 ? `${/^[aeiou]/i.test(held[0]!.kind) ? "an" : "a"} ${held[0]!.kind}` : `${held.length} keys (${[...new Set(held.map((f) => f.kind))].join(", ")})`}. Save it as a secret: the message then holds only its name.</span>
+        <Button type="button" size="icon" variant="ghost" className="-mt-1 -mr-1 size-7 shrink-0" aria-label="Dismiss" onClick={() => setGuarded(false)}><X className="size-4" /></Button>
+      </div>
       <div className="flex flex-wrap items-center gap-2">
-        <Input aria-label="Secret name" data-slot="paste-guard-name" className="h-8 w-44 font-mono" value={secretName} onChange={(e) => setSecretName(e.target.value)}
+        <Input aria-label="Secret name" data-slot="paste-guard-name" className="h-8 min-w-0 flex-1 basis-24 font-mono" value={secretName} onChange={(e) => setSecretName(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void saveAsSecret(); } }} />
-        <Button type="button" size="sm" className="h-8" disabled={guardBusy} onClick={() => void saveAsSecret()} data-slot="paste-guard-save">
+        <Button type="button" size="sm" className="h-8 shrink-0" disabled={guardBusy} onClick={() => void saveAsSecret()} data-slot="paste-guard-save">
           {guardBusy && <Loader2 className="size-3.5 animate-spin" />}Save as secret
         </Button>
-        <Button type="button" size="sm" variant="outline" className="h-8" disabled={guardBusy} onClick={sendAnyway} data-slot="paste-guard-send">Send anyway</Button>
-        <Button type="button" size="icon" variant="ghost" className="ml-auto size-8" aria-label="Dismiss" onClick={() => setGuarded(false)}><X className="size-4" /></Button>
+        <Button type="button" size="sm" variant="outline" className="h-8 shrink-0" disabled={guardBusy} onClick={sendAnyway} data-slot="paste-guard-send">Send anyway</Button>
       </div>
       {guardError && <p className="text-destructive" data-slot="paste-guard-error">{guardError}</p>}
     </div>
