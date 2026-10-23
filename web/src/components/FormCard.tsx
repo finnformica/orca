@@ -213,7 +213,8 @@ function Hint({ f, helpId, errId, error }: { f: FormField; helpId: string; errId
 }
 
 /** A masked input with a reveal toggle. The browser must not save it: no autocomplete, no spellcheck. */
-function SecretInput({ common, placeholder, value, onChange }: { common: Record<string, unknown>; placeholder?: string; value: string; onChange: (v: string) => void }) {
+/** The masked value field with its reveal toggle — also the composer's `/secret` widget's (components/SlashCommands). */
+export function SecretInput({ common, placeholder, value, onChange }: { common: Record<string, unknown>; placeholder?: string; value: string; onChange: (v: string) => void }) {
   const [shown, setShown] = useState(false);
   return (
     <div className="relative" data-slot="form-secret">

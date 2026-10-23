@@ -83,7 +83,7 @@ beforeEach(() => { localStorage.clear(); apiFake.reset(); sent = []; });
 afterEach(async () => {
   await act(async () => { root?.unmount(); });
   container?.remove();
-  document.querySelectorAll('[data-slot="slash-secret"], [data-slot="slash-merge"]').forEach((el) => el.remove());
+  document.querySelectorAll('[data-slot="slash-merge"]').forEach((el) => el.remove());
   apiFake.reset();
 });
 
@@ -253,27 +253,56 @@ describe("ChatPanel / menu", () => {
     expect(sent).toEqual([]);
   });
 
-  test("/secret saves the value through api.saveSecret; the value never enters the box, the draft or a message", async () => {
+  const textBox = () => container!.querySelector<HTMLTextAreaElement>('textarea[role="combobox"]');
+  const widget = () => container!.querySelector('[data-slot="chat-composer-replaced"] [data-slot="slash-secret"]');
+
+  test("/secret opens an inline widget in the box's place; Enter saves; the value never enters the box, the draft or a message", async () => {
     const box = await mount(worker);
     await type(box, "/sec");
     await key(box, "Enter");
-    expect(box.value).toBe("");
-    const name = document.querySelector<HTMLInputElement>('[data-slot="slash-secret-name"]')!;
-    const value = document.querySelector<HTMLInputElement>('[data-slot="slash-secret-value"]')!;
+    // In the composer, not a modal: the box is gone while the widget is open, and Name has focus.
+    expect(widget()).not.toBeNull();
+    expect(textBox()).toBeNull();
+    expect(document.querySelector('[data-slot="dialog-content"]')).toBeNull();
+    const name = container!.querySelector<HTMLInputElement>('[data-slot="slash-secret-name"]')!;
+    expect(document.activeElement).toBe(name);
+    const value = container!.querySelector<HTMLInputElement>("#slash-secret-value")!;
     expect(value.type).toBe("password");
-    await click(document.querySelector('[data-slot="slash-secret-reveal"]')!);
+    await click(container!.querySelector('[data-slot="form-secret-reveal"]')!);
     expect(value.type).toBe("text");
     await fill(name, "stripe-key");
     await fill(value, "sk_live_TOPSECRET123");
-    await click(document.querySelector('[data-slot="slash-secret-save"]')!);
+    // Enter in a field submits its form (implicit submission): the form's submit is the save.
+    await act(async () => { value.form!.requestSubmit(); await flush(); await flush(); });
     expect(apiFake.secretSaves).toEqual([{ name: "stripe-key", scope: "chat", value: "sk_live_TOPSECRET123" }]);
-    expect(document.querySelector('[data-slot="slash-secret"]')).toBeNull(); // closed
+    expect(widget()).toBeNull(); // closed: the box is back, with focus
+    expect(document.activeElement).toBe(textBox());
     const chip = container!.querySelector('[data-slot="slash-notice"]')!;
     expect(chip.textContent).toContain("chat/stripe-key");
     // Nowhere else: not the box, not the persisted draft, not a sent message, not the page.
-    expect(box.value).not.toContain("TOPSECRET");
+    expect(textBox()!.value).toBe("");
     for (let i = 0; i < localStorage.length; i++) expect(localStorage.getItem(localStorage.key(i)!) ?? "").not.toContain("TOPSECRET");
     expect(sent).toEqual([]);
+    expect(document.body.innerHTML).not.toContain("TOPSECRET");
+  });
+
+  test("/secret: Esc closes the widget, saves nothing and gives the previous draft back", async () => {
+    const box = await mount(worker);
+    await type(box, "keep this draft\n/secret");
+    await key(box, "Enter");
+    expect(widget()).not.toBeNull();
+    const value = container!.querySelector<HTMLInputElement>("#slash-secret-value")!;
+    await fill(value, "sk_live_TOPSECRET123");
+    await act(async () => { value.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); await flush(); await flush(); });
+    expect(widget()).toBeNull();
+    expect(apiFake.secretSaves).toEqual([]);
+    expect(textBox()!.value).toBe("keep this draft\n");
+    expect(document.activeElement).toBe(textBox());
+    expect(textBox()!.selectionStart).toBe("keep this draft\n".length);
+    for (let i = 0; i < localStorage.length; i++) expect(localStorage.getItem(localStorage.key(i)!) ?? "").not.toContain("TOPSECRET");
+    // Send the draft: the message is the draft only.
+    await key(textBox()!, "Enter");
+    expect(sent).toEqual(["keep this draft"]);
     expect(document.body.innerHTML).not.toContain("TOPSECRET");
   });
 });

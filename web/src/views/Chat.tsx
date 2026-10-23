@@ -1399,6 +1399,7 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
       <ChatComposer
         className="shadow-none"
         commands={slash.commands}
+        replace={slash.widget}
         leading={<ChatControls {...ctl} picker={{ open: modelOpen, onOpenChange: setModelOpen }} compact={ctl.contextPct === undefined && compacting === null ? undefined
           : { onCompact, pending: compacting !== null, busy: running, error: compactError }} />}
         persistKey={`orca.chat.${row.repo}::${row.branch}`}
