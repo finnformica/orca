@@ -34,6 +34,10 @@ export type ConversationRef = { adapter: string; externalId: string; messageId?:
 /** What a person may do through one link (§3.7), low to high. `full` is you in Orca's own UI.
  *  `admin` is for a trusted person: every verb on the link's repos, plus move, sweep and repo add. */
 export type Level = "notify" | "ask" | "work" | "admin" | "full";
+
+/** What a link does with an unknown sender: `request` gives them a pairing code (the bell shows it),
+ *  `off` drops their message silently — no code, no bell row, no reply. Absent means `request`. */
+export type LinkPairing = "request" | "off";
 export const LEVELS: readonly Level[] = ["notify", "ask", "work", "admin", "full"];
 /** The levels a link or a person can hold: every one but `full`, which is only you. */
 export type LinkLevel = Exclude<Level, "full">;

@@ -205,7 +205,9 @@ gets `grantScope` and runs in SCOPED mode (`agent.scopedRules`: `claude -p --per
 plus allow and deny rules — files in the worktree, git and the toolchain, no secrets, no
 `--no-verify`, no push to the base branch; never `bypassPermissions`, which approves everything).
 Only a wake whose every message is yours clears it on a steer; `orca status --clear-grant` clears it. An unknown sender gets a one-time
-pairing code (`pairing_code`; approve with `POST /api/integrations/pairing/approve`). The orchestrator
+pairing code (`pairing_code`; approve with `POST /api/integrations/pairing/approve`), unless the link's
+`pairing` is `off` (the row's Pairing requests switch, named step `20261023-link-pairing`): then the
+message is dropped silently — no code, no bell row, no reply. A known person passes either way. The orchestrator
 has `orca channels`, `post`, `thread link` and `ask-user`. A catch-all link (`*`) posts to any channel or thread the bot can see with `orca post --link <id> --channel <id> [--thread <id>]` (`catchAllPostRefusal`: a bare post is refused, an outside wake posts only where its message came from), so no channel link is made only to post. `orca post … --new-thread "<name>"` opens a named thread on the post even with Discord's `config.threads` off (only on request: the default is a reply in place); `--delete <message id>` deletes one message the bot posted (`Adapter.delete`, `caps.deletes`; a person's message is refused). Every `orca post` waits for its delivery (`postWait`) and prints the message and thread ids (`delivery.external_thread_id`, named step `20261023-delivery-thread-id`), else the delivery id. People are global: the Integrations page lists them first, with their identities on every adapter (`identity.name`, named step `20261020-show-identity-name`). A subscription's `digest_seconds` batches
 its deliveries per fixed window (`delivery.digest_key`). `/api/slack` still posts at once as
 you (`postAsUser`), not through the queue; `/api/orchestrator/event` stays for instance-to-instance
@@ -878,6 +880,15 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   Also: a lease records its `sessionId` and `launch` refuses a resume while another live run is on
   that session (`lease.sessionBusy`) — two runs on one session both end with the same reply, which
   was the "one message behind" bug.
+  (3) **A run ended mid background task** (2026-10-23, six runs: a push behind the pre-push gate,
+  `npm install`). `claude -p` does not exit while its `run_in_background` task runs: it waits, and
+  the task's notification starts its next turn. Orca's `agentTimeoutMinutes` counted that wait and
+  killed the CLI, and the task died with it. Now `agent.trackBackground` reads the CLI's task events;
+  while the turn has ended and a task runs, the timeout is paused (the next turn gets at least
+  `backgroundWait.floorMs`) and `backgroundWait.ms` (30 min) caps the wait. At the cap Orca stops the
+  run and queues ONE resume of the same session (`BACKGROUND_MARKER`, each task's command and output
+  tail); a resumed run that ends the same way is an error. The worker report says `N commits not
+  pushed` (`git.unpushedHere`).
 - **One primary bridge per instance** (`server/primary.ts`; incident 2026-10-14: four hand-started
   bridges from reaped worktrees kept running stale code on the shared database, and one woke the
   orchestrator with a deleted `bin/` on PATH). Background duties — orchestrator wakes/recovery, the

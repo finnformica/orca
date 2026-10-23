@@ -220,9 +220,11 @@ export async function onRunFinished(cfg: OrcaConfig, run: agent.RunFinished): Pr
   const step = await ladder(cfg, repo, branch, e, run); // counted even when an autofix takes over
   if (run.continued) return; // a queued follow-up (an autofix) took over — not idle yet
   const opened = await autoPr(cfg, repo, branch, run);
+  // After autoPr, which pushes: what is still only on this disk (a push that died with the run).
+  const unpushed = await git.unpushedHere(run.cwd);
   const text = workerEvent({
     repo, branch, title: e.title as string | undefined, runId: run.runId, status: run.status,
-    outcome: run.structured, response: run.result, check: run.check, denied: run.meta?.permissionDenials,
+    outcome: run.structured, response: run.result, check: run.check, denied: run.meta?.permissionDenials, unpushed,
   }) + (opened ? `\n${opened}` : "") + (step ? `\n${step}` : "");
   await report(cfg, text, run.key);
 }
@@ -614,7 +616,7 @@ async function channelsText(): Promise<string> {
   const byId = new Map(conns.map((c) => [c.id, c]));
   const lines = links.length ? links.map((l) => {
     const c = byId.get(l.integrationId);
-    return `link ${l.id} · ${c?.kind ?? "?"} ${c?.name ?? l.integrationId} on ${c ? (c.instance === "*" ? "automatic" : c.instance) : "?"} · ${l.externalId}${l.label ? ` (${l.label})` : ""} · ${l.level}${repoScoped(l.level) ? ` on ${l.repos.join(", ") || "no repos"}` : ""}${l.requireMention ? " · mention required" : ""}${l.externalId === "*" ? " · catch-all: post with --channel <id> [--thread <id>]" : ""}`;
+    return `link ${l.id} · ${c?.kind ?? "?"} ${c?.name ?? l.integrationId} on ${c ? (c.instance === "*" ? "automatic" : c.instance) : "?"} · ${l.externalId}${l.label ? ` (${l.label})` : ""} · ${l.level}${repoScoped(l.level) ? ` on ${l.repos.join(", ") || "no repos"}` : ""}${l.requireMention ? " · mention required" : ""}${l.pairing === "off" ? " · pairing off" : ""}${l.externalId === "*" ? " · catch-all: post with --channel <id> [--thread <id>]" : ""}`;
   }) : ["no channel links"];
   const subLines = subs.map((s) => `sub ${s.id} · ${s.topicPattern}${Object.keys(s.filter).length ? ` ${JSON.stringify(s.filter)}` : ""} → ${s.targetKind}${s.targetId ? ` ${s.targetId}` : ""}${s.digestSeconds ? ` · digest ${s.digestSeconds}s` : ""}`);
   const pairLines = pairings.map((p) => `pairing ${p.code} · ${p.adapter}:${p.externalId}${p.name ? ` (${p.name})` : ""} waits for the user's approval`);

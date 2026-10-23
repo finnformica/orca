@@ -1046,6 +1046,13 @@ export const MIGRATIONS: MigrationStep[] = [
       CREATE INDEX IF NOT EXISTS secret_use_at ON secret_use (user_id, at);
     `,
   },
+  {
+    name: "20261023-link-pairing",
+    idempotent: true,
+    // What a link does with an unknown sender (shared/integrations.ts LinkPairing): 'request' gives
+    // them a pairing code, as every link did before; 'off' drops their message silently.
+    sql: `ALTER TABLE channel_link ADD COLUMN IF NOT EXISTS pairing TEXT NOT NULL DEFAULT 'request' CHECK (pairing IN ('request','off'));`,
+  },
 ];
 
 export type MigrationMismatch = { id: number; recorded: string; expected: string; idempotent: boolean };
