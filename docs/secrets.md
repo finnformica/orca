@@ -63,15 +63,37 @@ orca secret env billing/api_key=STRIPE_KEY -- ./scripts/sync-prices.sh
 
 ## The paste guard
 
-The chat composer holds text that looks like a key before it is sent: `sk-…`, `ghp_…`,
-`github_pat_…`, `xox…`, `AKIA…`, a private key block, or a long random string. The bar under the box
-gives two choices:
+The chat composer holds text that looks like a key before it is sent. It knows the shape of each of
+these (`shared/secretGuard.ts`, taken from the gitleaks rule set):
+
+- Anthropic (`sk-ant-…`), OpenRouter (`sk-or-…`), OpenAI-style (`sk-…`), Stripe (`sk_live_…`,
+  `sk_test_…`, `rk_live_…`).
+- GitHub (`ghp_…`, `github_pat_…`), GitLab (`glpat-…`), Slack (`xox…`), Discord bot tokens.
+- AWS access keys (`AKIA…`, `ASIA…`), Google API keys (`AIza…`), Google OAuth client secrets
+  (`GOCSPX-…`).
+- SendGrid (`SG.…`), Twilio API keys and account SIDs (`SK…`, `AC…` + 32 hex), npm (`npm_…`), PyPI
+  (`pypi-…`), Hugging Face (`hf_…`), Shopify (`shpat_…` and its siblings).
+- Notion (`secret_…`, `ntn_…`), Linear (`lin_api_…`), a JWT (`eyJ…`.`eyJ…`.`…`), a private key
+  block.
+- A long random string (32 to 512 characters, mixed case plus digits, high entropy; a hex-only run
+  is left to the rule below, since a hash or a UUID has that same shape).
+- **A keyword just before a token on the same line**: `key`, `token`, `secret`, `password`,
+  `passwd`, `pwd`, `api_key`, `apikey`, `auth` or `bearer`, then an optional quote and a separator
+  (`=`, `:` or a space), then 16 or more characters (hex and a single case both count — this is
+  what catches a Datadog- or Mailgun-style hex key with no prefix of its own).
+
+The bar under the box gives two choices:
 
 - **Save as secret** stores each value in the `chat` scope. The message then holds
   `[secret chat/<name> stored]` in place of the value.
 - **Send anyway** sends the text as it is.
 
-A commit sha, a UUID, a URL and a path do not trigger the guard.
+A commit sha, a UUID, a URL and a path do not trigger the guard — unless one of the keywords above
+sits right before it.
+
+`server/handoff.ts` scans a handoff pack for the same shapes (`shared/secretGuard.ts`'s
+`KEY_PATTERNS`), plus one shape of its own: a `PASSWORD=value` line in a file, for scanning a whole
+`.env`-style file rather than a chat message.
 
 ## Security model
 

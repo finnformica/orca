@@ -18,6 +18,7 @@ import { basename, isAbsolute, resolve } from "path";
 import * as db from "./db";
 import { attachmentRef } from "./attachments";
 import type { AgentTurn } from "../shared/agent";
+import { KEY_PATTERNS } from "../shared/secretGuard";
 import { firstRunPerHandoff } from "../web/src/workstream";
 
 export const HANDOFF_MAX_FILE_BYTES = 10 * 1024 * 1024;
@@ -31,14 +32,13 @@ export class HandoffError extends Error {
 // ---- the secret scan ----
 export type SecretFinding = { where: string; line: number; kind: string };
 
-/** Obvious credentials. A match blocks the send; the value itself is never echoed. */
+/** Obvious credentials. A match blocks the send; the value itself is never echoed. The key shapes
+ *  are the paste guard's own list (`shared/secretGuard.ts`), so the two never disagree — cloned
+ *  without the `g` flag, since this scan calls `.test()` on the same object once per line and a
+ *  global regex would carry `lastIndex` across those calls. One extra shape, a password
+ *  assignment, is specific to scanning whole files (an `.env`) and has no paste-guard equivalent. */
 const SECRET_PATTERNS: { kind: string; re: RegExp }[] = [
-  { kind: "Slack token (xox…)", re: /\bxox[abposr]-[A-Za-z0-9-]{10,}/ },
-  { kind: "Anthropic API key (sk-ant-…)", re: /\bsk-ant-[A-Za-z0-9_-]{16,}/ },
-  { kind: "GitHub token (ghp_…)", re: /\bgh[pousr]_[A-Za-z0-9]{30,}/ },
-  { kind: "GitHub token (github_pat_…)", re: /\bgithub_pat_[A-Za-z0-9_]{20,}/ },
-  { kind: "AWS access key (AKIA…)", re: /\bAKIA[0-9A-Z]{16}\b/ },
-  { kind: "private key block", re: /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----/ },
+  ...KEY_PATTERNS.map((p) => ({ kind: p.kind, re: new RegExp(p.re.source, p.re.flags.replace("g", "")) })),
   // `PASSWORD=value`, `DB_PASSWORD="x"`: a non-empty value that is not a placeholder (`<…>`, `${…}`).
   { kind: "password assignment (PASSWORD=…)", re: /\b\w*PASSWORD\w*\s*=\s*["']?(?![\s"'<$*]|$)\S/i },
 ];

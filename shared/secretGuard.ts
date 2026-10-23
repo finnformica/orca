@@ -6,15 +6,41 @@
 
 export type SecretFinding = { start: number; end: number; value: string; kind: string; suggestedName: string };
 
-/** Known key shapes, most specific first. Each `name` is the default secret name the guard offers. */
-const KEY_PATTERNS: { kind: string; name: string; re: RegExp }[] = [
+/** Known key shapes, most specific first, so a prefix two patterns both match (e.g. "sk-") is
+ *  claimed by the narrower one. Each `name` is the default secret name the guard offers. Shapes
+ *  taken from the gitleaks rule set (MIT), kept to well-known, low-false-positive forms. Exported
+ *  so `server/handoff.ts` scans for the same shapes as this paste guard. */
+export const KEY_PATTERNS: { kind: string; name: string; re: RegExp }[] = [
   { kind: "Anthropic API key", name: "anthropic-key", re: /\bsk-ant-[A-Za-z0-9_-]{16,}/g },
+  { kind: "OpenRouter API key", name: "openrouter-key", re: /\bsk-or-[A-Za-z0-9_-]{20,}/g },
   { kind: "OpenAI-style API key", name: "api-key", re: /\bsk-(?:proj-|live-|test-)?[A-Za-z0-9_-]{20,}/g },
+  { kind: "Stripe API key", name: "stripe-key", re: /\b(?:sk_live_|sk_test_|rk_live_)[A-Za-z0-9]{20,}\b/g },
   { kind: "GitHub token", name: "github-token", re: /\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,})/g },
+  { kind: "GitLab personal access token", name: "gitlab-token", re: /\bglpat-[A-Za-z0-9_-]{20,}\b/g },
   { kind: "Slack token", name: "slack-token", re: /\bxox[abposr]-[A-Za-z0-9-]{10,}/g },
+  { kind: "Discord bot token", name: "discord-token", re: /\b[MNO][A-Za-z0-9_-]{23,25}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{25,40}\b/g },
   { kind: "AWS access key", name: "aws-access-key", re: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g },
+  { kind: "Google API key", name: "google-api-key", re: /\bAIza[0-9A-Za-z_-]{35}\b/g },
+  { kind: "Google OAuth client secret", name: "google-oauth-secret", re: /\bGOCSPX-[A-Za-z0-9_-]{20,}\b/g },
+  { kind: "SendGrid API key", name: "sendgrid-key", re: /\bSG\.[A-Za-z0-9_-]{16,32}\.[A-Za-z0-9_-]{16,64}\b/g },
+  { kind: "Twilio API key", name: "twilio-key", re: /\bSK[0-9a-fA-F]{32}\b/g },
+  { kind: "Twilio account SID", name: "twilio-sid", re: /\bAC[0-9a-fA-F]{32}\b/g },
+  { kind: "npm token", name: "npm-token", re: /\bnpm_[A-Za-z0-9]{36}\b/g },
+  { kind: "PyPI token", name: "pypi-token", re: /\bpypi-[A-Za-z0-9_-]{50,}\b/g },
+  { kind: "Hugging Face token", name: "huggingface-token", re: /\bhf_[A-Za-z0-9]{34,40}\b/g },
+  { kind: "Shopify token", name: "shopify-token", re: /\bsh(?:pat|pca|pss|ppa)_[0-9a-fA-F]{32}\b/g },
+  { kind: "Notion token", name: "notion-token", re: /\b(?:secret_[A-Za-z0-9]{43}|ntn_[A-Za-z0-9]{32,50})\b/g },
+  { kind: "Linear API key", name: "linear-key", re: /\blin_api_[A-Za-z0-9]{40}\b/g },
+  { kind: "JWT", name: "jwt", re: /\beyJ[A-Za-z0-9_-]{2,}\.eyJ[A-Za-z0-9_-]{2,}\.[A-Za-z0-9_-]{2,}\b/g },
   { kind: "private key", name: "private-key", re: /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----[\s\S]*?(?:-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----|$)/g },
 ];
+
+/** A keyword that, just before a long token on the same line, turns an otherwise plain token (hex,
+ *  single case, or under 32 chars) into a finding — a context rule for the shapes above's gap: a
+ *  hex-only or single-case key with no known prefix. Optional quotes and a separator (`=`, `:` or a
+ *  space) may sit between the keyword and the token; a bare commit sha or UUID has no such keyword,
+ *  so it stays unflagged. */
+const CONTEXT_KEY_RE = /(?<=\b(?:api[_-]?key|key|token|secret|password|passwd|pwd|auth|bearer)\b[ \t]*[:=]?[ \t]*["']?)[A-Za-z0-9_-]{16,}/gi;
 
 /** Shannon entropy of a string, in bits per character. Pure. */
 export function entropy(s: string): number {
@@ -50,6 +76,12 @@ export function secretFindings(text: string): SecretFinding[] {
   for (const m of text.matchAll(/[A-Za-z0-9+/=_-]{32,}/g)) {
     const start = m.index!, end = start + m[0].length;
     if (!taken(start, end) && looksRandom(m[0])) out.push({ start, end, value: m[0], kind: "long random string", suggestedName: "secret" });
+  }
+  // Last: only a token the fallback above left alone (hex-only, single case, or under 32 chars)
+  // and that sits right after one of the keywords in CONTEXT_KEY_RE.
+  for (const m of text.matchAll(CONTEXT_KEY_RE)) {
+    const start = m.index!, end = start + m[0].length;
+    if (!taken(start, end)) out.push({ start, end, value: m[0], kind: "key-like value", suggestedName: "secret" });
   }
   return out.sort((a, b) => a.start - b.start);
 }

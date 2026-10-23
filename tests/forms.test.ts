@@ -133,6 +133,65 @@ describe("paste guard heuristics", () => {
     ]) expect(secretFindings(text)).toEqual([]);
   });
 
+  test("the broader provider key shapes are each found, with a suggested name", () => {
+    // Built at run time, never a literal secret-shaped string, so no scanner mistakes this file
+    // for a real credential.
+    const cases: [string, string][] = [
+      [["sk-or-", "A".repeat(24)].join(""), "openrouter-key"],
+      [["sk_live_", "A".repeat(24)].join(""), "stripe-key"],
+      [["glpat-", "A".repeat(20)].join(""), "gitlab-token"],
+      [["M" + "A".repeat(24), "B".repeat(6), "C".repeat(27)].join("."), "discord-token"],
+      [["AIza", "A".repeat(35)].join(""), "google-api-key"],
+      [["GOCSPX-", "A".repeat(28)].join(""), "google-oauth-secret"],
+      [["SG.", "A".repeat(22), ".", "B".repeat(43)].join(""), "sendgrid-key"],
+      [["SK", "0123456789abcdef0123456789abcdef"].join(""), "twilio-key"],
+      [["AC", "0123456789abcdef0123456789abcdef"].join(""), "twilio-sid"],
+      [["npm_", "A".repeat(36)].join(""), "npm-token"],
+      [["pypi-", "A".repeat(50)].join(""), "pypi-token"],
+      [["hf_", "A".repeat(34)].join(""), "huggingface-token"],
+      [["shpat_", "0123456789abcdef0123456789abcdef"].join(""), "shopify-token"],
+      [["secret_", "A".repeat(43)].join(""), "notion-token"],
+      [["ntn_", "A".repeat(35)].join(""), "notion-token"],
+      [["lin_api_", "A".repeat(40)].join(""), "linear-key"],
+      [["eyJ", "A".repeat(20), ".eyJ", "B".repeat(20), ".", "C".repeat(20)].join(""), "jwt"],
+    ];
+    for (const [text, name] of cases) {
+      const found = secretFindings(`here it is: ${text} thanks`);
+      expect(found, name).toHaveLength(1);
+      expect(found[0]).toMatchObject({ value: text, suggestedName: name });
+    }
+  });
+
+  test("a keyword just before a token turns an otherwise plain value into a finding", () => {
+    const hex32 = "0123456789abcdef0123456789abcdef"; // single case, hex-only: looksRandom alone misses it
+    for (const line of [
+      `api_key=${hex32}`, `apikey: ${hex32}`, `token ${hex32}`, `secret="${hex32}"`,
+      `password: '${hex32}'`, `passwd=${hex32}`, `pwd ${hex32}`, `auth: ${hex32}`, `Bearer ${hex32}`,
+    ]) {
+      const found = secretFindings(line);
+      expect(found, line).toMatchObject([{ value: hex32, kind: "key-like value", suggestedName: "secret" }]);
+    }
+    // under 32 chars, with no known prefix: also missed without the keyword.
+    const short = "AbCdEf1234567890"; // 16 chars, mixed case + digit
+    expect(looksRandom(short)).toBe(false);
+    expect(secretFindings(`key: ${short}`)).toMatchObject([{ value: short, kind: "key-like value" }]);
+  });
+
+  test("a context keyword does not re-label a value the fallback already caught", () => {
+    const random = "Zq8vLm3TxR7kPw2NcY6bHs9JdF4gUa1E"; // same as the fallback's own test case
+    expect(secretFindings(`token ${random}`)).toMatchObject([{ value: random, kind: "long random string" }]);
+  });
+
+  test("a commit sha, a UUID, a path, English prose and a base64 image prefix are not held", () => {
+    for (const text of [
+      "commit 3f2a9c1d7e5b4a6f8c0d2e4f6a8b0c2d4e6f8a0b", // a sha alone, no keyword
+      "id 123e4567-e89b-12d3-a456-426614174000", // a UUID alone, no keyword
+      "src/components/very/long/path/ChatComposerPasteGuard.tsx", // a file path
+      "ThisIsALongDescriptiveVariableNameThatSomeoneMightWriteInCode", // a normal long English word run
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA", // a base64 image prefix
+    ]) expect(secretFindings(text)).toEqual([]);
+  });
+
   test("replaceFindings swaps each finding, the rest kept", () => {
     const text = "a AKIAIOSFODNN7EXAMPLE b xoxb-1234567890-abcdefghij c";
     expect(replaceFindings(text, secretFindings(text), (_, i) => `[secret ${i}]`)).toBe("a [secret 0] b [secret 1] c");
