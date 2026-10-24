@@ -7,7 +7,8 @@ import { chmodSync, mkdtempSync, readFileSync, writeFileSync, existsSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  forwardedHeaders, listServers, resetServerCaches, serverGate, withSelf, serverSwitcherProblems, trustedOrigin, type ServerSwitcherConfig,
+  forwardedHeaders, listServers, resetServerCaches, serverGate, tailscaleUserFromHeaders, withSelf, withTailscaleUser,
+  serverSwitcherProblems, trustedOrigin, type ServerSwitcherConfig,
 } from "../server/servers";
 import { parseConfigDocument } from "../server/config";
 import { native } from "./happydom";
@@ -368,6 +369,34 @@ test("the config document validates serverSwitcher", () => {
   const repos = [{ name: "orca", repoPath: "/r", worktreeRoot: "/w", baseBranch: "main" }];
   expect(parseConfigDocument({ repos, serverSwitcher: ON }).config?.serverSwitcher).toEqual(ON);
   expect(parseConfigDocument({ repos, serverSwitcher: { enabled: 1 } }).errors).toEqual(["serverSwitcher.enabled must be true or false"]);
+});
+
+test("tailscaleUserFromHeaders: reads tailscale serve's identity headers, but only over loopback", () => {
+  const headers = new Headers({
+    "tailscale-user-login": "finn@github", "tailscale-user-name": "Finn", "tailscale-user-profile-pic": "https://example.com/pic.jpg",
+  });
+  expect(tailscaleUserFromHeaders(headers, "127.0.0.1")).toEqual({ login: "finn@github", name: "Finn", picture: "https://example.com/pic.jpg" });
+  expect(tailscaleUserFromHeaders(headers, "::1")).toEqual({ login: "finn@github", name: "Finn", picture: "https://example.com/pic.jpg" });
+  expect(tailscaleUserFromHeaders(headers, "::ffff:127.0.0.1")).toEqual({ login: "finn@github", name: "Finn", picture: "https://example.com/pic.jpg" });
+  // A tailnet peer reaching the tailnet-bound socket directly (bypassing serve) could set these
+  // itself: never trust them there.
+  expect(tailscaleUserFromHeaders(headers, "100.64.0.5")).toBeNull();
+  expect(tailscaleUserFromHeaders(headers, undefined)).toBeNull();
+  // No picture (no identity provider picture), and a tagged device or local dev with no serve in
+  // front (no login header at all).
+  const noPicture = new Headers({ "tailscale-user-login": "finn@github", "tailscale-user-name": "Finn" });
+  expect(tailscaleUserFromHeaders(noPicture, "127.0.0.1")).toEqual({ login: "finn@github", name: "Finn", picture: undefined });
+  expect(tailscaleUserFromHeaders(new Headers(), "127.0.0.1")).toBeNull();
+});
+
+test("withTailscaleUser: adds self.tailscaleUser per request, without touching the cached answer", async () => {
+  const answer = await listServers({ enabled: false }, now);
+  const headers = new Headers({ "tailscale-user-login": "finn@github" });
+  const withUser = withTailscaleUser(answer, headers, "127.0.0.1");
+  expect(withUser.self.tailscaleUser).toEqual({ login: "finn@github", name: undefined, picture: undefined });
+  expect(answer.self).not.toHaveProperty("tailscaleUser"); // the cached object is untouched
+  expect(withTailscaleUser(answer, headers, "100.64.0.5")).toBe(answer); // not loopback: unchanged
+  expect(withTailscaleUser(answer, new Headers(), "127.0.0.1")).toBe(answer); // no header: unchanged
 });
 
 test("withSelf: a discovered row on this server's host is self on any scheme or port, and takes the self url", () => {

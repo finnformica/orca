@@ -55,7 +55,7 @@ import * as terminal from "./terminal";
 import { diskStore, parseShotRequest, shooter, type ShotRequest } from "./screenshot";
 import * as heavy from "./heavy";
 import * as heavyLeaks from "./heavyLeaks";
-import { checkCaller, forwardedHeaders, instanceHosts, listServers, selfServer, serverGate, withIdentity } from "./servers";
+import { checkCaller, forwardedHeaders, instanceHosts, listServers, selfServer, serverGate, withIdentity, withTailscaleUser } from "./servers";
 import { isAutomatic, leaseHolder } from "../shared/integrations";
 import { instanceOptions } from "../shared/integrationSettings";
 import { identityUpdate, serverIdentityProblems } from "../shared/serverIdentity";
@@ -622,8 +622,13 @@ async function api(req: Request, url: URL): Promise<Response> {
     return eventStream(req, others);
   }
   // The server switcher (server/servers.ts): the Orca servers a browser may switch to. Answered here,
-  // never forwarded — each server names itself and its own discovery.
-  if (req.method === "GET" && p === "/api/servers") return json(withIdentity(await listServers(cfg.serverSwitcher), cfg.serverIdentity));
+  // never forwarded — each server names itself and its own discovery. `self.tailscaleUser` is added
+  // per request (the CALLER's identity, over loopback only — see withTailscaleUser), for the
+  // sidebar's profile button.
+  if (req.method === "GET" && p === "/api/servers") {
+    const answer = withIdentity(await listServers(cfg.serverSwitcher), cfg.serverIdentity);
+    return json(withTailscaleUser(answer, req.headers, remoteAddr.get(req)));
+  }
   // Handoff packs (server/handoff.ts): context for another Orca server, carried by the browser. Never
   // forwarded: the packs are this database's, and the import queues to THIS side's orchestrator.
   if (p === "/api/handoffs" || p.startsWith("/api/handoffs/") || p === "/api/handoff/import") {

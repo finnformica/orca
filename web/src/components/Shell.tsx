@@ -41,7 +41,8 @@ import { useInboxUnread } from "@/lib/inboxUnread";
 import { useHandoffBadge } from "@/lib/handoffBadge";
 import { AddServerDialog, Dot, healthText, ServerMenuItems, ServerOffline, checkServers, useAddServerClose, useServerProblem, useServers } from "@/components/ServerMenu";
 import { currentServer } from "@/lib/server";
-import { loadIdentity, useServerIdentity } from "@/lib/identity";
+import { loadIdentity, profileInitials, useServerIdentity } from "@/lib/identity";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { poll } from "@/lib/poll";
 import { NotificationBell, footIcon } from "@/components/Notifications";
 import { notifyLocal } from "@/lib/notificationStore";
@@ -583,22 +584,24 @@ export const THEMES: { value: Theme; label: string; Icon: typeof Sun }[] = [
   { value: "system", label: "System", Icon: Monitor },
 ];
 
-// You, at the foot of the sidebar: refresh the app, sync worktrees, the theme.
+// The signed-in Tailscale user, at the foot of the sidebar: refresh the app, sync worktrees, the theme.
 export function ProfileMenu({ collapsed = false }: { collapsed?: boolean }) {
   const [theme, setTheme] = useTheme();
   const setPalette = useSetAtom(paletteOpenAtom);
   const setHelp = useSetAtom(shortcutsHelpOpenAtom);
-  useRepos(); // the instance name arrives with config, after first paint
+  const identity = useServerIdentity();
+  const user = identity?.tailscaleUser;
+  // Off the tailnet, a tagged device, or before the first /api/servers answer lands: "You", as before.
+  const label = user?.login ?? "You";
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button type="button" data-slot="profile" className={cn("hover:bg-accent flex h-9 min-w-0 items-center gap-2.5 rounded-md px-2.5 text-sm transition-colors", collapsed ? "md:size-9 md:justify-center md:p-0" : "flex-1")} aria-label="Profile menu">
-          <CircleUser className="text-muted-foreground size-4 shrink-0" />
-          {/* One line: who, then which machine — "You · local". */}
-          <span className={cn("flex min-w-0 items-center gap-1.5 whitespace-nowrap", collapsed && "md:hidden")}>
-            <span className="truncate">You</span>
-            {thisInstance() && <><span className="bg-muted-foreground/60 size-1 shrink-0 rounded-full" aria-hidden="true" /><span data-slot="profile-instance" className="text-muted-foreground truncate">{thisInstance()}</span></>}
-          </span>
+          <Avatar className="size-5">
+            {user?.picture && <AvatarImage src={user.picture} alt="" />}
+            <AvatarFallback>{user ? profileInitials(user.name, user.login) : <CircleUser className="size-3.5" />}</AvatarFallback>
+          </Avatar>
+          <span data-slot="profile-label" className={cn("min-w-0 flex-1 truncate", collapsed && "md:hidden")}>{label}</span>
           {/* It opens a menu: the chevron at the far right, as branch-demo's user row. */}
           <ChevronsUpDown className={cn("text-muted-foreground ml-auto size-3.5 shrink-0", collapsed && "md:hidden")} aria-hidden="true" />
         </button>

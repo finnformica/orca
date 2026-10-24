@@ -17,7 +17,7 @@ import {
   mergeServers, probeServer, rememberServer, serverOrigin, serverStatus, showServerMenu, switchServer, type Probe, type ServersAnswer,
 } from "@/lib/server";
 import { _resetServerList } from "@/components/ServerMenu";
-import { _resetIdentity } from "@/lib/identity";
+import { _resetIdentity, activeIdentityOf, profileInitials } from "@/lib/identity";
 import { IDENTITY_SAVE_DELAY_MS } from "@/views/Pages";
 import { IDENTITY_COLORS, colorFromName, markBg, markColor, themeCss } from "../shared/serverIdentity";
 import { getDefaultStore } from "jotai";
@@ -438,6 +438,27 @@ test("S6f: after a switch the menu shows the active server's cached identity bef
   expect(document.title).toBe("Orca | Personal");
 });
 
+test("S6j: the sidebar's profile button shows the caller's Tailscale login, not the instance, with initials as the avatar fallback", async () => {
+  setup();
+  network((u) => (u === "/api/servers" ? json({ ...HOME, self: { ...HOME.self, tailscaleUser: { login: "finn@github", name: "Finn Formica" } } }) : undefined));
+  await mount();
+  await act(async () => { await flush(); await flush(); await flush(); });
+  const profile = q('[data-slot="profile"]')!;
+  expect(profile.querySelector('[data-slot="profile-label"]')!.textContent).toBe("finn@github");
+  expect(profile.textContent).not.toContain("cloud"); // the instance name is dropped
+  expect(profile.querySelector('[data-slot="avatar-fallback"]')!.textContent).toBe("FF"); // initials from the name
+});
+
+test("S6k: with no Tailscale user (local dev, a tagged device, an older server) the profile button falls back to \"You\" and a generic icon", async () => {
+  setup();
+  network(); // HOME has no tailscaleUser
+  await mount();
+  await act(async () => { await flush(); await flush(); await flush(); });
+  const profile = q('[data-slot="profile"]')!;
+  expect(profile.querySelector('[data-slot="profile-label"]')!.textContent).toBe("You");
+  expect(profile.querySelector("svg.lucide-circle-user")).not.toBeNull();
+});
+
 test("S6b: with the Tailscale API and one server there is no server section, and no hint when the API is set", async () => {
   setup();
   network((u) => (u === "/api/servers" ? json({ ...HOME, tailscaleApi: true, source: "tailscale" }) : undefined));
@@ -560,6 +581,16 @@ test("S12: probeServer reads a server that fails both the cors and no-cors fetch
   setup();
   globalThis.fetch = (async (_input: RequestInfo | URL) => { throw new TypeError("Failed to fetch"); }) as unknown as typeof fetch;
   expect(await probeServer("http://ghost-box:8787")).toEqual({ health: "offline" });
+});
+
+test("S11: profileInitials and activeIdentityOf carry the caller's Tailscale user through (pure)", () => {
+  expect(profileInitials("Finn Formica", "finn@github")).toBe("FF"); // the name wins
+  expect(profileInitials(undefined, "finn@github")).toBe("FI"); // no name: the login's local part
+  expect(profileInitials("", "f@github")).toBe("F");
+  expect(profileInitials(undefined, undefined)).toBe("?"); // nothing to show
+  expect(activeIdentityOf(HOME).tailscaleUser).toBeUndefined(); // absent on a plain answer
+  const withUser = { ...HOME, self: { ...HOME.self, tailscaleUser: { login: "finn@github", name: "Finn" } } };
+  expect(activeIdentityOf(withUser).tailscaleUser).toEqual({ login: "finn@github", name: "Finn" });
 });
 
 test("S10: URLs and names (pure)", () => {
