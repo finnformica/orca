@@ -45,8 +45,9 @@ Orca a wider token.
 
 ## 2. Store the token
 
-Use one of the two paths. If you choose a stored secret in the Connect form, Orca uses it and not
-the variable.
+Use one of the two paths. The integration's secret_ref names the one it uses: `secret:<name>` for
+path A, a variable name for path B. Every integration takes both forms
+([ADAPTERS.md](ADAPTERS.md) section 13).
 
 ### Path A: Orca's secret store (recommended)
 
@@ -55,10 +56,12 @@ the variable.
 3. Save. The chat shows the name only.
 
 - The store keeps the value as AES-256-GCM ciphertext in the database ([docs/secrets.md](../secrets.md)).
-- The adapter and `orca cloudflare` decrypt it in the bridge and keep it in memory. Orca never
-  writes it to `.env`, a log or an agent's environment.
-- Each read writes one audit row: action `integration`, command `cloudflare`. The adapter reads it
-  when it starts and on each health check, not on each poll.
+- The registry decrypts it when it starts the adapter, and `orca cloudflare` decrypts it for each
+  command. Both keep it in memory only. Orca never writes it to `.env`, a log or an agent's environment.
+- Each read writes one audit row: action `integration`, command `cloudflare`. A poll or a health
+  check reads memory, not the store.
+- To rotate the token, store a new value under the same name. The next sync (at most one minute)
+  starts the adapter again with it.
 - The secret store's key is on the orchestrator's instance. Only a bridge with the same key can
   decrypt the token: set the same `ORCA_SECRETS_KEY` on each instance, or pin the integration to the
   orchestrator's instance (Runs on).
@@ -87,9 +90,10 @@ Agents never see an `ORCA_SECRET_*` variable (`server/env.ts`).
 2. Fill in the form:
    - Name: `Cloudflare`. Id: `cloudflare`.
    - Runs on: Automatic.
-   - Secret variable: empty. With path B, empty means `ORCA_SECRET_CLOUDFLARE`.
+   - Path A: under **Stored secret**, choose the name you stored. The secret variable becomes
+     `secret:<name>`.
+   - Path B: leave **Secret variable** empty for `ORCA_SECRET_CLOUDFLARE`.
    - Account id: the 32-character id on the account home page in the dashboard. It is not a secret.
-   - Token secret: with path A, the name you stored. With path B, "None: use the secret variable".
    - The other fields: empty for the defaults (section 7).
 3. Save. Wait for the next sync (at most one minute).
 4. Click **Test** on the Cloudflare card. The result is `OK · connected to <account name>`.
@@ -168,7 +172,6 @@ look, uses the read commands, and tells you what matters.
 | Form field (`config` key) | Default | Meaning |
 |---|---|---|
 | Account id (`accountId`) | `ORCA_CLOUDFLARE_ACCOUNT_ID` | The account to watch and to act on. |
-| Token secret (`tokenSecret`) | none | The name of a stored Orca secret that holds the token. Set: it wins over the variable. |
 | Poll every (`pollMinutes`) | 5 | Minutes between two polls. The minimum is 1. |
 | Error-rate threshold (`errorRatePct`) | 5 | The error rate in percent that alerts. |
 | Fewest requests (`minRequests`) | 100 | Fewer requests in the window give no error alert. |
@@ -183,8 +186,8 @@ Environment variables:
 | `ORCA_CLOUDFLARE_ACCOUNT_ID` | Fallback account id, when no integration gives one. |
 | `ORCA_CLOUDFLARE_API` | Another API base URL. Only for tests. |
 
-`orca cloudflare` reads the token of the first enabled Cloudflare integration: its stored secret,
-else the variable it names. It reads the account id from the integration's config. With no
+`orca cloudflare` reads the token of the first enabled Cloudflare integration: the stored secret or
+the variable that its secret_ref names. It reads the account id from the integration's config. With no
 integration, it reads `ORCA_SECRET_CLOUDFLARE` and `ORCA_CLOUDFLARE_ACCOUNT_ID`, so a setup with only
 the variables still works. If the stored secret cannot be read, the command stops and says why. It
 does not try another token.

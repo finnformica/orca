@@ -217,21 +217,21 @@ export type InboundMessage = {
    FIRST save of a row of that kind (`admin.saveIntegration`). Cloudflare uses it to make its
    catch-all link and its subscriptions to the orchestrator. A later edit does not run it, so a
    removed link or subscription stays removed.
-6. Optional: let the token come from Orca's secret store. Add a config field with `type: "secret"`
-   (the Connect form shows a Select of stored secret names, never a value), and name that key in
-   `meta.storedSecretKey`. When the key is set, `secretDefault` does not apply. Read the value in the
-   bridge with `secrets.reveal(ref, who, use)`: one audit row each call, so read it at start and on
-   `health`, not on each poll. Keep it in memory only. Cloudflare's key is `tokenSecret`.
+6. Read every secret with `secretValue(ref)` (`server/integrations/secretRefs.ts`) or
+   `ctx.secret()`, never `process.env` directly. Then a stored secret works for your adapter too
+   (section 13).
 
 ## 6. Configure an integration
 
 Use Settings > Integrations (`/settings/integrations`): Connect, links, people, subscriptions and Retry. A new kind shows there when it registers with `meta` (`register(kind, factory, meta)`). You can also use SQL or `store.ts` from a script:
 
-1. Put the token in the environment (`.env` or the systemd unit) of each instance that can run it. Name it
-   `ORCA_SECRET_<SOMETHING>`. The agent environment strips every `ORCA_SECRET_*` variable. The
-   registry refuses any other name, except the names in `ORCA_SECRETS` (`server/env.ts`).
+1. Put the token in Orca's secret store (`/secret` in the chat), or in the environment (`.env` or the
+   systemd unit) of each instance that can run it. Name a variable `ORCA_SECRET_<SOMETHING>`. The
+   agent environment strips every `ORCA_SECRET_*` variable. The registry refuses any other name,
+   except the names in `ORCA_SECRETS` (`server/env.ts`). Section 13 has the stored form.
 2. Add an `integration` row: `id`, `kind`, `name`, `instance` (`*` for Automatic, or the one
-   instance that runs it, section 6.1), `config`, `secret_ref` (the variable name).
+   instance that runs it, section 6.1), `config`, `secret_ref` (the variable name, or
+   `secret:<stored name>`).
 3. Add a `channel_link` row for each external place: `level` (`notify`, `ask`, `work` or `admin`),
    `repos` (for `work` and `admin`), `require_mention`.
 4. Add `principal` and `identity` rows for each person who may act through Orca. Use the People
@@ -405,3 +405,39 @@ seconds. At the window's end, the dispatcher sends ONE message for the window.
   retry time and dead state.
 - A digest does not apply to `web` targets. The web already shows each event.
 - A digest over more than one workstream starts no thread.
+
+## 13. Secrets: a variable or Orca's secret store
+
+Every secret ref of an integration has one of two forms:
+
+| Form | Example | Where the value is |
+|---|---|---|
+| A variable name | `ORCA_SECRET_EMAIL_IMAP` | The bridge's environment (`.env`). It must start with `ORCA_SECRET_` or be in `ORCA_SECRETS`. |
+| `secret:<name>` or `secret:<scope>/<name>` | `secret:gmail-app` | Orca's encrypted secret store ([docs/secrets.md](../secrets.md)): `/secret` in the chat, or an `ask-form` secret field. |
+
+A secret ref is the row's `secret_ref`, and each config key that ends in `Ref`, nested keys too:
+email's `smtpSecretRef` (`smtp.secretRef`) and `resendSecretRef` (`resend.secretRef`), Slack's
+`appTokenRef`. `secretRefRefusal` checks both forms. A plain value is refused.
+
+How a stored secret reaches an adapter (`server/integrations/secretRefs.ts`):
+
+1. Before `start`, the registry decrypts each stored secret that the row names (`secretRefs.load`).
+   It keeps the values in the bridge's memory only. Each read writes one audit row (action
+   `integration`, command = the kind, who = `integration <id>`).
+2. The adapter reads it with `secretValue(ref)` or `ctx.secret()`, like a variable.
+3. Each sync (every minute) compares the stored secret's `updated_at`. A changed or deleted secret
+   stops the adapter, and the registry starts it again. That start loads the new value, or fails
+   with the reason on the card (`no secret "gmail-app"`).
+4. An Automatic row goes only to a primary whose key can decrypt every stored secret it names
+   (`secretRefs.readable`). Set the same `ORCA_SECRETS_KEY` on each instance, or pin the row.
+
+Rules:
+
+- No value goes to a file, a log, the environment or an agent's spawn. `secrets.scrub` masks a
+  stored value in tool output and posts.
+- A `secret:` ref never falls back to a variable, and a variable never falls back to the store.
+- The Connect form has a **Stored secret** Select for every kind. It lists the store's names, never
+  a value, and writes `secret:<name>` as the secret_ref. For a config ref (email's SMTP and Resend
+  boxes), type `secret:<name>`.
+- Code outside an adapter (`orca cloudflare`) reads a stored secret with `secrets.reveal`, and keeps
+  it in memory for that one call.

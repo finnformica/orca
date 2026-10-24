@@ -7,10 +7,11 @@
 import * as db from "../db";
 import * as primary from "../primary";
 import { ORCA_SECRETS } from "../env";
-import { AUTO_LEASE_MS, isAutomatic, leaseHolder, runsOn, secretRefRefusal, type AdapterKind, type AdapterMeta, type InboundEnvelope } from "../../shared/integrations";
+import { AUTO_LEASE_MS, isAutomatic, leaseHolder, runsOn, secretRefRefusal, storedSecretName, type AdapterKind, type AdapterMeta, type InboundEnvelope } from "../../shared/integrations";
 import type { Adapter, AdapterContext, AdapterFactory, Connection } from "./adapter";
 import * as router from "./router";
 import * as store from "./store";
+import * as secretRefs from "./secretRefs";
 import { SLACK_CAPS, slackAdapter } from "./adapters/slack";
 import { WEBHOOK_CAPS, webhookAdapter } from "./adapters/webhook";
 import { DISCORD_CAPS, discordAdapter } from "./adapters/discord";
@@ -80,17 +81,16 @@ register("linear", linearAdapter, {
 
 register("cloudflare", (c) => cloudflareAdapter(c), {
   label: "Cloudflare", caps: CLOUDFLARE_CAPS, place: "place (* = the whole account, zone:<name>)",
-  secretExample: "ORCA_SECRET_CLOUDFLARE", secretDefault: "ORCA_SECRET_CLOUDFLARE", storedSecretKey: "tokenSecret",
+  secretExample: "ORCA_SECRET_CLOUDFLARE", secretDefault: "ORCA_SECRET_CLOUDFLARE",
   config: [
     { key: "accountId", label: "Account id", placeholder: "32 hex characters, from the account home page" },
-    { key: "tokenSecret", label: "Token secret (a stored Orca secret; else the secret variable)", type: "secret" },
     { key: "pollMinutes", label: "Poll every (minutes)", placeholder: "5" },
     { key: "errorRatePct", label: "Worker error-rate threshold (%)", placeholder: "5" },
     { key: "minRequests", label: "Fewest requests for an error alert", placeholder: "100" },
     { key: "zones", label: "Zones to watch (comma-separated; empty = all)", placeholder: "example.com" },
     { key: "deployActors", label: "Deploy actors to leave out (comma-separated)", placeholder: "github" },
   ],
-  help: "An account API token, from Orca's secret store or a secret variable. Orca polls the account (audit log, deploys, Worker errors, custom domains, DNS) and tells the orchestrator; it takes no posts. Setup: docs/integrations/cloudflare.md.",
+  help: "An account API token, in Orca's secret store (Stored secret) or a secret variable. Orca polls the account (audit log, deploys, Worker errors, custom domains, DNS) and tells the orchestrator; it takes no posts. Setup: docs/integrations/cloudflare.md.",
 }, cloudflareDefaults);
 
 /** Every registered kind with what the Settings page shows for it. A kind with no meta gets a plain one. */
@@ -105,14 +105,17 @@ export function kinds(): AdapterMeta[] {
 export const runsHere = (c: Pick<Connection, "instance" | "enabled" | "auto">, here = db.instanceName(), isPrimary = primary.held(), now = Date.now()): boolean =>
   runsOn(c, here, isPrimary, now);
 
-/** Whether the variable a row names is set in this process's environment (no secret: true). */
-export const secretHere = (c: Pick<Connection, "secretRef">, env: Record<string, string | undefined> = process.env): boolean =>
-  !c.secretRef || !!env[c.secretRef];
+/** Whether this process has the row's secret: the variable is set, and each stored secret it names
+ *  (`secret:<name>`, its secret_ref or a config `…Ref`) is in `readable` — the store's names this
+ *  bridge's key can decrypt (secretRefs.readable). No secret: true. */
+export const secretHere = (c: Pick<Connection, "secretRef" | "config">, env: Record<string, string | undefined> = process.env, readable: Set<string> = new Set()): boolean =>
+  (!c.secretRef || storedSecretName(c.secretRef) !== undefined || !!env[c.secretRef])
+  && secretRefs.storedNames({ secretRef: c.secretRef, config: c.config ?? {} }).every((n) => readable.has(n));
 
 export function context(connection: Connection, abort: AbortController): AdapterContext {
   return {
     connection,
-    secret: () => (connection.secretRef ? process.env[connection.secretRef] : undefined) || undefined,
+    secret: () => secretRefs.secretValue(connection.secretRef),
     ingest: (e: InboundEnvelope) => router.ingest(connection.id, e),
     cursor: { get: () => store.cursor(connection.id), set: (v) => store.setCursor(connection.id, v) },
     status: (s) => store.setIntegrationStatus(connection.id, { ...s, at: Date.now() }),
@@ -131,6 +134,7 @@ export async function startOne(connection: Connection): Promise<boolean> {
   const abort = new AbortController();
   const adapter = factory(connection);
   try {
+    await secretRefs.load(connection); // stored secrets into memory first: a missing one fails the start
     await adapter.start(context(connection, abort));
     running.set(connection.id, { adapter, connection, abort });
     await store.setIntegrationStatus(connection.id, { ok: true, startedAt: Date.now(), error: null }).catch(() => {});
@@ -150,10 +154,13 @@ export async function startOne(connection: Connection): Promise<boolean> {
 export async function sync(now = Date.now()): Promise<string[]> {
   const here = db.instanceName();
   const rows = primary.held() ? await store.integrations(here) : [];
+  // Stored secrets (`secret:<name>`): which this bridge can decrypt, read only when a row names one.
+  const usesStored = rows.some((c) => secretRefs.storedNames(c).length);
+  const readable = usesStored ? await secretRefs.readable().catch(() => new Set<string>()) : new Set<string>();
   for (const c of rows) {
     if (!isAutomatic(c.instance) || !c.enabled) continue;
     // Only a primary with the secret contends, so the lease goes where the connection can start.
-    const has = secretHere(c);
+    const has = secretHere(c, process.env, readable);
     await store.markSecretMissing(c.id, here, !has, now);
     if (has) { const lease = await store.claimAuto(c.id, here, now, AUTO_LEASE_MS); if (lease) c.auto = lease; else delete c.auto; }
     else if (leaseHolder(c.auto, now) === here) { await store.releaseAuto(c.id, here); delete c.auto; }
@@ -161,6 +168,11 @@ export async function sync(now = Date.now()): Promise<string[]> {
   const mine = rows.filter((c) => runsHere(c, here, true, now));
   const want = new Set(mine.map((c) => c.id));
   for (const id of [...running.keys()]) if (!want.has(id)) await stopOne(id);
+  // A stored secret that changed (rotated, deleted) restarts its adapter, which loads it again.
+  if (usesStored) {
+    const secretRows = await db.secrets().catch(() => undefined);
+    for (const c of mine) if (running.has(c.id) && secretRows && await secretRefs.stale(c, secretRows)) await stopOne(c.id);
+  }
   for (const c of mine) await startOne(c);
   return [...running.keys()];
 }

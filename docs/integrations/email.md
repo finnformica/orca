@@ -56,6 +56,15 @@ unit). The agent environment removes every `ORCA_SECRET_*` variable. Use these n
 
 You can use other names. Each name must start with `ORCA_SECRET_`.
 
+Or keep a password in Orca's secret store, not in `.env` ([ADAPTERS.md](ADAPTERS.md) section 13):
+
+1. In the orchestrator's chat, type `/secret`. Store the app password, for example as `gmail-app`.
+2. In the Connect form, choose `gmail-app` under **Stored secret**. The secret_ref becomes `secret:gmail-app`.
+3. For a separate SMTP password, store it too, and type `secret:<its name>` in the SMTP password box.
+
+The registry decrypts each one in memory when the adapter starts. Gmail uses one app password for
+IMAP and SMTP, so step 1 and 2 are enough. To rotate, store a new value under the same name.
+
 ## 4. Add the rows
 
 Use Settings > Integrations for the integration, the links, the people and the subscriptions. The

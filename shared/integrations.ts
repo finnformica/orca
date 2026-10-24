@@ -106,12 +106,9 @@ export type AdapterMeta = {
   caps: Capabilities;
   place?: string;
   secretExample?: string;
-  /** The variable a row names when the Connect form leaves the secret empty — unless the config
-   *  key `storedSecretKey` names a stored Orca secret, which then holds the token instead. */
+  /** The variable a row names when the Connect form leaves the secret empty. */
   secretDefault?: string;
-  storedSecretKey?: string;
-  /** `type: "secret"`: the form offers the names in Orca's secret store (server/secrets.ts), never a value. */
-  config?: { key: string; label: string; placeholder?: string; type?: "text" | "secret" }[];
+  config?: { key: string; label: string; placeholder?: string }[];
   help?: string;
 };
 
@@ -596,13 +593,28 @@ export function notificationEnvelope(n: { key: string; kind: string; repo: strin
   };
 }
 
-/** Secrets stay in the environment; a row names the variable. Only names the agent environment
- *  strips are allowed (server/env.ts), so an integration's token can never reach an agent. */
+/** The prefix of a secret_ref that names a value in Orca's encrypted secret store (server/secrets.ts)
+ *  instead of an environment variable: `secret:<name>` or `secret:<scope>/<name>`. */
+export const STORED_SECRET_PREFIX = "secret:";
+const STORED_SECRET_NAME = /^(?:[A-Za-z0-9_.-]{1,64}\/)?[A-Za-z_][A-Za-z0-9_.-]{0,63}$/;
+/** The stored secret a ref names (`secret:gmail-app` → `gmail-app`), or undefined for a variable name. Pure. */
+export function storedSecretName(ref: string | undefined | null): string | undefined {
+  return ref && ref.startsWith(STORED_SECRET_PREFIX) ? ref.slice(STORED_SECRET_PREFIX.length) : undefined;
+}
+
+/** A row names where its secret is, never the value: an environment variable the agent environment
+ *  strips (server/env.ts), or a stored secret (`secret:<name>`), which the bridge decrypts into
+ *  memory only. Either way an integration's token can never reach an agent. */
 export function secretRefRefusal(ref: string | undefined | null, stripped: readonly string[]): string | undefined {
   if (!ref) return undefined;
+  const stored = storedSecretName(ref);
+  if (stored !== undefined) {
+    return STORED_SECRET_NAME.test(stored) ? undefined
+      : `secret_ref "${ref.slice(0, 40)}" must name a stored secret as secret:<name> or secret:<scope>/<name> (the names /secret and orca secret list show)`;
+  }
   if (!/^[A-Z][A-Z0-9_]*$/.test(ref)) return `secret_ref "${ref.slice(0, 40)}" must be an environment variable name`;
   if (stripped.includes(ref) || ref.startsWith("ORCA_SECRET_")) return undefined;
-  return `secret_ref ${ref} must start with ORCA_SECRET_ (or be one of ${stripped.join(", ")}) so agents never see it`;
+  return `secret_ref ${ref} must start with ORCA_SECRET_ (or be one of ${stripped.join(", ")}), or be secret:<stored name>, so agents never see it`;
 }
 
 // ── Placement: which bridge opens an integration's connection ───────────────────────────────────

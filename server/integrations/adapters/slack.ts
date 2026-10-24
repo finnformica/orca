@@ -19,6 +19,7 @@
 // `channel:thread_ts` (a channel mention starts one on itself); a top-level DM is the DM channel
 // itself, so the answer goes in the DM, not in a thread. Tokens are never logged, never in `raw`.
 import type { Adapter, AdapterContext, Connection, IngestVerdict } from "../adapter";
+import { secretValue } from "../secretRefs";
 import { ORCA_SECRETS } from "../../env";
 import { inboundEnvelope, secretRefRefusal, type Capabilities, type InboundEnvelope, type OutboundMessage, type SendResult, type Target } from "../../../shared/integrations";
 
@@ -300,9 +301,9 @@ const CONVERSATIONS_TTL_MS = 5 * 60_000;
 type SlackMessage = SlackEvent & { reply_count?: number };
 
 export function slackAdapter(connection: Connection, opts: { openDms?: boolean } = {}): SlackAdapter {
-  const token = () => (connection.secretRef ? process.env[connection.secretRef] : undefined) ?? "";
+  const token = () => secretValue(connection.secretRef) ?? "";
   const appRef = typeof connection.config.appTokenRef === "string" && connection.config.appTokenRef ? connection.config.appTokenRef : APP_TOKEN_REF;
-  const appToken = () => process.env[appRef] ?? "";
+  const appToken = () => secretValue(appRef) ?? "";
   // `config.inbound`: "poll", "socket" or "off". Unset: Socket Mode when the app-level token is set, else polling.
   const mode = (): "poll" | "socket" | "off" => {
     const want = String(connection.config.inbound ?? "");

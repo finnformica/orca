@@ -1,7 +1,7 @@
 // The Cloudflare adapter (setup: docs/integrations/cloudflare.md). Inbound only: the bridge has no
 // public address, so there are no Cloudflare webhooks. Every `pollMinutes` it reads one account with
-// the account API token (a stored Orca secret named by `tokenSecret`, else the variable its
-// secret_ref names, default ORCA_SECRET_CLOUDFLARE) and compares
+// the account API token its secret_ref names (default ORCA_SECRET_CLOUDFLARE, or `secret:<name>` for
+// Orca's secret store — the registry loads it, server/integrations/secretRefs.ts) and compares
 // with what it saw last time:
 //   - the audit log since the cursor  → `ext.cloudflare.audit`, DNS records → `ext.cloudflare.dns`
 //   - Workers and their deployments    → `ext.cloudflare.deploy` (deploys), `ext.cloudflare.worker`
@@ -23,10 +23,11 @@ import {
   CLOUDFLARE_ACCOUNT_ENV, CLOUDFLARE_TOKEN_ENV, PERMISSIONS, client, isOwnWrite, workerTotals,
   type AuditLog, type Client, type CloudflareOpts, type Deployment, type Domain, type OwnWrite, type Script, type WorkerTotals,
 } from "../../cloudflare";
-import { CATCH_ALL, type Capabilities, type InboundEnvelope, type SendResult } from "../../../shared/integrations";
+import { CATCH_ALL, storedSecretName, type Capabilities, type InboundEnvelope, type SendResult } from "../../../shared/integrations";
 import type { Adapter, AdapterContext, Connection } from "../adapter";
 import * as store from "../store";
 import * as secrets from "../../secrets";
+import { secretValue } from "../secretRefs";
 
 export const CLOUDFLARE_CAPS: Capabilities = {
   inbound: "poll", outbound: false, threads: false, edits: false, reactions: false, attachments: false, maxTextLength: 0,
@@ -50,7 +51,7 @@ export const DEFAULT_SUBSCRIPTIONS: { topic: `ext.cloudflare.${CloudflareTopic}`
 
 // ── Config ───────────────────────────────────────────────────────────────────────────────────────
 
-export type CloudflareConfig = { accountId?: string; tokenSecret?: string; pollMinutes: number; errorRatePct: number; minRequests: number; zones: string[]; deployActors: string[] };
+export type CloudflareConfig = { accountId?: string; pollMinutes: number; errorRatePct: number; minRequests: number; zones: string[]; deployActors: string[] };
 
 const list = (v: unknown): string[] | undefined =>
   Array.isArray(v) ? v.map(String).map((s) => s.trim().toLowerCase()).filter(Boolean)
@@ -63,10 +64,8 @@ const num = (v: unknown, fallback: number, min: number): number => {
 /** The Settings form saves every value as a string: parse it, with the defaults. Pure. */
 export function cloudflareConfig(raw: Record<string, unknown>, env: Record<string, string | undefined> = process.env): CloudflareConfig {
   const accountId = (typeof raw.accountId === "string" && raw.accountId.trim()) || env[CLOUDFLARE_ACCOUNT_ENV]?.trim() || undefined;
-  const tokenSecret = typeof raw.tokenSecret === "string" && raw.tokenSecret.trim() ? raw.tokenSecret.trim() : undefined;
   return {
     ...(accountId ? { accountId } : {}),
-    ...(tokenSecret ? { tokenSecret } : {}),
     pollMinutes: num(raw.pollMinutes, DEFAULT_POLL_MINUTES, 1),
     errorRatePct: num(raw.errorRatePct, DEFAULT_ERROR_RATE_PCT, 0.01),
     minRequests: num(raw.minRequests, DEFAULT_MIN_REQUESTS, 1),
@@ -82,17 +81,18 @@ export const tokenRef = (c: Pick<Connection, "secretRef">): string => c.secretRe
 export type Reveal = (ref: string, who: string, use: string) => Promise<string>;
 
 /** Where a connection's token comes from, for a message: the stored secret, else the variable. Pure. */
-export const tokenSource = (c: Pick<Connection, "secretRef" | "config">): string => {
-  const ref = cloudflareConfig(c.config, {}).tokenSecret;
-  return ref ? `the stored secret "${ref}"` : tokenRef(c);
+export const tokenSource = (c: Pick<Connection, "secretRef">): string => {
+  const name = storedSecretName(tokenRef(c));
+  return name ? `the stored secret "${name}"` : tokenRef(c);
 };
 
-/** A connection's token: the stored Orca secret its `tokenSecret` names (decrypted here, kept in
- *  the caller's memory only — never an env file, a log or an agent), else the variable its
- *  secret_ref names. Undefined when the variable is unset; a stored secret that cannot be read throws. */
-export async function resolveToken(c: Pick<Connection, "id" | "secretRef" | "config">, env: Record<string, string | undefined> = process.env, reveal: Reveal = secrets.reveal): Promise<string | undefined> {
-  const ref = cloudflareConfig(c.config, {}).tokenSecret;
-  if (ref) return (await reveal(ref, `cloudflare integration ${c.id}`, "cloudflare")).trim() || undefined;
+/** A connection's token for `orca cloudflare`, which runs outside the adapter: a stored secret
+ *  (`secret:<name>`) is decrypted here and kept in the caller's memory only — never an env file, a
+ *  log or an agent; else the variable. Undefined when the variable is unset; a stored secret that
+ *  cannot be read throws. */
+export async function resolveToken(c: Pick<Connection, "id" | "secretRef">, env: Record<string, string | undefined> = process.env, reveal: Reveal = secrets.reveal): Promise<string | undefined> {
+  const name = storedSecretName(tokenRef(c));
+  if (name) return (await reveal(name, `integration ${c.id}`, "cloudflare")).trim() || undefined;
   return env[tokenRef(c)]?.trim() || undefined;
 }
 
@@ -304,7 +304,7 @@ export function batchEnvelopes(connectionId: string, account: string, items: Wat
 // ── The adapter ──────────────────────────────────────────────────────────────────────────────────
 
 export type PollResult = { items: number; ingested: number; problems: string[]; error?: string };
-export type CloudflareDeps = { base?: string; fetch?: typeof fetch; now?: () => Date; env?: Record<string, string | undefined>; ownWrites?: () => Promise<OwnWrite[]>; reveal?: Reveal };
+export type CloudflareDeps = { base?: string; fetch?: typeof fetch; now?: () => Date; env?: Record<string, string | undefined>; ownWrites?: () => Promise<OwnWrite[]> };
 export type CloudflareAdapter = Adapter & { poll(): Promise<PollResult> };
 type Health = { ok: boolean; detail?: string; lastEventAt?: number; lastPollAt?: number };
 
@@ -320,15 +320,12 @@ export function cloudflareAdapter(connection: Connection, deps: CloudflareDeps =
   let inFlight: Promise<PollResult> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
-  // A stored secret is decrypted at start and at each health check (one audit row each), and kept
-  // here in memory; a variable is read from the environment each time.
-  let stored: string | undefined;
-  const fromStore = !!cfg.tokenSecret;
-  const token = () => (fromStore ? stored : ctx?.secret() ?? env[tokenRef(connection)]);
-  const loadToken = async () => { if (fromStore) stored = await resolveToken(connection, env, deps.reveal ?? secrets.reveal); };
+  // The registry loaded a stored secret before start (and loads it again on rotation).
+  const fromStore = storedSecretName(tokenRef(connection)) !== undefined;
+  const token = () => ctx?.secret() ?? secretValue(tokenRef(connection), env);
   const api = (): Client => client({ token: token() ?? "", account: cfg.accountId ?? "", env: { ORCA_CLOUDFLARE_API: env.ORCA_CLOUDFLARE_API }, ...(deps.base ? { base: deps.base } : {}), ...(deps.fetch ? { fetch: deps.fetch } : {}) });
   const missing = (): string | undefined =>
-    !token() ? (fromStore ? `the stored secret "${cfg.tokenSecret}" is empty` : `${tokenRef(connection)} is not set on this bridge`) : !cfg.accountId ? "the account id is not set (config accountId)" : undefined;
+    !token() ? (fromStore ? `${tokenSource(connection)} is not loaded on this bridge` : `${tokenRef(connection)} is not set on this bridge`) : !cfg.accountId ? "the account id is not set (config accountId)" : undefined;
 
   async function account(c: Client): Promise<string> {
     const a = await c.get<{ name?: string }>(c.acct(""), PERMISSIONS.account);
@@ -435,8 +432,6 @@ export function cloudflareAdapter(connection: Connection, deps: CloudflareDeps =
     poll,
     async start(c) {
       ctx = c;
-      // An unreadable stored secret fails the start; the registry records why.
-      try { await loadToken(); } catch (e) { throw new Error(`${tokenSource(connection)}: ${errText(e)}`); }
       const why = missing();
       if (why) throw new Error(why);
       accountName = await account(api()); // a bad token fails the start, and names the permission
@@ -448,14 +443,12 @@ export function cloudflareAdapter(connection: Connection, deps: CloudflareDeps =
       timer = undefined;
       await inFlight?.catch(() => undefined);
       ctx = undefined;
-      stored = undefined;
     },
     async send(): Promise<SendResult> {
       return { ok: false, retryable: false, error: "the cloudflare adapter takes no posts (it only watches the account)" };
     },
     async health(): Promise<Health> {
       const polled = { ...(lastEventAt ? { lastEventAt } : {}), ...(lastPollAt ? { lastPollAt } : {}) };
-      try { await loadToken(); } catch (e) { return { ok: false, detail: `${tokenSource(connection)}: ${errText(e)}`, ...polled }; }
       const why = missing();
       if (why) return { ok: false, detail: why, ...polled };
       try { accountName = await account(api()); return { ok: true, detail: `connected to ${accountName}`, ...polled }; }

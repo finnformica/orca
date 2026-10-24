@@ -26,7 +26,7 @@ import {
   SUBSCRIPTION_PRESETS, deadTargetLabel, filterText, healthLine, healthTone, identityLabel, identityProblem, instanceText, newPersonId as personId, integrationProblem, linkProblem, parseFilter, targetLabel,
   type IntegrationCard, type InstanceOption, type IntegrationsOverview, type LinkRow, type Pairing, type PersonRow,
 } from "../../../shared/integrationSettings";
-import { AUTO_INSTANCE, CATCH_ALL, LEVEL_LABEL, LINK_LEVELS as LEVELS, isAutomatic, repoScoped, type AdapterMeta, type LinkLevel } from "../../../shared/integrations";
+import { AUTO_INSTANCE, CATCH_ALL, LEVEL_LABEL, LINK_LEVELS as LEVELS, STORED_SECRET_PREFIX, isAutomatic, repoScoped, storedSecretName, type AdapterMeta, type LinkLevel } from "../../../shared/integrations";
 
 type Overview = IntegrationsOverview;
 // Friendly names (Notify, Viewer, Editor, Admin); the stored values stay notify / ask / work / admin.
@@ -275,9 +275,7 @@ function IntegrationDialog({ kinds, options, existing, onClose, onSaved }: { kin
   const [config, setConfig] = useState<Record<string, string>>(() => Object.fromEntries(Object.entries(existing?.config ?? {}).map(([k, v]) => [k, String(v)])));
   const [busy, setBusy] = useState(false);
   const autoId = id || name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-  // A stored Orca secret chosen for the token (meta.storedSecretKey) takes the default variable's place.
-  const storedChosen = !!(meta?.storedSecretKey && config[meta.storedSecretKey]);
-  const body = { id: autoId, kind, name, instance, secretRef: secretRef || (existing || storedChosen ? "" : meta?.secretDefault ?? ""), config, enabled: existing?.enabled ?? true };
+  const body = { id: autoId, kind, name, instance, secretRef: secretRef || (existing ? "" : meta?.secretDefault ?? ""), config, enabled: existing?.enabled ?? true };
   const problem = integrationProblem(body, kinds.map((k) => k.kind), STRIPPED);
   const save = async () => { setBusy(true); const r = await act(existing ? `Save ${name}` : `Connect ${name}`, "save", body, onSaved); setBusy(false); if (r) onClose(); };
   return (
@@ -314,14 +312,17 @@ function IntegrationDialog({ kinds, options, existing, onClose, onSaved }: { kin
           </SelectContent>
         </Select>
       </Field>
-      <Field label="Secret variable" htmlFor="int-secret" hint={<>Set it in the <span className="font-mono">.env</span> of {isAutomatic(instance) ? "each server that can run it" : "that server"}. It must start with <span className="font-mono">ORCA_SECRET_</span>, so agents never see it.</>}>
-        <Input id="int-secret" value={secretRef} onChange={(e) => setSecretRef(e.target.value.toUpperCase())} placeholder={meta?.secretExample ?? "ORCA_SECRET_…"} className="font-mono" />
+      <Field label="Secret variable" htmlFor="int-secret" hint={storedSecretName(secretRef) !== undefined
+        ? <>From Orca&apos;s secret store. The bridge decrypts it in memory when the integration starts.</>
+        : <>Set it in the <span className="font-mono">.env</span> of {isAutomatic(instance) ? "each server that can run it" : "that server"}. It must start with <span className="font-mono">ORCA_SECRET_</span>, so agents never see it. Or choose a stored secret below.</>}>
+        <Input id="int-secret" value={secretRef} onChange={(e) => setSecretRef(secretRefInput(e.target.value))} placeholder={meta?.secretExample ?? "ORCA_SECRET_…"} className="font-mono" />
+      </Field>
+      <Field label="Stored secret" htmlFor="int-stored-secret">
+        <StoredSecretSelect id="int-stored-secret" value={storedSecretName(secretRef) ?? ""} onChange={(v) => setSecretRef(v ? `${STORED_SECRET_PREFIX}${v}` : storedSecretName(secretRef) !== undefined ? "" : secretRef)} />
       </Field>
       {meta?.config?.map((f) => (
         <Field key={f.key} label={f.label} htmlFor={`int-cfg-${f.key}`}>
-          {f.type === "secret"
-            ? <StoredSecretSelect id={`int-cfg-${f.key}`} value={config[f.key] ?? ""} onChange={(v) => setConfig({ ...config, [f.key]: v })} />
-            : <Input id={`int-cfg-${f.key}`} value={config[f.key] ?? ""} placeholder={f.placeholder} onChange={(e) => setConfig({ ...config, [f.key]: e.target.value })} />}
+          <Input id={`int-cfg-${f.key}`} value={config[f.key] ?? ""} placeholder={f.placeholder} onChange={(e) => setConfig({ ...config, [f.key]: e.target.value })} />
         </Field>
       ))}
     </FormDialog>
@@ -330,8 +331,12 @@ function IntegrationDialog({ kinds, options, existing, onClose, onSaved }: { kin
 
 const NO_STORED_SECRET = "__none__";
 
+/** The secret field as typed: a variable name in capitals, or `secret:<stored name>` kept as is. */
+const secretRefInput = (v: string): string =>
+  /^secret:/i.test(v) ? `${STORED_SECRET_PREFIX}${v.slice(STORED_SECRET_PREFIX.length)}` : v.toUpperCase();
+
 /** A stored Orca secret by name (the store gives names only, never a value), or none: then the
- *  secret variable above holds the token. */
+ *  secret variable above holds the token. A pick writes `secret:<name>` as the secret_ref. */
 function StoredSecretSelect({ id, value, onChange }: { id: string; value: string; onChange: (v: string) => void }) {
   const [names, setNames] = useState<string[] | undefined>();
   useEffect(() => {
@@ -344,7 +349,7 @@ function StoredSecretSelect({ id, value, onChange }: { id: string; value: string
     <Select value={value || NO_STORED_SECRET} onValueChange={(v) => onChange(v === NO_STORED_SECRET ? "" : v)}>
       <SelectTrigger id={id} data-slot="integration-stored-secret" className="w-full font-mono"><SelectValue /></SelectTrigger>
       <SelectContent>
-        <SelectItem value={NO_STORED_SECRET}><span className="font-sans">None: use the secret variable</span></SelectItem>
+        <SelectItem value={NO_STORED_SECRET}><span className="font-sans">None: use a secret variable</span></SelectItem>
         {choices.length > 0 && <SelectSeparator />}
         {choices.map((n) => <SelectItem key={n} value={n}>{n}</SelectItem>)}
         {names !== undefined && !names.length && <SelectLabel className="font-sans">No stored secrets yet. Save one with /secret in the chat.</SelectLabel>}

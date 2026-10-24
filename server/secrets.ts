@@ -183,8 +183,8 @@ export function listText(rows: db.SecretRow[], k = keyInfo()): string {
 
 // ---- use ----
 
-/** A stored value for a BRIDGE-side caller only (an integration's token: the Cloudflare adapter's
- *  `tokenSecret`). It never goes to an agent, an env file or a log; the caller keeps it in memory.
+/** A stored value for a BRIDGE-side caller only (an integration's token, `secret:<name>`:
+ *  server/integrations/secretRefs.ts). It never goes to an agent, an env file or a log; the caller keeps it in memory.
  *  One audit row per call (`action` "integration", `command` = what used it). */
 export async function reveal(ref: string, who: string, use: string): Promise<string> {
   const s = await resolve(ref);

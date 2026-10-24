@@ -14,6 +14,7 @@ import * as registry from "./registry";
 import * as router from "./router";
 import * as store from "./store";
 import * as dispatcher from "./dispatcher";
+import * as secretRefs from "./secretRefs";
 import type { Connection } from "./adapter";
 
 const user = () => db.currentUser();
@@ -52,15 +53,20 @@ async function allSubscriptions(): Promise<Subscription[]> { return store.subscr
 /** The instance that runs `c` now: its pinned instance, or an Automatic row's lease holder. */
 const runner = (c: Connection, now = Date.now()): string | undefined => (isAutomatic(c.instance) ? leaseHolder(c.auto, now) : c.instance);
 
-/** Whether the variable is set HERE. Undefined when the row runs elsewhere (its env is not ours). */
-const secretSetHere = (c: Connection, here: string, now = Date.now()): boolean | undefined =>
-  runner(c, now) !== here ? undefined : registry.secretHere(c);
+/** Whether the secret is here: the variable set, each stored secret decryptable. Undefined when the
+ *  row runs elsewhere (its env and key are not ours). */
+const secretSetHere = (c: Connection, here: string, readable: Set<string>, now = Date.now()): boolean | undefined =>
+  runner(c, now) !== here ? undefined : registry.secretHere(c, process.env, readable);
+/** The stored secrets this bridge can decrypt, read only when some row names one. */
+const readableFor = async (rows: Connection[]): Promise<Set<string>> =>
+  rows.some((c) => secretRefs.storedNames(c).length) ? secretRefs.readable().catch(() => new Set<string>()) : new Set<string>();
 
 export async function overview(here = db.instanceName(), now = Date.now()): Promise<IntegrationsOverview> {
   const [rows, st, last, links, persons, pairs, subs, dead, live] = await Promise.all([
     store.integrations(), statuses(), lastEvents(), store.links(), people(), store.pendingPairings(), allSubscriptions(),
     store.deliveries({ state: "dead", limit: 100 }), registry.health(),
   ]);
+  const readable = await readableFor(rows);
   const cards: IntegrationCard[] = rows.map((c) => {
     const s = st.get(c.id) ?? {};
     const running = c.id in live;
@@ -70,7 +76,7 @@ export async function overview(here = db.instanceName(), now = Date.now()): Prom
     const runsOn = runner(c, now);
     // An Automatic row with nobody running it: the instances whose primary lacks its secret.
     const secretMissingOn = auto && !runsOn ? Object.keys(s.secretMissing ?? {}).sort() : [];
-    const secretSet = secretSetHere(c, here, now) ?? (auto && !runsOn ? undefined : s.secretSet);
+    const secretSet = secretSetHere(c, here, readable, now) ?? (auto && !runsOn ? undefined : s.secretSet);
     const lastEventAt = Math.max(last.get(c.id) ?? 0, s.lastEventAt ?? 0) || undefined;
     const lastPollAt = Math.max(live[c.id]?.lastPollAt ?? 0, s.lastPollAt ?? 0) || undefined;
     return {
@@ -94,15 +100,11 @@ const fail = (msg: string): never => { throw new AdminError(msg); };
 
 /** Connect (or edit) one integration. The secret is a variable NAME; the value never reaches here. */
 export async function saveIntegration(b: Record<string, unknown>): Promise<void> {
-  const meta = registry.meta(String(b.kind ?? ""));
-  const config = b.config && typeof b.config === "object" ? Object.fromEntries(Object.entries(b.config as Record<string, unknown>).filter(([, v]) => v !== "" && v != null)) : {};
-  // An empty secret field takes the kind's default variable — not when a stored Orca secret holds
-  // the token, or an Automatic row would wait for a variable that no bridge needs.
-  const stored = meta?.storedSecretKey ? config[meta.storedSecretKey] : undefined;
   const c = {
     id: String(b.id ?? "").trim(), kind: String(b.kind ?? ""), name: String(b.name ?? "").trim(), instance: String(b.instance ?? "").trim(),
-    secretRef: typeof b.secretRef === "string" && b.secretRef.trim() ? b.secretRef.trim() : stored ? undefined : meta?.secretDefault,
-    config,
+    // An empty secret field takes the kind's default variable (Cloudflare: ORCA_SECRET_CLOUDFLARE).
+    secretRef: typeof b.secretRef === "string" && b.secretRef.trim() ? b.secretRef.trim() : registry.meta(String(b.kind ?? ""))?.secretDefault,
+    config: b.config && typeof b.config === "object" ? Object.fromEntries(Object.entries(b.config as Record<string, unknown>).filter(([, v]) => v !== "" && v != null)) : {},
     enabled: b.enabled !== false,
   };
   const problem = integrationProblem(c, registry.kinds().map((k) => k.kind), ORCA_SECRETS);
@@ -233,7 +235,7 @@ export async function testIntegration(id: string, here = db.instanceName()): Pro
   const c = (await store.integration(id)) ?? fail(`no integration ${id}`);
   const on = runner(c);
   if (on && on !== here) fail(`${id} runs on ${on}`);
-  const secretSet = secretSetHere(c, here);
+  const secretSet = secretSetHere(c, here, await readableFor([c]));
   const refusal = secretRefRefusal(c.secretRef, ORCA_SECRETS);
   const running = registry.adapterFor(id);
   const r = refusal ? { ok: false, detail: refusal }

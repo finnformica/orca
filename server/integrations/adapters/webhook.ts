@@ -8,6 +8,7 @@
 // signed the same way, with the delivery id as `x-orca-delivery` (the receiver's idempotency key).
 import { createHmac, createHash, timingSafeEqual } from "crypto";
 import type { Adapter, AdapterContext, Connection } from "../adapter";
+import { secretValue } from "../secretRefs";
 import type { Capabilities, InboundEnvelope, OutboundMessage, SendResult, Target, Topic } from "../../../shared/integrations";
 
 export const sign = (secret: string, body: string): string => `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
@@ -44,7 +45,7 @@ export function webhookEnvelope(connection: Connection, body: WebhookBody, raw: 
 export function webhookAdapter(connection: Connection): Adapter {
   let ctx: AdapterContext | undefined;
   let lastEventAt: number | undefined;
-  const secret = () => ctx?.secret() ?? (connection.secretRef ? process.env[connection.secretRef] : undefined) ?? "";
+  const secret = () => ctx?.secret() ?? secretValue(connection.secretRef) ?? "";
   return {
     kind: "webhook",
     caps: WEBHOOK_CAPS,
