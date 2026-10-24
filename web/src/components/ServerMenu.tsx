@@ -84,9 +84,11 @@ export function _resetServerList(): void { answer = null; probes = {}; inflight.
 export const addServerOpenAtom = atom(false);
 
 const DOT: Record<ServerHealth, string> = { online: "bg-geist-green", offline: "bg-geist-red", refused: "bg-geist-red", checking: "bg-geist-gray" };
-const healthText = (h: ServerHealth) => (h === "online" ? "online" : h === "checking" ? "checking" : h === "refused" ? "refused this browser" : "offline");
-const Dot = ({ health }: { health: ServerHealth }) => (
-  <span aria-hidden="true" data-health={health} className={cn("inline-block size-2 shrink-0 rounded-full", DOT[health])} />
+export const healthText = (h: ServerHealth) => (h === "online" ? "online" : h === "checking" ? "checking" : h === "refused" ? "refused this browser" : "offline");
+// Exported: the sidebar's instance switcher (Shell.tsx) puts the same dot on its own trigger, so a
+// server's status reads the same wherever it shows.
+export const Dot = ({ health, className }: { health: ServerHealth; className?: string }) => (
+  <span aria-hidden="true" data-health={health} className={cn("inline-block size-2 shrink-0 rounded-full", DOT[health], className)} />
 );
 
 /** A server's theme colour, as a small rounded square (Slack's workspace tile). */
