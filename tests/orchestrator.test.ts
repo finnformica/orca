@@ -1008,6 +1008,34 @@ test("O23: two failures in a row on one model put the next model up in the repor
   expect((await db.enrichment("r"))[branch]).not.toHaveProperty("failStreak"); // a clean run ends the streak
 });
 
+test("O23c: a worker Orca stops for no progress is labelled in the report and is not a model failure", async () => {
+  const conf = (): OrcaConfig => ({ ...cfg(), agentIdleMinutes: 0.01 }); // 600 ms
+  const savedWatch = { ...agent.idleWatch };
+  agent.idleWatch.everyMs = 50;
+  try {
+    agent.onRunFinished((run) => orchestrator.onRunFinished(conf(), run));
+    // The worker starts and then sends nothing; the orchestrator answers at once.
+    await fakeClaude(`case "$PWD" in */orchestrator) ${OK} ;; *) exec sleep 30 ;; esac`);
+    await orchestrator.tool(conf(), "spawn", { ...brief, model: "claude-opus-5-5" });
+    const branch = Object.keys(await db.enrichment("r"))[0]!;
+    const reports = async (n: number) => (await settled(orchTurns, n)).map((t) => t.instruction ?? "");
+    let r = await reports(1);
+    expect(r[0]).toStartWith(`${WORKER_EVENT_MARKER} r/${branch} "Add cache" — stopped: no progress for 0.01 min`);
+    expect(r[0]).toContain("This is not a model failure");
+    expect(r[0]).not.toMatch(/Response: exit 143/);
+    expect(isWorkerProblem(r[0]!)).toBe(true); // the orchestrator hears at once
+    const [workerTurn] = await db.turns("r", branch);
+    expect(workerTurn!.response).toStartWith("stopped: no progress for 0.01 min (exit ");
+    // A second stop in a row: still no streak, so no ladder line.
+    await orchestrator.tool(conf(), "send", { repo: "r", branch, _: ["try again"] });
+    r = await reports(2);
+    expect(r[1]).not.toContain("Model ladder");
+    expect((await db.enrichment("r"))[branch]).not.toHaveProperty("failStreak");
+  } finally {
+    Object.assign(agent.idleWatch, savedWatch);
+  }
+});
+
 test("O23b: the ladder decision is pure — threshold, the top, and models off the ladder", () => {
   expect(nextFailStreak(undefined, "claude-sonnet-5", true)).toEqual({ model: "claude-sonnet-5", count: 1 });
   expect(nextFailStreak({ model: "claude-sonnet-5", count: 1 }, "claude-sonnet-5", true)).toEqual({ model: "claude-sonnet-5", count: 2 });

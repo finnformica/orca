@@ -18,7 +18,7 @@ import * as forward from "./forward";
 import * as notify from "./notify";
 import { existsSync } from "fs";
 import * as prShots from "./prShots";
-import { featuresOf, modelFor, providerAllowed, type OrcaConfig, type RepoConfig } from "./config";
+import { featuresOf, modelFor, providerAllowed, runLimits, type OrcaConfig, type RepoConfig } from "./config";
 import { addressNeedsAgent, addressPrPrompt, chatPrompt, cleanupDecision, continuation, followUpPrompt, launchPrompt, mergeSettled, mergedPrIsHistory, slugifyBranch, titleFromPrompt, withAttachments, workerPrBody, type MechanicalMerge, type SweepReport } from "../web/src/workstream";
 import { providerOfModel } from "../shared/models";
 import { isAgentProvider, type AgentOutcome, type AgentProvider } from "../shared/agent";
@@ -48,7 +48,7 @@ export const launchOptions = (cfg: OrcaConfig, repo: RepoConfig, provider: Agent
   permissionMode: permissionFor(repo, fields),
   ...(permissionFor(repo, fields) === "scoped" ? { scope: { baseBranch: repo.baseBranch, checkCommand: repo.checkCommand } } : {}),
   maxBudgetUsd: repo.agentMaxBudgetUsd, check: checkGate(repo),
-  timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
+  ...runLimits(cfg),
   memoryMaxGb: repo.agentMemoryMaxGb, cpuWeight: cfg.agentCpuWeight, mcpAllow: repo.mcpAllow,
 });
 
