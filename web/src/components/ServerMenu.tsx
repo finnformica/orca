@@ -1,10 +1,11 @@
-// The server switcher's surfaces (lib/server.ts holds the logic): the top bar's server menu — the
-// repos selector's pattern (a plain trigger, a radio list), with a status dot per server — the Add
+// The server switcher's surfaces (lib/server.ts holds the logic): the server list as dropdown-menu
+// items (`ServerMenuItems`, embedded in the sidebar's own menu — Shell.tsx's `SidebarServerMenu`,
+// the repos selector's pattern: a plain trigger, a radio list, a status dot per server) — the Add
 // server dialog, and the one inline message for a chosen server that is offline or refuses this
-// browser. The menu renders nothing until there is something to switch to or to add (`showServerMenu`).
+// browser. The items render nothing until there is something to switch to or to add (`showServerMenu`).
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { atom, useAtom } from "jotai";
-import { Check, ChevronsUpDown, Plus, ServerOff } from "lucide-react";
+import { Check, Plus, ServerOff } from "lucide-react";
 import { poll } from "@/lib/poll";
 import {
   apiFetch, chosenServer, currentServer, fetchServers, homeOrigin, knownServers, mergeServers, onKnownChange, probeServer,
@@ -17,8 +18,7 @@ import { isNeutral, swatchBackground } from "../../../shared/serverIdentity";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuRadioGroup, DropdownMenuRadioItem,
-  DropdownMenuSeparator, DropdownMenuTrigger,
+  DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 
 // ONE store for every reader (the menu, the palette, the offline message): the home server's GET
@@ -72,7 +72,7 @@ const view = () => ({ list: list(), answer });
 let viewSnap = view();
 const getView = () => { const v = view(); if (v.list !== viewSnap.list || v.answer !== viewSnap.answer) viewSnap = v; return viewSnap; };
 
-/** The servers, the home server's answer and whether the top bar shows the menu. */
+/** The servers, the home server's answer and whether the sidebar's menu has a server section. */
 export function useServers(): { servers: ServerEntry[]; answer: ServersAnswer | null; visible: boolean } {
   const v = useSyncExternalStore(subscribe, getView);
   return { servers: v.list, answer: v.answer, visible: showServerMenu(v.answer, v.list) };
@@ -85,26 +85,40 @@ export const addServerOpenAtom = atom(false);
 
 const DOT: Record<ServerHealth, string> = { online: "bg-geist-green", offline: "bg-geist-red", refused: "bg-geist-red", checking: "bg-geist-gray" };
 export const healthText = (h: ServerHealth) => (h === "online" ? "online" : h === "checking" ? "checking" : h === "refused" ? "refused this browser" : "offline");
-// Exported: the sidebar's instance switcher (Shell.tsx) puts the same dot on its own trigger, so a
+// Exported: the sidebar's server menu trigger (Shell.tsx) puts the same dot on its own trigger, so a
 // server's status reads the same wherever it shows.
 export const Dot = ({ health, className }: { health: ServerHealth; className?: string }) => (
   <span aria-hidden="true" data-health={health} className={cn("inline-block size-2 shrink-0 rounded-full", DOT[health], className)} />
 );
 
-/** A server's theme colour, as a small rounded square (Slack's workspace tile). */
-const Swatch = ({ color }: { color: string }) => (
-  <span aria-hidden="true" data-slot="server-swatch" className={cn("inline-block size-3 shrink-0 rounded-[3px]", isNeutral(color) && "border")} style={{ background: swatchBackground(color) }} />
+/** A server's theme colour, as a small rounded square (Slack's workspace tile). `className`
+ *  overrides the default size for a bigger tile (the sidebar trigger, collapsed). */
+export const Swatch = ({ color, className }: { color: string; className?: string }) => (
+  <span aria-hidden="true" data-slot="server-swatch" className={cn("inline-block size-3 shrink-0 rounded-[3px]", isNeutral(color) && "border", className)} style={{ background: swatchBackground(color) }} />
 );
 
-/** The top bar's server menu, in front of the repo menu: the repos selector's look, the current
- *  server checked, each server's colour, display name and status dot. */
-export function ServerMenu() {
-  const { servers, answer, visible } = useServers();
+/** Add server opens its modal dialog only once the menu that offered it has closed, and that close
+ *  must not hand focus back to the trigger: opened while the menu closed, the trigger took the focus
+ *  back and the first keystrokes went to the page (its shortcuts — the preview typed into "C" and
+ *  "O"). Shared by every dropdown that embeds `ServerMenuItems` — put `onCloseAutoFocus` on that
+ *  dropdown's own `DropdownMenuContent`. */
+export function useAddServerClose(): { markAdding: () => void; onCloseAutoFocus: (e: Event) => void } {
   const [, setAdd] = useAtom(addServerOpenAtom);
-  // Add server opens its modal dialog only once the menu has closed, and stops the menu giving focus
-  // back to its trigger: opened while the menu closed, the trigger took the focus back and the first
-  // keystrokes went to the page (its shortcuts — the preview typed into "C" and "O").
   const adding = useRef(false);
+  return {
+    markAdding: () => { adding.current = true; },
+    onCloseAutoFocus: (e) => { if (adding.current) { adding.current = false; e.preventDefault(); setAdd(true); } },
+  };
+}
+
+/** The server list as dropdown-menu items: the current server checked, each server's colour tile,
+ *  display name and status dot, offline ones disabled, then Add server and (no Tailscale API) the
+ *  env-var hint. Nothing when there is nothing to switch to and Add server would not help either
+ *  (`showServerMenu`). Rendered inside a `DropdownMenuContent` whose `onCloseAutoFocus` comes from
+ *  `useAddServerClose` — the sidebar's server menu (Shell.tsx); the command palette builds its own
+ *  rows straight from `useServers` instead. */
+export function ServerMenuItems({ markAdding }: { markAdding: () => void }) {
+  const { servers, answer, visible } = useServers();
   const active = useServerIdentity();
   if (!visible) return null;
   // The current server goes by the ACTIVE identity (asked of that server, kept per server), so
@@ -114,47 +128,34 @@ export function ServerMenu() {
   const rows = servers.map(withActive);
   return (
     <>
-      <DropdownMenu onOpenChange={(open) => { if (open) checkServers(true); }}>
-        <DropdownMenuTrigger asChild>
-          <button type="button" data-slot="server-menu" aria-label={`Server: ${current.label}, ${healthText(current.health)}. Switch server`}
-            className="hover:bg-accent flex h-8 max-w-[10rem] shrink-0 items-center gap-1.5 rounded-md px-2 text-sm font-medium max-md:min-w-0 max-md:shrink md:max-w-[14rem]">
-            <Swatch color={current.color} />
-            <span data-slot="server-label" className="truncate">{current.label}</span>
-            <Dot health={current.health} />
-            <ChevronsUpDown className="text-muted-foreground size-3.5 shrink-0" />
-          </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="min-w-[12rem] max-w-[18rem]"
-          onCloseAutoFocus={(e) => { if (adding.current) { adding.current = false; e.preventDefault(); setAdd(true); } }}>
-          <DropdownMenuRadioGroup value={current.url} onValueChange={(url) => {
-            const s = rows.find((x) => x.url === url);
-            if (s && url !== current.url) switchServer(s.self ? null : s);
-          }}>
-            {rows.map((s) => {
-              const down = s.health === "offline" || s.health === "refused";
-              return (
-                <DropdownMenuRadioItem key={s.url} value={s.url} data-server={s.name} aria-label={`${s.label}, ${healthText(s.health)}`}
-                  disabled={down && s.url !== current.url} indicator={<Check className="text-server-fg size-3.5" />}
-                  className="data-[state=checked]:bg-server-soft data-[state=checked]:focus:bg-server-soft">
-                  <Swatch color={s.color} />
-                  <span className="min-w-0 flex-1 truncate">{s.label}</span>
-                  <Dot health={s.health} />
-                  {down && <span className="text-muted-foreground text-xs">{s.health === "refused" ? "refused" : "offline"}</span>}
-                </DropdownMenuRadioItem>
-              );
-            })}
-          </DropdownMenuRadioGroup>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem data-slot="add-server" onSelect={() => { adding.current = true; }}>
-            <Plus className="size-4" />Add server…
-          </DropdownMenuItem>
-          {answer && !answer.tailscaleApi && (
-            <p data-slot="server-hint" className="text-muted-foreground px-2 pt-0.5 pb-1.5 text-xs">
-              To list every server, set <code className="font-mono">TS_OAUTH_CLIENT_ID</code> and <code className="font-mono">TS_OAUTH_CLIENT_SECRET</code>.
-            </p>
-          )}
-        </DropdownMenuContent>
-      </DropdownMenu>
+      <DropdownMenuLabel>Server</DropdownMenuLabel>
+      <DropdownMenuRadioGroup value={current.url} onValueChange={(url) => {
+        const s = rows.find((x) => x.url === url);
+        if (s && url !== current.url) switchServer(s.self ? null : s);
+      }}>
+        {rows.map((s) => {
+          const down = s.health === "offline" || s.health === "refused";
+          return (
+            <DropdownMenuRadioItem key={s.url} value={s.url} data-server={s.name} aria-label={`${s.label}, ${healthText(s.health)}`}
+              disabled={down && s.url !== current.url} indicator={<Check className="text-server-fg size-3.5" />}
+              className="data-[state=checked]:bg-server-soft data-[state=checked]:focus:bg-server-soft">
+              <Swatch color={s.color} />
+              <span className="min-w-0 flex-1 truncate">{s.label}</span>
+              <Dot health={s.health} />
+              {down && <span className="text-muted-foreground text-xs">{s.health === "refused" ? "refused" : "offline"}</span>}
+            </DropdownMenuRadioItem>
+          );
+        })}
+      </DropdownMenuRadioGroup>
+      <DropdownMenuSeparator />
+      <DropdownMenuItem data-slot="add-server" onSelect={() => markAdding()}>
+        <Plus className="size-4" />Add server…
+      </DropdownMenuItem>
+      {answer && !answer.tailscaleApi && (
+        <p data-slot="server-hint" className="text-muted-foreground px-2 pt-0.5 pb-1.5 text-xs">
+          To list every server, set <code className="font-mono">TS_OAUTH_CLIENT_ID</code> and <code className="font-mono">TS_OAUTH_CLIENT_SECRET</code>.
+        </p>
+      )}
     </>
   );
 }

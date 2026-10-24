@@ -91,9 +91,11 @@ test("S1: nothing chosen — the base is empty, a choice stored by the old Setti
   const stop = subscribeTurns("r", "b", { step() {}, turn() {}, resync() {} });
   expect(opened().at(-1)!.url).toBe("/api/events");
   stop();
-  // The shell: an older home server (no /api/servers answer) and one server: no menu.
+  // The shell: an older home server (no /api/servers answer) and one server: the sidebar's own
+  // button still shows (it also carries the instance scope), but its menu has no server section.
   await mount();
-  expect(q('[data-slot="server-menu"]')).toBeNull();
+  expect(q('[data-slot="server-menu"]')).not.toBeNull();
+  expect(await openMenu()).toEqual([]);
 });
 
 test("S2: on with a server chosen — fetch, uploads, images and the event stream all use its base", async () => {
@@ -230,7 +232,7 @@ const openMenu = async () => {
   return [...document.querySelectorAll<HTMLElement>("[data-server]")];
 };
 
-test("S6: the top bar menu — repos-selector look, current checked, status dot and name, offline disabled, Add server and the env hint", async () => {
+test("S6: the sidebar menu — repos-selector look, current checked, status dot and name, offline disabled, Add server and the env hint", async () => {
   setup();
   rememberServer({ name: "orca-personal-box", url: "http://orca-personal-box:8787" });
   rememberServer({ name: "lab", url: "http://lab-box:8787" });
@@ -240,9 +242,11 @@ test("S6: the top bar menu — repos-selector look, current checked, status dot 
   const trigger = q('[data-slot="server-menu"]')!;
   expect(trigger.textContent).toBe("cloud"); // the home server's own name
   expect(trigger.className).toContain("hover:bg-accent"); // the repos selector's trigger, not a tinted pill
+  // It lives in the sidebar now, never the top bar (#3: the top bar's own menu is gone).
+  const sidebar = q('[data-slot="sidebar"]')!;
+  expect(sidebar.contains(trigger)).toBe(true);
   const bar = q('[data-slot="topbar"]')!;
-  const repo = bar.querySelector('[data-slot="repo-switcher"]');
-  if (repo) expect(trigger.compareDocumentPosition(repo) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(bar.querySelector('[data-slot="server-menu"]')).toBeNull();
   const items = await openMenu();
   expect(items.map((i) => i.getAttribute("aria-label"))).toEqual(["cloud, online", "personal, online", "lab, offline"]);
   expect(items.map((i) => i.querySelector("[data-health]")!.getAttribute("data-health"))).toEqual(["online", "online", "offline"]);
@@ -281,11 +285,9 @@ test("S6e: the ACTIVE server's identity — title, accent, favicon and sidebar n
   expect(decodeURIComponent(icon.href)).toContain(`fill="${markBg("#1f9d55")}"`); // on a very dark green circle
   expect(document.documentElement.style.getPropertyValue("--server-mark-bg")).toBe(markBg("#1f9d55"));
   expect(document.getElementById("orca-server-theme")!.textContent).toBe(themeCss("#1f9d55")); // the theme's tones
-  expect(q('[data-slot="server-identity"]')!.textContent).toBe("Personal"); // beside the mark, top left
-  // It reads like the page title: "Orca | Personal", with the pipe hidden from a screen reader.
-  const brand = q('[data-slot="brand-name"]')!;
-  expect(brand.textContent).toBe("Orca|Personal");
-  expect(brand.querySelector('[data-slot="brand-sep"]')!.getAttribute("aria-hidden")).toBe("true");
+  // The sidebar's trigger: just the name beside the colour tile and status dot, not "Orca |
+  // Personal" — the page title keeps that form (checked above); the trigger reads like the
+  // screenshot's "Personal ●".
   expect(q('[data-slot="server-label"]')!.textContent).toBe("Personal");
   const items = await openMenu();
   expect(items.map((i) => i.getAttribute("aria-label"))).toEqual(["Work, online", "Personal, online"]);
@@ -430,12 +432,12 @@ test("S6f: after a switch the menu shows the active server's cached identity bef
   expect(document.title).toBe("Orca | Personal");
 });
 
-test("S6b: with the Tailscale API and one server there is no menu, and no hint when the API is set", async () => {
+test("S6b: with the Tailscale API and one server there is no server section, and no hint when the API is set", async () => {
   setup();
   network((u) => (u === "/api/servers" ? json({ ...HOME, tailscaleApi: true, source: "tailscale" }) : undefined));
   await mount();
   await act(async () => { await flush(); await flush(); });
-  expect(q('[data-slot="server-menu"]')).toBeNull();
+  expect(await openMenu()).toEqual([]); // the sidebar's own button still shows; its menu has no server rows
   act(() => root?.unmount());
   container?.remove();
   _resetServerList();
