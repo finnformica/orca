@@ -21,6 +21,9 @@ export type IntegrationCard = {
   lastEventAt?: number;
   /** A poller's (Linear's) last completed poll, from its status row. */
   lastPollAt?: number;
+  /** An OAuth kind (Gmail): the account it connected and the scopes Google granted, or the reason
+   *  it needs a reconnect. Absent = not connected. Never a token. */
+  oauth?: { account?: string; scopes?: string[]; connectedAt?: number; reconnect?: string | null };
 };
 
 export type LinkRow = { id: string; integrationId: string; externalId: string; label?: string; level: Exclude<Level, "full">; repos: string[]; requireMention: boolean; notifyMe?: boolean; notifyAgent?: boolean };

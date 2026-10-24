@@ -108,6 +108,12 @@ export type AdapterMeta = {
   secretExample?: string;
   config?: { key: string; label: string; placeholder?: string }[];
   help?: string;
+  /** Config keys the form shows as a Switch, stored as "true" / "false", each with the value the
+   *  adapter takes while it is unset (Gmail: allowSend off, checkAuth on). */
+  switches?: Record<string, boolean>;
+  /** The kind connects by OAuth in the browser: the card shows this provider's Connect button
+   *  (Gmail: Google), and the row's `status.oauth` says which account it connected. */
+  oauth?: { provider: "google"; label: string };
 };
 
 export type Capabilities = {

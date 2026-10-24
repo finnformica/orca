@@ -37,6 +37,7 @@ import { reachable } from "./peer";
 import { machineReport } from "./liveMetrics";
 import { cloudflareTool } from "./cloudflare";
 import { slackTool } from "./slackTool";
+import { gmailTool } from "./gmailTool";
 import { featuresOf, runsHere, type OrcaConfig, type RepoConfig } from "./config";
 import {
   MODEL_LADDER, NO_REPLY_PLACEHOLDER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, boardText, briefProblems, continuation, isWorkerEvent, isWorkerProblem, onlyCleanReports,
@@ -1004,6 +1005,9 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
     // `orca slack …` (server/slackTool.ts): read, search and post as the user. The grant check above
     // keeps it to the user's own chat (an unknown verb is the owner's); the post log names who.
     case "slack": return slackTool(args, { by: wakeGrant ? `outside sender (${wakeGrant.level} grant)` : "orchestrator (your chat)" });
+    // `orca gmail search|read` (server/gmailTool.ts): read only, the user's own chat only (the grant
+    // check above refuses an unknown verb for an outside sender). A reply goes through `orca post`.
+    case "gmail": return gmailTool(args);
     case "notes": {
       if (words[0] !== "set") return (await blob()).notes || "(empty)";
       const text = words.slice(1).join(" ").trim();
@@ -1011,7 +1015,7 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       await patch({ notes: text });
       return "Notes saved.";
     }
-    default: throw new Error(`unknown command "${verb}". Commands: board, machine, spawn, send, address, archive, stop [--drop-queue], sweep [--confirm], merge --when-green, preview [--status | --push-to-template [--confirm]], status, chats, read, notes, handoff, cloudflare, slack`);
+    default: throw new Error(`unknown command "${verb}". Commands: board, machine, spawn, send, address, archive, stop [--drop-queue], sweep [--confirm], merge --when-green, preview [--status | --push-to-template [--confirm]], status, chats, read, notes, handoff, cloudflare, slack, gmail`);
   }
 }
 

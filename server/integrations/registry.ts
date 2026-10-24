@@ -11,11 +11,13 @@ import { AUTO_LEASE_MS, isAutomatic, leaseHolder, runsOn, secretRefRefusal, type
 import type { Adapter, AdapterContext, AdapterFactory, Connection } from "./adapter";
 import * as router from "./router";
 import * as store from "./store";
+import { secretValue } from "./secretValue";
 import { SLACK_CAPS, slackAdapter } from "./adapters/slack";
 import { WEBHOOK_CAPS, webhookAdapter } from "./adapters/webhook";
 import { DISCORD_CAPS, discordAdapter } from "./adapters/discord";
 import { emailAdapter, emailCaps } from "./adapters/email";
 import { LINEAR_CAPS, linearAdapter } from "./adapters/linear";
+import { gmailAdapter, gmailCaps } from "./adapters/gmail";
 
 const factories = new Map<AdapterKind, AdapterFactory>();
 const metas = new Map<AdapterKind, AdapterMeta>();
@@ -67,6 +69,22 @@ register("linear", linearAdapter, {
   help: "A personal API key. Orca polls; it needs no webhook. Link team:<KEY>, project:<id> or *. Setup: docs/integrations/linear.md.",
 });
 
+register("gmail", gmailAdapter, {
+  label: "Gmail", caps: gmailCaps({ allowSend: true }), place: "sender address (* = every sender)", secretExample: "ORCA_SECRET_GOOGLE_OAUTH",
+  oauth: { provider: "google", label: "Connect with Google" },
+  switches: { allowSend: false, checkAuth: true },
+  config: [
+    { key: "clientId", label: "OAuth client id", placeholder: "1234-abc.apps.googleusercontent.com" },
+    { key: "query", label: "Gmail query (optional)", placeholder: "empty = label:Orca OR to:you+orca@yourdomain.com" },
+    { key: "allowSend", label: "Allow send (asks for gmail.send: replies in a thread)" },
+    { key: "pollSeconds", label: "Poll every (seconds)", placeholder: "60" },
+    { key: "allowedSenders", label: "Allowed senders (optional; comma-separated, @domain for a domain)", placeholder: "empty = any sender the query finds" },
+    { key: "checkAuth", label: "Require Google's DKIM/SPF/DMARC pass (default on)" },
+    { key: "redirectOrigin", label: "Redirect origin (optional)", placeholder: "empty = this page's origin" },
+  ],
+  help: "Your own Gmail, by Sign in with Google. The secret is the OAuth client secret (empty = ORCA_SECRET_GOOGLE_OAUTH, from .env or a stored Orca secret). Save, then press Connect with Google. Only mail that matches the query reaches Orca. Setup: docs/integrations/gmail.md.",
+});
+
 /** Every registered kind with what the Settings page shows for it. A kind with no meta gets a plain one. */
 export function kinds(): AdapterMeta[] {
   return [...factories.keys()].map((kind) => metas.get(kind) ?? {
@@ -79,14 +97,15 @@ export function kinds(): AdapterMeta[] {
 export const runsHere = (c: Pick<Connection, "instance" | "enabled" | "auto">, here = db.instanceName(), isPrimary = primary.held(), now = Date.now()): boolean =>
   runsOn(c, here, isPrimary, now);
 
-/** Whether the variable a row names is set in this process's environment (no secret: true). */
+/** Whether the secret a row names is here: the variable in this process's environment, else an
+ *  Orca stored secret of that name this bridge can decrypt (secretValue.ts). No secret: true. */
 export const secretHere = (c: Pick<Connection, "secretRef">, env: Record<string, string | undefined> = process.env): boolean =>
-  !c.secretRef || !!env[c.secretRef];
+  !c.secretRef || !!secretValue(c.secretRef, env);
 
 export function context(connection: Connection, abort: AbortController): AdapterContext {
   return {
     connection,
-    secret: () => (connection.secretRef ? process.env[connection.secretRef] : undefined) || undefined,
+    secret: () => secretValue(connection.secretRef),
     ingest: (e: InboundEnvelope) => router.ingest(connection.id, e),
     cursor: { get: () => store.cursor(connection.id), set: (v) => store.setCursor(connection.id, v) },
     status: (s) => store.setIntegrationStatus(connection.id, { ...s, at: Date.now() }),

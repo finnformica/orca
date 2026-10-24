@@ -61,6 +61,16 @@ orca secret pipe gh_token -- gh auth login --with-token
 orca secret env billing/api_key=STRIPE_KEY -- ./scripts/sync-prices.sh
 ```
 
+## Integration secrets
+
+An integration's `secret_ref` names an environment variable. It can also name a stored secret of the
+same name, in the `integrations` or the `default` scope (`server/integrations/secretValue.ts`). The
+env var wins. The bridge reads the value itself; no agent gets it.
+
+Orca stores some integration secrets itself, in the `integrations` scope. The Gmail adapter keeps
+its refresh token as `integrations/gmail.<integration id>.refresh_token` ([gmail.md](integrations/gmail.md)).
+Disconnect and Remove delete it.
+
 ## The paste guard
 
 The chat composer holds text that looks like a key before it is sent. It knows the shape of each of

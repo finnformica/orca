@@ -36,7 +36,7 @@ export function BrandIcon({ kind, className }: { kind: string; className?: strin
   // pushes a block box flush right (a closed Select trigger) — inline-level boxes ignore auto margins.
   const brand = BRANDS[kind];
   if (!brand) {
-    const I = GENERIC[kind] ?? Plug;
+    const I = GENERIC[kind] ?? (kind === "gmail" ? Mail : Plug); // Gmail: no brand path here, the mail icon
     return <I data-slot="brand-icon" data-kind={kind} className={cn("text-muted-foreground inline-flex size-4 shrink-0 align-middle", className)} aria-hidden="true" />;
   }
   return (

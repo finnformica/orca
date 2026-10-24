@@ -54,7 +54,7 @@ async function act(label: string, path: string, body: Record<string, unknown>, d
 }
 
 /** A destructive click asks first, in shadcn's AlertDialog: `ask(title, body, run)` and render `node`. */
-function useConfirm(): [(title: string, body: string, run: () => void) => void, ReactNode] {
+function useConfirm(action = "Remove"): [(title: string, body: string, run: () => void) => void, ReactNode] {
   const [q, setQ] = useState<{ title: string; body: string; run: () => void } | null>(null);
   const node = (
     <AlertDialog open={!!q} onOpenChange={(o) => { if (!o) setQ(null); }}>
@@ -65,7 +65,7 @@ function useConfirm(): [(title: string, body: string, run: () => void) => void, 
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction variant="destructive" onClick={() => { q?.run(); setQ(null); }}>Remove</AlertDialogAction>
+          <AlertDialogAction variant="destructive" onClick={() => { q?.run(); setQ(null); }}>{action}</AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
@@ -78,6 +78,7 @@ export function IntegrationsPage() {
   const [error, setError] = useState<string>();
   const load = () => api.integrations().then((d) => { setData(d); setError(undefined); }).catch((e) => setError(e instanceof Error ? e.message : String(e)));
   useEffect(() => poll(load, 15_000), []);
+  useEffect(() => oauthReturn(), []);
   const reload = () => void load();
   return (
     <div className="max-w-4xl space-y-6" data-slot="integrations-page">
@@ -99,6 +100,59 @@ export function IntegrationsPage() {
           <DeadCard data={data} onChange={reload} />
         </>
       )}
+    </div>
+  );
+}
+
+/** Back from Google (`/integrations?oauth=connected|failed&id=…&detail=…`): a failure is the one
+ *  action-failed notification; success shows on the card. The query is then taken off the URL. */
+function oauthReturn(): void {
+  const q = new URLSearchParams(window.location.search);
+  const result = q.get("oauth");
+  if (!result) return;
+  if (result === "failed") {
+    const error = q.get("detail") || "Google sign-in failed";
+    const label = `Connect ${q.get("id") ?? "Gmail"} with Google`;
+    notifyLocal({ kind: "action_failed", repo: "", title: "Integrations", label: `${label} failed`, body: error, copy: `Action: ${label}\nError:\n${error}`, ask: `Integrations: ${label} failed: ${error}. Please investigate and fix.` });
+  }
+  for (const k of ["oauth", "id", "detail"]) q.delete(k);
+  window.history.replaceState(window.history.state, "", `${window.location.pathname}${q.size ? `?${q}` : ""}${window.location.hash}`);
+}
+
+/** The scopes Google granted, in words (shared/../gmail.ts scopeWords for the browser). */
+const grantedWords = (scopes: string[] = []): string =>
+  scopes.some((x) => x.endsWith("/gmail.send")) ? "read + send" : scopes.some((x) => x.endsWith("/gmail.readonly")) ? "read only" : "no Gmail scope";
+
+/** An OAuth kind's row on the card: the account it connected, or why it needs you, and its Connect /
+ *  Reconnect / Disconnect. Connect asks the bridge for Google's consent URL and goes there. */
+function OAuthRow({ card: c, label, onChange }: { card: IntegrationCard; label: string; onChange: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [ask, confirmNode] = useConfirm("Disconnect");
+  const o = c.oauth;
+  const connected = !!o?.account;
+  const go = async () => {
+    setBusy(true);
+    const r = await act(`${label} (${c.name})`, "oauth/google/start", { id: c.id, origin: window.location.origin }, () => {});
+    if (r && typeof r.url === "string") window.location.assign(r.url);
+    else setBusy(false);
+  };
+  return (
+    <div data-slot="integration-oauth" className="flex flex-col gap-2 px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+      <div className="min-w-0">
+        <div className="break-words">
+          {connected
+            ? <>Signed in as <span className="font-medium">{o!.account}</span> · {grantedWords(o!.scopes)}</>
+            : "Not connected. Save the client id and secret, then sign in with Google."}
+        </div>
+        {o?.reconnect && <div data-slot="oauth-reconnect" className="text-geist-red mt-0.5 break-words text-xs">{o.reconnect}</div>}
+      </div>
+      <div className="flex items-center gap-2 sm:shrink-0">
+        {connected && <Button variant="ghost" size="sm" className="max-sm:h-10" onClick={() => ask(`Disconnect ${c.name}?`, "Orca revokes its access at Google and deletes the stored refresh token. The integration, its links and its events stay.", () => void act(`Disconnect ${c.name}`, "oauth/google/disconnect", { id: c.id }, onChange))}>Disconnect</Button>}
+        <Button size="sm" variant={connected && !o?.reconnect ? "secondary" : "default"} disabled={busy} onClick={() => void go()} data-slot="oauth-connect" className="max-sm:h-10 max-sm:flex-1">
+          {connected ? label.replace(/^Connect/, "Reconnect") : label}
+        </Button>
+      </div>
+      {confirmNode}
     </div>
   );
 }
@@ -162,6 +216,7 @@ function IntegrationCardView({ card: c, data, onChange }: { card: IntegrationCar
           <Button variant="secondary" size="sm" disabled={test.busy} onClick={() => void runTest()} className="max-sm:h-10 max-sm:flex-1">Test</Button>
         </div>
       </div>
+      {meta?.oauth && <OAuthRow card={c} label={meta.oauth.label} onChange={onChange} />}
       {links.length === 0
         ? <div className="text-muted-foreground flex items-center justify-between gap-2 px-4 py-3 text-xs">No {meta?.place ?? "link"}s linked. Orca listens only where a link says so.
             <Button variant="ghost" size="sm" onClick={() => setLinkOpen("new")}><Plus />Add</Button></div>
@@ -252,6 +307,9 @@ function FormDialog({ title, description, problem, busy, onSubmit, onClose, chil
   );
 }
 
+/** A switch's value: the stored "true" / "false", else the adapter's default for the key. */
+const switchOn = (v: string | undefined, dflt: boolean): boolean => (v === undefined || v === "" ? dflt : v === "true");
+
 function ConnectButton({ kinds, options, onSaved }: { kinds: AdapterMeta[]; options: InstanceOption[]; onSaved: () => void }) {
   const [open, setOpen] = useState(false);
   return (
@@ -315,11 +373,18 @@ function IntegrationDialog({ kinds, options, existing, onClose, onSaved }: { kin
       <Field label="Secret variable" htmlFor="int-secret" hint={<>Set it in the <span className="font-mono">.env</span> of {isAutomatic(instance) ? "each server that can run it" : "that server"}. It must start with <span className="font-mono">ORCA_SECRET_</span>, so agents never see it.</>}>
         <Input id="int-secret" value={secretRef} onChange={(e) => setSecretRef(e.target.value.toUpperCase())} placeholder={meta?.secretExample ?? "ORCA_SECRET_…"} className="font-mono" />
       </Field>
-      {meta?.config?.map((f) => (
-        <Field key={f.key} label={f.label} htmlFor={`int-cfg-${f.key}`}>
-          <Input id={`int-cfg-${f.key}`} value={config[f.key] ?? ""} placeholder={f.placeholder} onChange={(e) => setConfig({ ...config, [f.key]: e.target.value })} />
-        </Field>
-      ))}
+      {meta?.config?.map((f) => meta.switches && f.key in meta.switches
+        ? (
+          <div key={f.key} className="flex items-center justify-between gap-3">
+            <Label htmlFor={`int-cfg-${f.key}`}>{f.label}</Label>
+            <Switch id={`int-cfg-${f.key}`} data-slot={`int-cfg-${f.key}`} checked={switchOn(config[f.key], meta.switches[f.key]!)} onCheckedChange={(on) => setConfig({ ...config, [f.key]: on ? "true" : "false" })} />
+          </div>
+        )
+        : (
+          <Field key={f.key} label={f.label} htmlFor={`int-cfg-${f.key}`}>
+            <Input id={`int-cfg-${f.key}`} value={config[f.key] ?? ""} placeholder={f.placeholder} onChange={(e) => setConfig({ ...config, [f.key]: e.target.value })} />
+          </Field>
+        ))}
     </FormDialog>
   );
 }

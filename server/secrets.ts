@@ -112,6 +112,10 @@ export async function refresh(): Promise<void> {
   }
 }
 
+/** The cached value of one stored secret (`scope/name`, or `name` in the default scope), or
+ *  undefined. Synchronous, from the cache; for server/integrations/secretValue.ts only. */
+export const cachedValue = (ref: string): string | undefined => cache.find((c) => c.ref === ref)?.value;
+
 /** When the cache was last read (0: never). */
 export const cachedAt = (): number => cacheAt;
 
@@ -179,6 +183,16 @@ export function listText(rows: db.SecretRow[], k = keyInfo()): string {
     ...rows.map((r) => `${secretRef(r.scope, r.name)} · scope ${r.scope} · created ${when(r.createdAt)} · last used ${when(r.lastUsedAt)}${r.source ? ` · from ${r.source}` : ""}${r.keyId !== k.id ? ` · stored with another key (${r.keyId}): this bridge cannot use it` : ""}`),
     `(key ${k.id}, from ${k.source})`,
   ].join("\n");
+}
+
+/** The value of one stored secret, for the bridge's own use (an integration's token). It never
+ *  leaves the bridge, so it writes no audit row; the store and the delete do. Throws a SecretError
+ *  when the secret is missing or was stored with another instance's key. */
+export async function valueOf(ref: string): Promise<string> {
+  const s = await resolve(ref);
+  const k = key();
+  if (s.keyId !== k.id) throw new SecretError(`"${secretRef(s.scope, s.name)}" was stored with key ${s.keyId}, but this bridge has key ${k.id}. Set ${SECRETS_KEY_ENV} to the same key on every instance.`);
+  return decrypt(s.ciphertext, k);
 }
 
 // ---- use ----

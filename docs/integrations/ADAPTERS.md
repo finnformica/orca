@@ -35,7 +35,8 @@ An adapter does only these tasks:
 | `server/integrations/dispatcher.ts` | The delivery loop. |
 | `server/integrations/inbox.ts` | The orchestrator and workstream targets. |
 | `server/integrations/store.ts` | All SQL. |
-| `server/integrations/adapters/` | `web.ts`, `webhook.ts`, `slack.ts` (setup: [slack.md](slack.md)), `email.ts` (setup: [email.md](email.md)). Put a new adapter here. |
+| `server/integrations/adapters/` | `web.ts`, `webhook.ts`, `slack.ts` (setup: [slack.md](slack.md)), `email.ts` (setup: [email.md](email.md)), `gmail.ts` (setup: [gmail.md](gmail.md)). Put a new adapter here. |
+| `server/integrations/secretValue.ts` | An integration's secret: the variable `secret_ref` names, else an Orca stored secret of that name. |
 
 ## 3. The interface
 
@@ -216,6 +217,9 @@ Use Settings > Integrations (`/settings/integrations`): Connect, links, people, 
 1. Put the token in the environment (`.env` or the systemd unit) of each instance that can run it. Name it
    `ORCA_SECRET_<SOMETHING>`. The agent environment strips every `ORCA_SECRET_*` variable. The
    registry refuses any other name, except the names in `ORCA_SECRETS` (`server/env.ts`).
+   You can also store the value as an Orca stored secret with the same name, in the `integrations`
+   or the `default` scope (`server/integrations/secretValue.ts`). The env var wins when both are set.
+   `ctx.secret()` and the registry's secret check read both.
 2. Add an `integration` row: `id`, `kind`, `name`, `instance` (`*` for Automatic, or the one
    instance that runs it, section 6.1), `config`, `secret_ref` (the variable name).
 3. Add a `channel_link` row for each external place: `level` (`notify`, `ask`, `work` or `admin`),
@@ -269,6 +273,26 @@ INSERT INTO subscription (user_id, topic_pattern, filter, target_kind, target_id
 VALUES ('me', 'orca.pr.ci_failed', '{"repo":"orca"}', 'link', 'eng');
 ```
 
+### 6.2 OAuth kinds (Gmail)
+
+A kind whose user signs in at the provider registers `meta.oauth` (`{ provider, label }`). The card
+then shows the provider's Connect button, and the account and scopes from the row's `status.oauth`
+(never a token). `meta.switches` maps config keys to the value the adapter takes while unset. The
+Connect form shows those keys as a Switch, stored as `"true"` / `"false"`.
+
+The flow for Gmail is in `server/integrations/adapters/gmail/oauth.ts`:
+
+1. `POST /api/integrations/oauth/google/start` `{ id }` answers Google's consent URL. The redirect
+   URI is the page's `Origin` + `/api/integrations/oauth/google/callback`.
+2. The PKCE verifier and the state are encrypted in the cursor row `<id>:oauth` (10 minutes, one use).
+3. `GET /api/integrations/oauth/google/callback` checks the state, trades the code, stores the
+   refresh token as the stored secret `integrations/gmail.<id>.refresh_token`, and sends the browser
+   to `/integrations?oauth=connected|failed`.
+4. `POST /api/integrations/oauth/google/disconnect` `{ id }` revokes the grant and deletes the token.
+
+The bridge that the browser reaches answers these routes. It never forwards them. The bridge needs
+no public address, because the browser makes both redirects.
+
 ## 7. Permissions
 
 | Level | The sender can | Orca can, for that message |
@@ -304,6 +328,7 @@ VALUES ('me', 'orca.pr.ci_failed', '{"repo":"orca"}', 'link', 'eng');
 | Slack two-way (done: [slack.md](slack.md)) | `ingest`, `inboundEnvelope`, `thread`, `source.parents`, thread links, `caps.edits`. | A poll in `start` (`inbound: "poll"`, a JSON cursor) with your user token `SLACK_TOKEN` alone; Socket Mode only when `SLACK_APP_TOKEN` is set, so Orca posts as you and never posts by itself (`postsAsUser`). `postAsUser` keeps "post as me". |
 | Discord | The same as Slack. | Gateway in `start`. Automatic or pinned: only one bridge runs it (section 6.1). |
 | Email | `OutboundMessage.replyToExternalMsgId` and `references`, `idempotencyKey` as the Message-ID, `ConversationRef.messageId`, `cursor` for an IMAP UID. | IMAP IDLE in `start`. A DKIM check before `ingest`. |
+| Gmail (done: [gmail.md](gmail.md)) | The email adapter's MIME helpers, `cursor` (a History API `historyId`), Gmail thread ids as `thread`, stored secrets (`secretValue.ts`). | Connect with Google (OAuth code + PKCE, `meta.oauth`), a poll in `start` (`inbound: "poll"`), the query match by Gmail itself. |
 | Settings UI | `store.ts` (every table), `registry.health()`, `store.retryDead()`, `GET /api/integrations`, the pairing routes (section 10). | Routes to write rows. A Test button that calls `publish` with a test key. An Approve / Deny list over `GET /api/integrations/pairing`. |
 | GitHub poller | `cursor` (an ETag or a timestamp), `ingest` without `actor`, topics `orca.pr.*` or `ext.github.*`. | A poll loop in `start` (`inbound: "poll"`). |
 | Linear | The same as the GitHub poller, plus thread links for issues. | GraphQL polls. |
