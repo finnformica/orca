@@ -57,11 +57,12 @@ function visualRowFlags(el: HTMLTextAreaElement, key: string): { firstVisualRow?
 // and a labelled Send with its keycap; its @ picker is portaled out of the host's overflow-hidden.
 export function ChatComposer({
   persistKey, onSubmit, placeholder, leading, footer, onCancel, autoFocus, optimistic, history, action, alt, className, repo, prefill, insert,
-  variant = "box", icon, inputLabel, commands, replace,
+  variant = "box", icon, inputLabel, commands, top,
 }: {
-  // Drawn in the box's place while set (the `/secret` widget). The box's text and files stay in
-  // this component's state, so closing it gives the draft back as it was, and focus returns to it.
-  replace?: ReactNode;
+  // A small card inside the box, above the text (the `/secret` card). It opens and closes with a
+  // height + fade (`Collapse`); the text, the toolbar and Send stay usable below it. Closing it puts
+  // the focus back in the text, where the caret was, unless the text has the focus already.
+  top?: ReactNode;
   // The `/` menu: a `/` that opens a line lists these, filtered as you type. Absent: no menu.
   commands?: ComposerCommand[];
   variant?: "box" | "quick";
@@ -187,13 +188,13 @@ export function ChatComposer({
       if (pendingScroll.current) { scrollCaretIntoView(el); pendingScroll.current = false; }
     }
   }, [value]);
-  const replaced = Boolean(replace);
-  const wasReplaced = useRef(false);
+  const topOpen = Boolean(top);
+  const wasTopOpen = useRef(false);
   useEffect(() => {
     const el = textRef.current;
-    if (wasReplaced.current && !replaced && el) { el.focus(); el.setSelectionRange(caret, caret); } // where the `/command` was
-    wasReplaced.current = replaced;
-  }, [replaced]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (wasTopOpen.current && !topOpen && el && el.ownerDocument.activeElement !== el) { el.focus(); el.setSelectionRange(caret, caret); }
+    wasTopOpen.current = topOpen;
+  }, [topOpen]); // eslint-disable-line react-hooks/exhaustive-deps
   const quick = variant === "quick";
   const rootRef = useRef<HTMLDivElement>(null);
   // Quick variant: grow with the text where `field-sizing: content` isn't supported (Safari, Firefox),
@@ -564,12 +565,14 @@ export function ChatComposer({
 
   return (
     <div ref={rootRef} className="relative">
-      {replaced ? <div data-slot="chat-composer-replaced">{replace}</div> : <div
+      <div
         className={cn(quick ? "cursor-text" : "bg-card focus-within:border-ring focus-within:ring-ring/40 cursor-text rounded-lg border transition-[color,box-shadow] focus-within:ring-2", className)}
         onMouseDown={focusText}
         onDrop={onDrop}
         onDragOver={(e) => e.preventDefault()}
       >
+        {/* The card's own clicks (a label, its padding) keep their focus: focusText would take it. */}
+        <Collapse open={topOpen}><div data-slot="chat-composer-top" onMouseDown={(e) => e.stopPropagation()}>{top}</div></Collapse>
         {images.length > 0 && (
           <div className="flex flex-wrap gap-2 p-2 pb-0">
             {images.map((f, i) => <Thumb key={i} file={f} onRemove={() => setImages((p) => p.filter((_, j) => j !== i))} />)}
@@ -617,12 +620,42 @@ export function ChatComposer({
             )}
           </div>
         </div>
-      </div>}
+      </div>
       {guardBar}
       {mentions && (quick && textRef.current ? createPortal(mentions, textRef.current.ownerDocument.body) : mentions)}
       {commandMenu && (quick && textRef.current ? createPortal(commandMenu, textRef.current.ownerDocument.body) : commandMenu)}
       {error && <p data-slot="chat-composer-error" className={cn("text-destructive text-xs break-words", quick ? "border-t px-3 py-1.5" : "mt-1 px-1")}>{error}</p>}
       {footer}
+    </div>
+  );
+}
+
+// Opens and closes its content with a height + fade and a slight slide (200ms, ease-out): grid rows
+// 0fr → 1fr animate the real height, so the chat log above moves smoothly, never in one jump. The
+// last content stays mounted (aria-hidden) through the close. Reduced motion: no transition.
+const COLLAPSE_MS = 200;
+function Collapse({ open, children }: { open: boolean; children: ReactNode }) {
+  const last = useRef(children);
+  if (open) last.current = children;
+  const [mounted, setMounted] = useState(open);
+  const [expanded, setExpanded] = useState(open);
+  useEffect(() => {
+    if (open) {
+      setMounted(true);
+      // One frame at 0fr first, so the open has a start to animate from.
+      const f = requestAnimationFrame(() => setExpanded(true));
+      return () => cancelAnimationFrame(f);
+    }
+    setExpanded(false);
+    const t = setTimeout(() => setMounted(false), COLLAPSE_MS);
+    return () => clearTimeout(t);
+  }, [open]);
+  if (!mounted) return null;
+  return (
+    <div data-slot="collapse" data-state={expanded ? "open" : "closed"} aria-hidden={!open || undefined}
+      className={cn("grid ease-out motion-safe:transition-[grid-template-rows,opacity,translate] motion-safe:duration-200",
+        expanded ? "grid-rows-[1fr] translate-y-0 opacity-100" : "grid-rows-[0fr] -translate-y-1 opacity-0")}>
+      <div className="min-h-0 overflow-hidden">{open ? children : last.current}</div>
     </div>
   );
 }

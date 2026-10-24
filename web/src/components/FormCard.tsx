@@ -214,17 +214,18 @@ function Hint({ f, helpId, errId, error }: { f: FormField; helpId: string; errId
 
 /** A masked input with a reveal toggle. The browser must not save it: no autocomplete, no spellcheck. */
 /** The masked value field with its reveal toggle — also the composer's `/secret` widget's (components/SlashCommands). */
-export function SecretInput({ common, placeholder, value, onChange }: { common: Record<string, unknown>; placeholder?: string; value: string; onChange: (v: string) => void }) {
+// `compact` (the composer's card): no hint line, and the reveal toggle is out of the Tab order.
+export function SecretInput({ common, placeholder, value, onChange, compact }: { common: Record<string, unknown>; placeholder?: string; value: string; onChange: (v: string) => void; compact?: boolean }) {
   const [shown, setShown] = useState(false);
   return (
     <div className="relative" data-slot="form-secret">
       <Input {...common} type={shown ? "text" : "password"} autoComplete="new-password" spellCheck={false} autoCapitalize="off" autoCorrect="off" data-1p-ignore data-lpignore="true"
         placeholder={placeholder} value={value} onChange={(e) => onChange(e.target.value)} className={cn("pr-9 font-mono")} />
       <Button type="button" size="icon" variant="ghost" className="text-muted-foreground absolute top-0 right-0 size-8" aria-label={shown ? "Hide the value" : "Show the value"} aria-pressed={shown}
-        data-slot="form-secret-reveal" onClick={() => setShown(!shown)}>
+        tabIndex={compact ? -1 : undefined} data-slot="form-secret-reveal" onClick={() => setShown(!shown)}>
         {shown ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
       </Button>
-      <p className="text-muted-foreground mt-1 flex items-center gap-1 text-[11px]"><KeyRound className="size-3" />Stored encrypted. The agent sees only its name.</p>
+      {!compact && <p className="text-muted-foreground mt-1 flex items-center gap-1 text-[11px]"><KeyRound className="size-3" />Stored encrypted. The agent sees only its name.</p>}
     </div>
   );
 }
