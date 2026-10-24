@@ -10,7 +10,7 @@
 // component reads), the page title (`Orca | Personal`) and the favicon (the black
 // circle a very dark shade of the theme colour, the orca the colour). Neutral sets no theme at all.
 import { useSyncExternalStore } from "react";
-import { apiBase, apiFetch, identityOf, type ServersAnswer } from "./server";
+import { apiBase, apiFetch, identityOf, type ServersAnswer, type TailscaleUser } from "./server";
 import { persistedKey, readPersisted, writePersisted } from "./persisted";
 import { faviconSvg, isNeutral, markBg, markColor, pageTitle, themeCss, type ServerIdentityConfig } from "../../../shared/serverIdentity";
 
@@ -22,6 +22,9 @@ export type ActiveIdentity = {
   host: string;
   /** What is stored (empty: every field is the default). */
   stored: ServerIdentityConfig;
+  /** The signed-in Tailscale user, from `tailscale serve` — absent off the tailnet or before the
+   *  server identifies itself. The sidebar's profile button reads this. */
+  tailscaleUser?: TailscaleUser;
 };
 
 const isIdentity = (v: unknown): v is ActiveIdentity =>
@@ -36,7 +39,7 @@ const subs = new Set<() => void>();
 /** The identity of a GET /api/servers answer. Pure. */
 export function activeIdentityOf(answer: ServersAnswer): ActiveIdentity {
   const { label, color } = identityOf(answer.self);
-  return { label, color, host: answer.self.name, stored: answer.self.identity ?? {} };
+  return { label, color, host: answer.self.name, stored: answer.self.identity ?? {}, tailscaleUser: answer.self.tailscaleUser };
 }
 
 const THEME_ID = "orca-server-theme";
@@ -83,6 +86,15 @@ export async function loadIdentity(): Promise<void> {
 
 export const useServerIdentity = (): ActiveIdentity | null =>
   useSyncExternalStore((cb) => { subs.add(cb); return () => { subs.delete(cb); }; }, () => current);
+
+/** The avatar fallback: up to two initials from `name`, else the first two characters of `login`
+ *  before any `@`. "?" when there is nothing to show. Pure. */
+export function profileInitials(name: string | undefined, login: string | undefined): string {
+  const words = (name ?? "").trim().split(/\s+/).filter(Boolean);
+  if (words.length) return words.slice(0, 2).map((w) => w[0]!.toUpperCase()).join("");
+  const local = (login ?? "").split("@")[0]?.trim() ?? "";
+  return local ? local.slice(0, 2).toUpperCase() : "?";
+}
 
 /** Tests: read the identity again from storage (none after localStorage.clear()). */
 export function _resetIdentity(): void { current = stored(); applyIdentity(current); }
