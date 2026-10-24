@@ -694,11 +694,14 @@ space/bracket lists the board's polled PRs; a pick inserts `#123`, or `repo#123`
 markdown list line (`- `, `* `, `1. `, `- [ ] `) starts the next item with the same marker and
 indent, and Enter on an empty item removes the marker (`listContinuation`); there it does not send,
 but ⌘/Ctrl+Enter does. It opened on `#`
-until Finn asked for `@`; `#` now opens nothing. A `/` that opens a line opens the **`/` command menu**
-(`slashTrigger`; never mid-sentence or in a path): the registry is `SLASH_COMMANDS` in `workstream.ts`
+until Finn asked for `@`; `#` now opens nothing. A `/` at a line start or after whitespace, anywhere in the text,
+opens the **`/` command menu** (`slashTrigger`; never inside a word, path or URL; a pick takes out
+only the `/query` token): the registry is `SLASH_COMMANDS` in `workstream.ts`
 (name, description, where it applies) plus `components/SlashCommands.tsx` (icon, action) — compact,
 stop, clear-queue, model, attach, secret, and for a worker chat preview, merge (confirmed) and
-rename. A command that does not apply is hidden; none sends a message. `/secret` is a compact
+rename. Every command of the chat's kind shows (the worker-only preview, merge and rename never
+in the orchestrator's chat); one that does not apply now is greyed out with its reason
+(`unavailable`), and ↑/↓ and Enter skip it (`slashActive` / `slashStep`). None sends a message. `/secret` is a compact
 card INSIDE the box, above the text (ChatComposer `top`, its `SecretInput`): the text, the toolbar and
 Send stay usable below it, and Enter there sends the draft only. It opens and closes with a height +
 fade (`Collapse`, 200ms, none under reduced motion). Its value stays in the card and the request body. It is NOT a live shell — it renders the turns Orca already records, so nothing tmux is

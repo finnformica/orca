@@ -6,7 +6,7 @@ import { ExpandableImage } from "@/components/ExpandableImage";
 import { Shortcut } from "@/components/ui/kbd";
 import { Tip } from "@/components/ui/tip";
 import { usePrRefs, useVoiceInput, useWorkstreamRefs } from "@/store";
-import { NO_WALK, appendQuote, filterMentions, filterSlashCommands, historyKey, historyStep, insertPrRef, listContinuation, mentionLabel, prTrigger, removeSlashQuery, slashTrigger, type HistoryWalk, type MentionRef } from "@/workstream";
+import { NO_WALK, appendQuote, filterMentions, filterSlashCommands, historyKey, historyStep, insertPrRef, listContinuation, mentionLabel, prTrigger, removeSlashQuery, slashActive, slashStep, slashTrigger, type HistoryWalk, type MentionRef } from "@/workstream";
 import { lineVisualRow, scrollCaretIntoView } from "@/lib/caretRow";
 import { cn, PipContext } from "@/lib/utils";
 import { clearDraft, draftFiles, loadDraft, saveDraft } from "@/lib/composerDraft";
@@ -26,7 +26,9 @@ import { replaceFindings, secretFindings, type SecretFinding } from "../../../sh
 // line with a "\n" on the relevant side already decides the key without this, so it's skipped).
 /** One entry of the composer's `/` menu (components/SlashCommands builds them). `run` gets the box's
  *  own verbs; it never sends a message. */
-export type ComposerCommand = { name: string; description: string; icon: ReactNode; run: (box: { attach: () => void }) => void };
+// `disabled`: the reason it does not apply now. The menu greys it out with the reason, ↑/↓ skip it
+// and Enter or a click on it does nothing.
+export type ComposerCommand = { name: string; description: string; icon: ReactNode; disabled?: string; run: (box: { attach: () => void }) => void };
 
 function visualRowFlags(el: HTMLTextAreaElement, key: string): { firstVisualRow?: boolean; lastVisualRow?: boolean } {
   const { value, selectionStart, selectionEnd } = el;
@@ -152,14 +154,15 @@ export function ChatComposer({
   const activeIdx = Math.min(active, Math.max(0, matches.length - 1));
   const optionId = (i: number) => `${listId}-pr-${i}`;
   // `/` menu: the same rules as the @ picker (↑/↓, Enter/Tab, Escape, a blur dismisses that `/`).
-  // The two never both match: a slash trigger is a `/` and a name at the start of its line.
+  // The two never both match: a slash trigger is a `/` at a line start or after whitespace, then a name.
   const strig = commands ? slashTrigger(value, caret) : null;
   const cmdMatches = strig && strig.start !== dismissedAt ? filterSlashCommands(commands!, strig.query) : [];
   const commanding = cmdMatches.length > 0;
-  const cmdIdx = Math.min(active, Math.max(0, cmdMatches.length - 1));
+  const cmdOff = cmdMatches.map((c) => Boolean(c.disabled));
+  const cmdIdx = slashActive(cmdOff, Math.min(active, Math.max(0, cmdMatches.length - 1))); // -1: all disabled
   const cmdOptionId = (i: number) => `${listId}-cmd-${i}`;
-  const runCommand = (c: ComposerCommand) => {
-    if (!strig) return;
+  const runCommand = (c: ComposerCommand | undefined) => {
+    if (!strig || !c || c.disabled) return;
     const next = removeSlashQuery(value, strig.start, caret);
     pendingCaret.current = next.caret;
     pendingFocus.current = true;
@@ -391,9 +394,8 @@ export function ChatComposer({
   );
   const onKey = (e: KeyboardEvent) => {
     if (commanding && !e.nativeEvent.isComposing) {
-      const n = cmdMatches.length;
-      if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); setActive((cmdIdx + (e.key === "ArrowDown" ? 1 : n - 1)) % n); return; }
-      if ((e.key === "Enter" || e.key === "Tab") && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); runCommand(cmdMatches[cmdIdx]!); return; }
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); if (cmdIdx >= 0) setActive(slashStep(cmdOff, cmdIdx, e.key === "ArrowDown" ? 1 : -1)); return; }
+      if ((e.key === "Enter" || e.key === "Tab") && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); runCommand(cmdMatches[cmdIdx]); return; }
       if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setDismissedAt(strig!.start); return; }
     }
     if (picking && !e.nativeEvent.isComposing) {
@@ -472,7 +474,7 @@ export function ChatComposer({
       aria-autocomplete="list"
       aria-expanded={picking || commanding}
       aria-controls={picking || commanding ? listId : undefined}
-      aria-activedescendant={commanding ? cmdOptionId(cmdIdx) : picking ? optionId(activeIdx) : undefined}
+      aria-activedescendant={commanding ? (cmdIdx >= 0 ? cmdOptionId(cmdIdx) : undefined) : picking ? optionId(activeIdx) : undefined}
       onChange={(e) => {
         const t = prTrigger(e.target.value, e.target.selectionStart) ?? (commands ? slashTrigger(e.target.value, e.target.selectionStart) : null);
         if (t?.start !== dismissedAt) setDismissedAt(null); // a new (or no) `@` re-arms the picker
@@ -500,15 +502,19 @@ export function ChatComposer({
             id={cmdOptionId(i)}
             role="option"
             aria-selected={i === cmdIdx}
+            aria-disabled={c.disabled ? true : undefined}
             data-command={c.name}
-            className={cn("flex cursor-default items-center gap-2 rounded-sm px-2 py-1.5 text-sm", i === cmdIdx && "bg-accent text-accent-foreground")}
+            data-disabled={c.disabled ? "" : undefined}
+            title={c.disabled ? `/${c.name} — ${c.disabled}` : undefined}
+            className={cn("flex cursor-default items-center gap-2 rounded-sm px-2 py-1.5 text-sm", c.disabled ? "opacity-50" : i === cmdIdx && "bg-accent text-accent-foreground")}
             onMouseDown={(e) => e.preventDefault()} // keep the textarea's focus + caret
-            onMouseEnter={() => setActive(i)}
+            onMouseEnter={() => { if (!c.disabled) setActive(i); }}
             onClick={() => runCommand(c)}
           >
             <span className="text-muted-foreground flex size-4 shrink-0 items-center justify-center [&_svg]:size-3.5" aria-hidden>{c.icon}</span>
             <span className="shrink-0 font-mono text-xs">/{c.name}</span>
             <span className="text-muted-foreground min-w-0 flex-1 truncate text-xs">{c.description}</span>
+            {c.disabled && <span data-slot="command-reason" className="text-muted-foreground shrink-0 text-xs">{c.disabled}</span>}
           </li>
         ))}
       </ul>

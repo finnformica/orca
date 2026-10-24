@@ -9,19 +9,24 @@ import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import type { Row } from "@/store";
 import { ChatPanel } from "@/views/Chat";
-import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, SLASH_COMMANDS, filterSlashCommands, removeSlashQuery, slashTrigger, type SlashContext } from "@/workstream";
+import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, SLASH_COMMANDS, filterSlashCommands, removeSlashQuery, slashActive, slashStep, slashTrigger, type SlashContext } from "@/workstream";
 
 describe("slashTrigger", () => {
-  test("fires on a / that opens a line, after leading whitespace, up to the caret", () => {
+  test("fires on a / at a line start or after whitespace, anywhere in the text, up to the caret", () => {
     expect(slashTrigger("/", 1)).toEqual({ start: 0, query: "" });
     expect(slashTrigger("/com", 4)).toEqual({ start: 0, query: "com" });
     expect(slashTrigger("  /st", 5)).toEqual({ start: 2, query: "st" });
     expect(slashTrigger("first line\n/mo", 14)).toEqual({ start: 11, query: "mo" });
     expect(slashTrigger("/clear-q", 8)).toEqual({ start: 0, query: "clear-q" });
+    expect(slashTrigger("fix /compact", 12)).toEqual({ start: 4, query: "compact" });
+    expect(slashTrigger("please\tdo /se and more", 13)).toEqual({ start: 10, query: "se" }); // caret mid-text
+    expect(slashTrigger("ok /", 4)).toEqual({ start: 3, query: "" });
   });
-  test("does not fire mid-sentence, in a path, after a space in the query, or off its line", () => {
-    expect(slashTrigger("fix /compact", 12)).toBeNull();
+  test("does not fire inside a word, path or URL, after a space in the query, or off its line", () => {
     expect(slashTrigger("see src/a", 9)).toBeNull();
+    expect(slashTrigger("a/b", 3)).toBeNull();
+    expect(slashTrigger("run ./run.sh", 12)).toBeNull();
+    expect(slashTrigger("open https://x/y", 16)).toBeNull();
     expect(slashTrigger("/usr/bin", 8)).toBeNull();
     expect(slashTrigger("./run.sh", 8)).toBeNull();
     expect(slashTrigger("https://x.dev/a", 15)).toBeNull();
@@ -31,24 +36,40 @@ describe("slashTrigger", () => {
   test("removeSlashQuery takes out the /query and keeps the rest", () => {
     expect(removeSlashQuery("/sec", 0, 4)).toEqual({ text: "", caret: 0 });
     expect(removeSlashQuery("hi\n/st\nmore", 3, 6)).toEqual({ text: "hi\n\nmore", caret: 3 });
+    expect(removeSlashQuery("fix /sec now", 4, 8)).toEqual({ text: "fix  now", caret: 4 }); // only the token
   });
 });
 
 const ctx = (over: Partial<SlashContext> = {}): SlashContext => ({
   orchestrator: false, compactable: false, running: false, stoppable: true, attach: true, queued: 0, previews: false, pr: false, mergeQueued: false, ...over,
 });
-const ids = (c: SlashContext) => SLASH_COMMANDS.filter((x) => x.applies(c)).map((x) => x.id);
+const ids = (c: SlashContext) => SLASH_COMMANDS.filter((x) => x.shows(c)).map((x) => x.id);
+const why = (c: SlashContext) => Object.fromEntries(SLASH_COMMANDS.filter((x) => x.shows(c)).map((x) => [x.id, x.unavailable(c)]));
 
-describe("where each command applies", () => {
-  test("the orchestrator never gets the worker-only commands", () => {
-    expect(ids(ctx({ orchestrator: true, previews: true, pr: true }))).toEqual(["model", "attach", "secret"]);
-    expect(ids(ctx({ previews: true, pr: true }))).toEqual(["model", "attach", "secret", "preview", "merge", "rename"]);
+describe("which commands show, and why one is disabled", () => {
+  test("every command of the chat's kind shows; the orchestrator never gets the worker-only ones", () => {
+    expect(ids(ctx({ orchestrator: true }))).toEqual(["compact", "stop", "clear-queue", "model", "attach", "secret"]);
+    expect(ids(ctx())).toEqual(["compact", "stop", "clear-queue", "model", "attach", "secret", "preview", "merge", "rename"]);
   });
-  test("stop only while it runs, compact only when offered and idle, clear-queue only with a queue", () => {
-    expect(ids(ctx({ running: true, compactable: true, queued: 2 }))).toEqual(["stop", "clear-queue", "model", "attach", "secret", "rename"]);
-    expect(ids(ctx({ compactable: true }))).toContain("compact");
-    expect(ids(ctx({ running: true, stoppable: false }))).not.toContain("stop");
-    expect(ids(ctx({ pr: true, mergeQueued: true }))).not.toContain("merge");
+  test("a command that does not apply now carries a short reason", () => {
+    expect(why(ctx())).toEqual({
+      compact: "only after a reply", stop: "nothing is running", "clear-queue": "queue is empty", model: null, attach: null, secret: null,
+      preview: "no preview for this repo", merge: "no PR yet", rename: null,
+    });
+    const busy = why(ctx({ running: true, compactable: true, queued: 2, previews: true, pr: true, mergeQueued: true }));
+    expect(busy).toMatchObject({ compact: "wait for the run to end", stop: null, "clear-queue": null, preview: null, merge: "already queued to merge" });
+    expect(why(ctx({ compactable: true })).compact).toBeNull();
+    expect(why(ctx({ running: true, stoppable: false })).stop).toBe("this run cannot be stopped here");
+    expect(why(ctx({ attach: false })).attach).toBe("no attachments here");
+  });
+  test("slashActive / slashStep skip disabled rows and wrap", () => {
+    const off = [true, false, true, false];
+    expect(slashActive(off, 0)).toBe(1);
+    expect(slashActive(off, 2)).toBe(3);
+    expect(slashActive([true, true], 0)).toBe(-1);
+    expect(slashStep(off, 1, 1)).toBe(3);
+    expect(slashStep(off, 3, 1)).toBe(1);
+    expect(slashStep(off, 1, -1)).toBe(3);
   });
   test("filterSlashCommands: a name prefix first, then a name substring, then a description word", () => {
     const all = SLASH_COMMANDS.map((c) => ({ name: c.id, description: c.description }));
@@ -120,21 +141,49 @@ async function click(el: Element) {
 }
 const menu = () => container!.querySelector('[data-slot="chat-composer-commands"]');
 const names = () => [...container!.querySelectorAll("[data-command]")].map((o) => o.getAttribute("data-command"));
+const disabled = () => [...container!.querySelectorAll("[data-command][aria-disabled='true']")].map((o) => o.getAttribute("data-command"));
+const reason = (name: string) => container!.querySelector(`[data-command="${name}"] [data-slot="command-reason"]`)?.textContent;
 const selected = () => container!.querySelector('[data-command][aria-selected="true"]')?.getAttribute("data-command");
 
 describe("ChatPanel / menu", () => {
-  test("a worker chat lists its commands; the orchestrator's hides the worker-only ones", async () => {
+  test("a chat lists every command of its kind; one that does not apply is greyed out with its reason", async () => {
     let box = await mount(worker);
     await type(box, "/");
     expect(menu()).not.toBeNull();
     expect(box.getAttribute("aria-expanded")).toBe("true");
-    expect(names()).toEqual(["model", "attach", "secret", "preview", "merge", "rename"]); // idle, no queue, nothing to compact
+    expect(names()).toEqual(["compact", "stop", "clear-queue", "model", "attach", "secret", "preview", "merge", "rename"]);
+    expect(disabled()).toEqual(["compact", "stop", "clear-queue"]); // idle, no queue, nothing to compact
+    expect(reason("stop")).toBe("nothing is running");
+    expect(reason("clear-queue")).toBe("queue is empty");
+    expect(reason("compact")).toBe("only after a reply");
+    expect(reason("model")).toBeUndefined();
+    expect(selected()).toBe("model"); // the first enabled row
     await act(async () => { root?.unmount(); });
     container?.remove();
 
     box = await mount(orchestrator);
     await type(box, "/");
-    expect(names()).toEqual(["model", "attach", "secret"]);
+    expect(names()).toEqual(["compact", "stop", "clear-queue", "model", "attach", "secret"]); // no /preview, /merge, /rename
+  });
+
+  test("Enter or a click on a disabled command does nothing", async () => {
+    const box = await mount(worker);
+    await type(box, "/stop");
+    expect(names()).toEqual(["stop"]);
+    expect(disabled()).toEqual(["stop"]);
+    expect(box.getAttribute("aria-activedescendant")).toBeNull();
+    await key(box, "Enter");
+    await click(container!.querySelector('[data-command="stop"]')!);
+    expect(apiFake.stopped).toEqual([]);
+    expect(box.value).toBe("/stop"); // not taken out, not sent
+    expect(sent).toEqual([]);
+  });
+
+  test("a merge-queued PR shows /merge disabled with its reason", async () => {
+    const box = await mount({ ...worker, autoMergeEnabled: true });
+    await type(box, "/mer");
+    expect(disabled()).toEqual(["merge"]);
+    expect(reason("merge")).toBe("already queued to merge");
   });
 
   test("stop shows only while the agent runs, and runs api.stopAgent without a message", async () => {
@@ -147,7 +196,7 @@ describe("ChatPanel / menu", () => {
     expect(sent).toEqual([]);
   });
 
-  test("↑/↓ move the active command and wrap; Tab runs it; Escape closes the menu", async () => {
+  test("↑/↓ move the active command, skip disabled ones and wrap; Tab runs it; Escape closes the menu", async () => {
     const box = await mount(worker);
     await type(box, "/");
     expect(selected()).toBe("model");
@@ -155,7 +204,7 @@ describe("ChatPanel / menu", () => {
     await key(box, "ArrowDown");
     expect(selected()).toBe("attach");
     await key(box, "ArrowUp");
-    await key(box, "ArrowUp"); // wraps to the last
+    await key(box, "ArrowUp"); // past the disabled /compact, /stop, /clear-queue: wraps to the last
     expect(selected()).toBe("rename");
     await key(box, "Escape");
     expect(menu()).toBeNull();
@@ -164,7 +213,7 @@ describe("ChatPanel / menu", () => {
     expect(sent).toEqual(["/"]);
   });
 
-  test("typing filters the list; a / mid-sentence or in a path opens nothing", async () => {
+  test("typing filters the list; a / inside a word, path or URL opens nothing", async () => {
     const box = await mount(worker);
     await type(box, "/ren");
     expect(names()).toEqual(["rename"]);
@@ -172,10 +221,33 @@ describe("ChatPanel / menu", () => {
     expect(menu()).toBeNull();
     await type(box, "look at /usr/bin");
     expect(menu()).toBeNull();
-    await type(box, "src/a");
-    expect(menu()).toBeNull();
+    for (const t of ["src/a", "see a/b", "run ./run.sh", "open https://x/y"]) {
+      await type(box, t);
+      expect(menu()).toBeNull();
+    }
     await type(box, "@");
     expect(menu()).toBeNull(); // the @ picker's trigger is not the command menu's
+  });
+
+  test("a / mid-sentence opens the menu; a pick takes out only the /query and keeps the rest", async () => {
+    const box = await mount(worker);
+    let clicked = 0;
+    container!.querySelector<HTMLInputElement>('input[type="file"]')!.click = () => { clicked++; };
+    const text = "see the log /att and the diff";
+    const caret = "see the log /att".length;
+    await act(async () => {
+      setNative(box, text);
+      box.setSelectionRange(caret, caret);
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+      await flush();
+    });
+    expect(menu()).not.toBeNull();
+    expect(names()).toEqual(["attach"]);
+    await key(box, "Enter");
+    expect(clicked).toBe(1);
+    expect(box.value).toBe("see the log  and the diff");
+    expect(box.selectionStart).toBe("see the log ".length);
+    expect(sent).toEqual([]);
   });
 
   test("clear-queue drops every queued message and does not put it back in the box", async () => {
@@ -206,10 +278,11 @@ describe("ChatPanel / menu", () => {
     expect(sent).toEqual([]);
   });
 
-  test("compact shows where the context ring offers Compact, and runs api.compact", async () => {
+  test("compact is enabled where the context ring offers Compact, and runs api.compact", async () => {
     let box = await mount(worker);
     await type(box, "/comp");
-    expect(menu()).toBeNull(); // no context reading: no Compact today, so no /compact
+    expect(disabled()).toEqual(["compact"]); // no context reading: no Compact today
+    expect(reason("compact")).toBe("only after a reply");
     await act(async () => { root?.unmount(); });
     container?.remove();
     localStorage.clear(); // the first box saved "/comp" as its draft

@@ -32,7 +32,8 @@ export type SlashHost = {
   openModel: () => void;
 };
 
-/** The commands for this chat (only those that apply) and the UI they open: the merge and rename
+/** The commands for this chat (every one of its kind; one that does not apply now carries its
+ *  reason as `disabled`) and the UI they open: the merge and rename
  *  dialogs and a one-line notice under the composer (`ui`), and the `/secret` card, drawn inside
  *  the composer's box above the text while it is open (`widget`, ChatComposer's `top`). */
 export function useSlashCommands(host: SlashHost): { commands: ComposerCommand[]; ui: ReactNode; widget: ReactNode } {
@@ -66,9 +67,10 @@ export function useSlashCommands(host: SlashHost): { commands: ComposerCommand[]
   // The memoized commands call the newest render's actions (the row and the panel's verbs change).
   const live = useRef(actions);
   live.current = actions;
-  const key = SLASH_COMMANDS.filter((c) => c.applies(ctx)).map((c) => c.id).join(",");
-  const commands = useMemo(() => SLASH_COMMANDS.filter((c) => c.applies(ctx)).map((c): ComposerCommand => ({
-    name: c.id, description: c.description, icon: ICONS[c.id], run: (box) => live.current[c.id](box),
+  const shown = SLASH_COMMANDS.filter((c) => c.shows(ctx)).map((c) => ({ c, why: c.unavailable(ctx) }));
+  const key = shown.map(({ c, why }) => `${c.id}:${why ?? ""}`).join(",");
+  const commands = useMemo(() => shown.map(({ c, why }): ComposerCommand => ({
+    name: c.id, description: c.description, icon: ICONS[c.id], disabled: why ?? undefined, run: (box) => live.current[c.id](box),
   })), [key]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // A notice fades after a few seconds.
