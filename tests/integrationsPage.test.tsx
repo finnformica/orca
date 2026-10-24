@@ -242,6 +242,15 @@ describe("the Integrations page", () => {
     expect([...icon.querySelectorAll("path")].map((p) => p.getAttribute("fill"))).toEqual(["#4285F4", "#34A853", "#FBBC04", "#EA4335", "#C5221F"]);
   });
 
+  test("the Cloudflare logo is its own two-tone orange cloud", async () => {
+    apiFake.integrationsData = { ...overview(), kinds: [{ kind: "cloudflare", label: "Cloudflare", caps: {}, place: "place" }],
+      integrations: [{ id: "cf", kind: "cloudflare", name: "Cloudflare", instance: "*", enabled: true, config: {}, access: "read", events: "trigger", running: true, health: { ok: true } }], links: [], pairings: [] };
+    await open("/integrations");
+    const icon = all("integration-card")[0]!.querySelector<SVGElement>('[data-slot="brand-icon"][data-kind="cloudflare"]')!;
+    expect(icon.tagName.toLowerCase()).toBe("svg");
+    expect([...icon.querySelectorAll("path")].map((p) => p.getAttribute("fill"))).toEqual(["#F38020", "#FBAE40"]);
+  });
+
   test("Settings > Google sign-in: the operator sets the client id and points the secret at a stored secret", async () => {
     apiFake.googleOAuthData = { clientId: "", secretRef: "", redirectOrigin: "", envClientId: false, defaultSecretRef: "ORCA_SECRET_GOOGLE_OAUTH" };
     apiFake.holdConfig = false; // another file may leave config held (reset() keeps it)
