@@ -1,13 +1,14 @@
-// The console shell, Vercel's: a left sidebar (instance switcher, Find, the nav, you at the bottom)
-// that collapses to icons on desktop, and a top bar with the repo
+// The console shell, Vercel's: a left sidebar (the server menu — which server this browser talks
+// to, and which of its instances the board is scoped to — Find, the nav, you at the bottom) that
+// collapses to icons on desktop, and a top bar with the repo
 // context switcher, a breadcrumb and, on the right, a compact Claude usage meter then "Ask the
 // orchestrator" (on every page). It also
 // hosts the ⌘K palette, the ? shortcuts sheet and the one keyboard-shortcut listener. On a phone
-// (below md) the sidebar is hidden entirely — the top bar carries only the round mark, and a bottom
-// bar within thumb reach holds Overview, Agents, New agent, the orchestrator and Settings (New agent
-// centred); every inset clears the notch and the home indicator. What the sidebar alone carried
-// (Previews, Repos, Usage, Find, the instance switcher) is reachable from Settings on a phone — see
-// MobileNav in views/Pages.tsx.
+// (below md) the sidebar is hidden entirely — the top bar carries only the round mark and the active
+// server's name, and a bottom bar within thumb reach holds Overview, Agents, New agent, the
+// orchestrator and Settings (New agent centred); every inset clears the notch and the home
+// indicator. What the sidebar alone carried (Previews, Repos, Usage, Find, the instance scope) is
+// reachable from Settings on a phone — see MobileNav in views/Pages.tsx.
 import { useEffect, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
@@ -38,7 +39,7 @@ import { PANEL_MIN_W, SHELL_GAP, repoLabel, summarizeSync } from "../workstream"
 import { PreviewsBadge } from "@/views/PreviewControl";
 import { useInboxUnread } from "@/lib/inboxUnread";
 import { useHandoffBadge } from "@/lib/handoffBadge";
-import { AddServerDialog, Dot, healthText, ServerMenu, ServerOffline, useServerProblem, useServers } from "@/components/ServerMenu";
+import { AddServerDialog, Dot, healthText, ServerMenuItems, ServerOffline, checkServers, useAddServerClose, useServerProblem, useServers } from "@/components/ServerMenu";
 import { currentServer } from "@/lib/server";
 import { loadIdentity, profileInitials, useServerIdentity } from "@/lib/identity";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -144,7 +145,6 @@ export function Shell({ crumbs, sidebarActions, children }: {
   const activity = useOrchestratorActivity(); // the ONE subscriber feeding every launcher's indicator
   const route = useRoute();
   const identity = useServerIdentity(); // the ACTIVE server's name and colour (lib/identity.ts applies them)
-  const { visible: serverMenu } = useServers();
   const narrow = useNarrow();
   const [shellEl, setShellEl] = useState<HTMLElement | null>(null);
   useDockMotion(shellEl);
@@ -197,10 +197,9 @@ export function Shell({ crumbs, sidebarActions, children }: {
           )}
         >
           <button type="button" data-slot="topbar-mark" onClick={() => navigate("/")} aria-label="Orca — go to overview" className="flex size-8 shrink-0 items-center justify-center md:hidden"><RoundMark /></button>
-          {/* The phone has no sidebar: the server's name goes beside the mark — the server menu
-              carries it when it shows. */}
-          {!serverMenu && identity && <span data-slot="topbar-identity" className="text-server-fg truncate text-sm font-medium md:hidden">{identity.label}</span>}
-          <ServerMenu />
+          {/* The phone has no sidebar: the server's name goes beside the mark. The server menu
+              itself is the sidebar's (desktop only) — this is the identity, not a switcher. */}
+          {identity && <span data-slot="topbar-identity" className="text-server-fg truncate text-sm font-medium md:hidden">{identity.label}</span>}
           <RepoSwitcher />
           {/* A phone keeps the page name: the crumbs never shrink under 4.5rem (they truncate), and the
               server and repo menus shrink first. */}
@@ -260,7 +259,7 @@ function Sidebar({ collapsed, onToggle, actions }: {
   return (
     <>
       <div className="flex h-14 items-center gap-2 px-3">
-        <InstanceSwitcher collapsed={collapsed} />
+        <SidebarServerMenu collapsed={collapsed} />
       </div>
       {!collapsed && <div className="px-3 pb-2"><FindBox /></div>}
       <nav aria-label="Main" className="flex flex-col gap-0.5 px-2 py-1">
@@ -387,32 +386,49 @@ function useShellFallbacks() {
   }, [here, repos, scope, setScope]);
 }
 
-// Vercel's team switcher, as the instance scope: "All instances", or one machine. It scopes the
-// Overview and Agents pages. A compact button at the sidebar's top left — never a link to Overview
-// (the nav's own Overview item already does that) — carrying the active server's status dot
-// (ServerMenu's `Dot`, so a server reads the same colour everywhere) and opening this menu on every
-// click, whatever the instance count.
-function InstanceSwitcher({ collapsed }: { collapsed: boolean }) {
+// The sidebar's top-left button: Slack's workspace switcher, now carrying the server picker that
+// used to be a separate top-bar menu (#441 put the instance scope here instead; this reunites them,
+// since the top bar's own menu is gone). The trigger shows the ACTIVE server's name with its status
+// dot right after it (`Dot`, so health reads the same colour everywhere), then the chevron — no
+// colour tile here: the whole app already takes the server's theme colour, so a second swatch on
+// the trigger would be redundant. Collapsed, there is no room for the name: the orca mark stands in,
+// with the dot pinned at its corner, as the trigger did before this button carried a server at all.
+// The menu it opens is ONE dropdown: the server list first (`ServerMenuItems`, reused — not copied —
+// from ServerMenu.tsx, colour tiles and all), then the instance scope ("All instances", or one
+// machine) that this button opened on its own before #441. They are kept together, in one place,
+// rather than splitting "where do things run" back across the sidebar and the top bar — the instance
+// section has nowhere else on desktop that is not itself a second menu.
+function SidebarServerMenu({ collapsed }: { collapsed: boolean }) {
   const [scope, setScope] = useAtom(instanceScopeAtom);
   useRepos(); // config (and with it the instance list) lands after first paint
   const choices = instanceChoices();
-  const { servers } = useServers();
+  const { servers, visible: serverSection } = useServers();
   const identity = useServerIdentity();
-  const health = currentServer(servers).health;
+  const current = currentServer(servers);
+  const label = identity?.label ?? current.label;
+  const { markAdding, onCloseAutoFocus } = useAddServerClose();
   return (
-    <DropdownMenu>
+    <DropdownMenu onOpenChange={(open) => { if (open) checkServers(true); }}>
       <DropdownMenuTrigger asChild>
-        <button type="button" data-slot="instance-switcher" className={cn("hover:bg-accent flex min-w-0 flex-1 items-center gap-2 rounded-md p-1", collapsed && "md:justify-center")}
-          aria-label={`Server: ${identity?.label ?? thisInstance() ?? "Orca"}, ${healthText(health)}. Switch instance`}>
-          <span className="relative inline-flex shrink-0">
-            <RoundMark />
-            <Dot health={health} className="absolute -right-0.5 -bottom-0.5" />
-          </span>
-          {!collapsed && <BrandName label={identity?.label} labelClass="text-server-fg" className="min-w-0 flex-1 text-left text-sm font-medium" />}
-          {!collapsed && <ChevronsUpDown className="text-muted-foreground size-3.5 shrink-0" />}
+        <button type="button" data-slot="server-menu" className={cn("hover:bg-accent flex min-w-0 flex-1 items-center gap-2 rounded-md p-1", collapsed && "md:justify-center")}
+          aria-label={`Server: ${label}, ${healthText(current.health)}. Switch server`}>
+          {collapsed ? (
+            <span className="relative inline-flex shrink-0">
+              <RoundMark />
+              <Dot health={current.health} className="absolute -right-0.5 -bottom-0.5" />
+            </span>
+          ) : (
+            <>
+              <span data-slot="server-label" className="min-w-0 flex-1 truncate text-left text-sm font-medium">{label}</span>
+              <Dot health={current.health} />
+              <ChevronsUpDown className="text-muted-foreground size-3.5 shrink-0" />
+            </>
+          )}
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="min-w-[12rem]">
+      <DropdownMenuContent align="start" className="min-w-[12rem] max-w-[18rem]" onCloseAutoFocus={onCloseAutoFocus}>
+        <ServerMenuItems markAdding={markAdding} />
+        {serverSection && <DropdownMenuSeparator />}
         <DropdownMenuLabel>Instance</DropdownMenuLabel>
         <DropdownMenuRadioGroup value={scope} onValueChange={setScope}>
           <DropdownMenuRadioItem value="all">All instances</DropdownMenuRadioItem>

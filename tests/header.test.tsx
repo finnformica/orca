@@ -128,16 +128,17 @@ describe("console shell", () => {
     expect(cls.filter((c) => /^bg-background\/|^backdrop-blur/.test(c))).toEqual([]);
   });
 
-  test("the sidebar: Orca mark + instance switcher, Find, the pages, and the active one marked", async () => {
+  test("the sidebar: server menu, Find, the pages, and the active one marked", async () => {
     await mount();
     const sidebar = container!.querySelector('[data-slot="sidebar"]')!;
-    expect(sidebar.querySelector("svg")).not.toBeNull(); // the orca mark
-    expect(sidebar.textContent).toContain("Orca");
-    // A compact button, top left, carrying the server's status dot — not a link to Overview, and no
-    // subtext under the name. Clicking it opens the instance-scope menu, whatever the instance count.
-    const switcher = sidebar.querySelector<HTMLButtonElement>('[data-slot="instance-switcher"]')!;
+    // A compact button, top left, carrying the server's name and status dot — no colour tile (the
+    // whole app already takes the server's theme colour) — not a link to Overview, and no subtext
+    // under the name. Clicking it opens ONE menu: the server list (nothing here, with one server and
+    // no answer from /api/servers) then the instance scope, whatever the instance count.
+    const switcher = sidebar.querySelector<HTMLButtonElement>('[data-slot="server-menu"]')!;
     expect(switcher.tagName).toBe("BUTTON");
     expect(switcher.getAttribute("aria-haspopup")).toBe("menu");
+    expect(switcher.querySelector('[data-slot="server-swatch"]')).toBeNull(); // no colour tile on the trigger
     expect(switcher.querySelector('[data-health]')).not.toBeNull();
     await pointerdown(switcher);
     expect(switcher.getAttribute("aria-expanded")).toBe("true");
@@ -223,10 +224,10 @@ describe("console shell", () => {
     expect(container!.querySelector('button[aria-label="Expand sidebar"]')).not.toBeNull();
   });
 
-  test("collapsed, the logo centres on the same axis as a nav icon; expanded, neither carries that class", async () => {
+  test("collapsed, the server menu trigger centres on the same axis as a nav icon; expanded, neither carries that class", async () => {
     await mount();
     const navButton = () => container!.querySelector<HTMLElement>('nav[aria-label="Main"] button')!;
-    const logoButton = () => container!.querySelector<HTMLElement>('[data-slot="round-mark"]')!.closest("button")!;
+    const logoButton = () => container!.querySelector<HTMLElement>('[data-slot="server-menu"]')!;
     expect(navButton().className).not.toContain("justify-center"); // expanded: neither centres
     expect(logoButton().className).not.toContain("justify-center");
     await click(container!.querySelector('button[aria-label="Collapse sidebar"]')!);
