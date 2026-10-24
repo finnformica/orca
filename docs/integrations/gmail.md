@@ -17,11 +17,12 @@ that you can revoke at Google at any time.
   access. Google sends your browser back to Orca. Orca stores the refresh token encrypted in its
   secret store. Orca never sees your Google password.
 - **Watch new mail.** Each account has one switch, **Watch new mail** (`watch`, default off).
-  - On: every `pollSeconds` (default 60) the primary bridge reads the Gmail History API from a
-    stored cursor (`users.history.list` from a `historyId`). Matching mail wakes Orca.
+  - On (events `trigger`): every `pollSeconds` (default 30, at least 10) the primary bridge reads
+    the Gmail History API from a stored cursor (`users.history.list` from a `historyId`). Matching
+    mail wakes Orca. A tick with no new mail is one API call.
   - Off: Orca does not poll the account, and its mail brings no event. The orchestrator can still
     use `orca gmail search` and `orca gmail read` on it.
-  - Orca has no public address, so it does not use Pub/Sub push.
+  - Orca has no public address, so it does not use Pub/Sub push (section 11 tells a later way).
 - **The query.** Only mail that matches the integration's Gmail `query` goes to Orca. The default is
   `label:Orca OR to:<you>+orca@<your domain>`. Gmail does the match with its own search, so the
   query uses the Gmail search syntax.
@@ -235,7 +236,7 @@ Each value can be a string, as the Settings form saves it.
 | `clientSecretStored` | none | The path (`scope/name`) of a stored Orca secret that holds the client secret. It wins over the secret variable. |
 | `query` | `label:Orca OR to:<you>+orca@<domain>` | The Gmail search that selects Orca's mail. |
 | `watch` | `false` | Watch new mail: poll, and let matching mail wake Orca. |
-| `pollSeconds` | 60 | The poll interval. |
+| `pollSeconds` | 30 | The poll interval of a watched account, in seconds. At least 10. An account with **Watch new mail** off does not poll. |
 | `allowedSenders` | none | Addresses, or `@domain` for a domain, separated by commas. Empty: every sender that the query finds. |
 | `checkAuth` | `true` | Require Google's DKIM, SPF or DMARC pass for the From domain. |
 | `keepQuoted` | `false` | Keep the quoted history of a reply in the text. |
@@ -281,6 +282,16 @@ mail's headers, text and attachment names. The first line of the output names th
   newest mail. It does not read the mail in the gap.
 - One poll checks at most 200 new mails. The next poll reads the rest.
 - The query match uses `rfc822msgid:`. A mail with no `Message-ID` header never matches.
+- New mail reaches Orca within one poll interval (30 s by default), not at once.
+
+### Push (a possible later step)
+
+True push needs Gmail `users.watch` and Google Cloud Pub/Sub. Gmail then publishes a message to a
+Pub/Sub topic for each change in the mailbox. A **pull** subscription works with no public ingress:
+the bridge asks Pub/Sub for messages, and Pub/Sub never connects to the bridge. The bridge then reads
+the History API from its cursor, as a poll does now. This needs a Pub/Sub topic, a grant for
+`gmail-api-push@system.gserviceaccount.com` to publish to it, credentials to pull from the
+subscription, and a `users.watch` renewal at least each 7 days. Orca does not do this yet.
 
 ## 12. Test it
 

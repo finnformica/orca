@@ -9,7 +9,7 @@
 //
 // Events: only a row with `watch` on polls (the one "watch new mail" flag; it maps 1:1 to the access
 // policy's events=trigger, off to events=off). The bridge has no public address, so no Pub/Sub push.
-// Every `pollSeconds` (60) the primary bridge reads the History API from its cursor
+// Every `pollSeconds` (30, at least 10) the primary bridge reads the History API from its cursor
 // (`{ historyId, account }` in integration_cursor): each message added (or labelled) since. Only a
 // message that matches the row's Gmail `query` (default `label:Orca OR to:<you>+orca@<domain>`) goes
 // on: Gmail itself decides the match (the query plus `rfc822msgid:` of each new message), so the
@@ -47,6 +47,11 @@ export type GmailConfig = {
 };
 
 export const GMAIL_AUTHSERV = "mx.google.com";
+/** The poll interval of a watched account: 30 s unless set, never below 10 s. A quiet tick is ONE
+ *  users.history.list call (Gmail's quota is per user, and a minute of quiet costs 2 calls). Only the
+ *  tests' fake Gmail (the `apiUrl` override) may poll faster. */
+export const GMAIL_POLL_DEFAULT_S = 30;
+export const GMAIL_POLL_MIN_S = 10;
 /** At most this many new messages are checked in one poll; the rest wait for the next one. */
 export const MAX_PER_POLL = 200;
 /** Gmail's OR group size for `rfc822msgid:` checks (one search for each group). */
@@ -66,7 +71,7 @@ export function gmailConfig(raw: Record<string, unknown>): { config: GmailConfig
   const senders = Array.isArray(raw.allowedSenders) ? raw.allowedSenders.map(String) : String(raw.allowedSenders ?? "").split(/[\s,;]+/);
   return { config: {
     clientId, ...(stored ? { clientSecretStored: stored } : {}), ...(str(raw.query) ? { query: str(raw.query) } : {}),
-    pollSeconds: Math.max(0.05, num(raw.pollSeconds, 60)),
+    pollSeconds: Math.max(typeof raw.apiUrl === "string" && raw.apiUrl ? 0.05 : GMAIL_POLL_MIN_S, num(raw.pollSeconds, GMAIL_POLL_DEFAULT_S)),
     watch: bool(raw.watch, false),
     allowedSenders: senders.map((s) => s.trim().toLowerCase()).filter(Boolean),
     checkAuth: bool(raw.checkAuth, true),

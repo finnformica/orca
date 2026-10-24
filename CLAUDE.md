@@ -252,7 +252,9 @@ path, e.g. one saved with /secret; the secret itself is refused there) if set, e
 (`server/integrations/secretValue.ts`, for every adapter). The client id is box config (the Connect
 form), never in the repo.
 Only a row with `watch` on ("Watch new mail", default off) polls the History API from a
-`{ historyId, account }` cursor; `watch` maps 1:1 to the access policy's events `trigger` / `off`
+`{ historyId, account }` cursor, every `pollSeconds` (30, at least 10: `GMAIL_POLL_DEFAULT_S` /
+`GMAIL_POLL_MIN_S`; a quiet tick is ONE users.history.list call; push by Gmail watch + a Pub/Sub pull
+subscription is a documented later step); `watch` maps 1:1 to the access policy's events `trigger` / `off`
 (`gmailEvents`; the shared policy is branch orca/integration-access-policy, not merged yet — join them
 there). Gmail decides the `query` match (default `label:Orca OR to:<you>+orca@…`, plus `rfc822msgid:` of
 each new mail), so other mail is read only as labels + Message-ID. Topic `ext.gmail.message`, channel =

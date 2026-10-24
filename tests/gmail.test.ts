@@ -178,9 +178,13 @@ function fakeGoogle() {
 describe("decisions (pure)", () => {
   test("the config: client id required, watch off by default, auth checked by default, form strings parsed", () => {
     expect(gmailConfig({})).toEqual({ error: expect.stringContaining("clientId") });
-    expect(gmailConfig({ clientId: "cid" })).toEqual({ config: { clientId: "cid", pollSeconds: 60, watch: false, allowedSenders: [], checkAuth: true, keepQuoted: false } });
+    expect(gmailConfig({ clientId: "cid" })).toEqual({ config: { clientId: "cid", pollSeconds: 30, watch: false, allowedSenders: [], checkAuth: true, keepQuoted: false } });
     expect(gmailConfig({ clientId: "cid", watch: "true", checkAuth: "false", pollSeconds: "30", allowedSenders: "Ana@Example.com, @acme.test", query: "label:work" }))
       .toMatchObject({ config: { watch: true, checkAuth: false, pollSeconds: 30, allowedSenders: ["ana@example.com", "@acme.test"], query: "label:work" } });
+    // The poll interval: 30 s by default, never below 10 s (only the tests' fake Gmail may go faster).
+    expect(gmailConfig({ clientId: "cid", pollSeconds: "5" })).toMatchObject({ config: { pollSeconds: 10 } });
+    expect(gmailConfig({ clientId: "cid", pollSeconds: "45" })).toMatchObject({ config: { pollSeconds: 45 } });
+    expect(gmailConfig({ clientId: "cid", pollSeconds: "0.05", apiUrl: "http://127.0.0.1:1" })).toMatchObject({ config: { pollSeconds: 0.05 } });
     // The client secret by its stored-secret path; the secret itself is refused (config is plain text).
     expect(gmailConfig({ clientId: "cid", clientSecretStored: "chat/google-oauth-secret" })).toMatchObject({ config: { clientSecretStored: "chat/google-oauth-secret" } });
     expect(gmailConfig({ clientId: "cid", clientSecretStored: "GOCSPX-abcdefghijklmnop" })).toEqual({ error: expect.stringContaining("not the secret itself") });
@@ -439,6 +443,13 @@ describe("against a fake Google", () => {
     expect(g.st.log).toContain("GET messages/m2 metadata");
     expect(g.st.log.some((l) => l.startsWith("q (label:Orca OR to:finn+orca@example.com) {rfc822msgid:m1@example.com"))).toBe(true);
     expect((await registry.health()).gm).toMatchObject({ kind: "gmail", ok: true, detail: expect.stringContaining(`watching ${ACCOUNT}`) });
+
+    // A quiet tick is ONE users.history.list call and nothing else.
+    const before = g.st.log.length;
+    await Bun.sleep(300);
+    const quiet = g.st.log.slice(before);
+    expect(quiet.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(quiet)).toEqual(new Set(["GET history"]));
 
     // A cursor older than Gmail's history: resume from now, read nothing old.
     g.st.expireHistory = true;

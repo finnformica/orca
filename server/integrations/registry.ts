@@ -78,7 +78,7 @@ register("gmail", gmailAdapter, {
     { key: "clientSecretStored", label: "Client secret: stored Orca secret (optional)", placeholder: "scope/name of the stored secret; empty = the secret variable" },
     { key: "query", label: "Gmail query (optional)", placeholder: "empty = label:Orca OR to:you+orca@yourdomain.com" },
     { key: "watch", label: "Watch new mail (matching mail wakes Orca)" },
-    { key: "pollSeconds", label: "Poll every (seconds)", placeholder: "60" },
+    { key: "pollSeconds", label: "Poll every (seconds, at least 10; only with Watch new mail)", placeholder: "30" },
     { key: "allowedSenders", label: "Allowed senders (optional; comma-separated, @domain for a domain)", placeholder: "empty = any sender the query finds" },
     { key: "checkAuth", label: "Require Google's DKIM/SPF/DMARC pass (default on)" },
     { key: "redirectOrigin", label: "Redirect origin (optional)", placeholder: "empty = this page's origin" },
