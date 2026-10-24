@@ -91,10 +91,9 @@ export const Dot = ({ health, className }: { health: ServerHealth; className?: s
   <span aria-hidden="true" data-health={health} className={cn("inline-block size-2 shrink-0 rounded-full", DOT[health], className)} />
 );
 
-/** A server's theme colour, as a small rounded square (Slack's workspace tile). `className`
- *  overrides the default size for a bigger tile (the sidebar trigger, collapsed). */
-export const Swatch = ({ color, className }: { color: string; className?: string }) => (
-  <span aria-hidden="true" data-slot="server-swatch" className={cn("inline-block size-3 shrink-0 rounded-[3px]", isNeutral(color) && "border", className)} style={{ background: swatchBackground(color) }} />
+/** A server's theme colour, as a small rounded square (Slack's workspace tile). */
+const Swatch = ({ color }: { color: string }) => (
+  <span aria-hidden="true" data-slot="server-swatch" className={cn("inline-block size-3 shrink-0 rounded-[3px]", isNeutral(color) && "border")} style={{ background: swatchBackground(color) }} />
 );
 
 /** Add server opens its modal dialog only once the menu that offered it has closed, and that close

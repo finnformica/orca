@@ -415,7 +415,11 @@ test("S6h: a Neutral server has the old look — no theme sheet, no accent, the 
   expect(document.getElementById("orca-server-theme")).toBeNull();
   expect(decodeURIComponent(icon.href)).toContain('fill="#000000"');
   expect(decodeURIComponent(icon.href)).toContain('<path fill="#ffffff"');
-  expect(q('[data-slot="server-menu"] [data-slot="server-swatch"]')!.getAttribute("style")).toContain("linear-gradient");
+  // The trigger carries no colour tile (the app's own theme already reads neutral); the menu's own
+  // row still does.
+  expect(q('[data-slot="server-menu"] [data-slot="server-swatch"]')).toBeNull();
+  const items = await openMenu();
+  expect(items[0]!.querySelector<HTMLElement>('[data-slot="server-swatch"]')!.getAttribute("style")).toContain("linear-gradient");
   icon.remove();
 });
 
@@ -427,8 +431,10 @@ test("S6f: after a switch the menu shows the active server's cached identity bef
   network((u) => { if (u.startsWith("http://orca-personal-box")) throw new TypeError("Failed to fetch"); return undefined; });
   await mount();
   await act(async () => { await flush(); await flush(); });
-  expect(q('[data-slot="server-label"]')!.textContent).toBe("Personal"); // not its host name
-  expect(q('[data-slot="server-menu"] [data-slot="server-swatch"]')!.getAttribute("style")).toMatch(/#1f9d55|rgb\(31, 157, 85\)/);
+  expect(q('[data-slot="server-label"]')!.textContent).toBe("Personal"); // not its host name, on the trigger
+  const items = await openMenu();
+  const current = items.find((i) => i.getAttribute("aria-checked") === "true")!;
+  expect(current.querySelector<HTMLElement>('[data-slot="server-swatch"]')!.getAttribute("style")).toMatch(/#1f9d55|rgb\(31, 157, 85\)/);
   expect(document.title).toBe("Orca | Personal");
 });
 

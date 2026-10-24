@@ -39,7 +39,7 @@ import { PANEL_MIN_W, SHELL_GAP, repoLabel, summarizeSync } from "../workstream"
 import { PreviewsBadge } from "@/views/PreviewControl";
 import { useInboxUnread } from "@/lib/inboxUnread";
 import { useHandoffBadge } from "@/lib/handoffBadge";
-import { AddServerDialog, Dot, healthText, ServerMenuItems, ServerOffline, Swatch, checkServers, useAddServerClose, useServerProblem, useServers } from "@/components/ServerMenu";
+import { AddServerDialog, Dot, healthText, ServerMenuItems, ServerOffline, checkServers, useAddServerClose, useServerProblem, useServers } from "@/components/ServerMenu";
 import { currentServer } from "@/lib/server";
 import { loadIdentity, useServerIdentity } from "@/lib/identity";
 import { poll } from "@/lib/poll";
@@ -387,13 +387,16 @@ function useShellFallbacks() {
 
 // The sidebar's top-left button: Slack's workspace switcher, now carrying the server picker that
 // used to be a separate top-bar menu (#441 put the instance scope here instead; this reunites them,
-// since the top bar's own menu is gone). The trigger shows the ACTIVE server's colour tile and name,
-// with its status dot right next to the name — ServerMenu's own look (`Swatch` + `Dot`), so a server
-// reads the same colour and health wherever it shows. The menu it opens is ONE dropdown: the server
-// list first (`ServerMenuItems`, reused — not copied — from ServerMenu.tsx), then the instance scope
-// ("All instances", or one machine) that this button opened on its own before #441. They are kept
-// together, in one place, rather than splitting "where do things run" back across the sidebar and
-// the top bar — the instance section has nowhere else on desktop that is not itself a second menu.
+// since the top bar's own menu is gone). The trigger shows the ACTIVE server's name with its status
+// dot right after it (`Dot`, so health reads the same colour everywhere), then the chevron — no
+// colour tile here: the whole app already takes the server's theme colour, so a second swatch on
+// the trigger would be redundant. Collapsed, there is no room for the name: the orca mark stands in,
+// with the dot pinned at its corner, as the trigger did before this button carried a server at all.
+// The menu it opens is ONE dropdown: the server list first (`ServerMenuItems`, reused — not copied —
+// from ServerMenu.tsx, colour tiles and all), then the instance scope ("All instances", or one
+// machine) that this button opened on its own before #441. They are kept together, in one place,
+// rather than splitting "where do things run" back across the sidebar and the top bar — the instance
+// section has nowhere else on desktop that is not itself a second menu.
 function SidebarServerMenu({ collapsed }: { collapsed: boolean }) {
   const [scope, setScope] = useAtom(instanceScopeAtom);
   useRepos(); // config (and with it the instance list) lands after first paint
@@ -402,20 +405,24 @@ function SidebarServerMenu({ collapsed }: { collapsed: boolean }) {
   const identity = useServerIdentity();
   const current = currentServer(servers);
   const label = identity?.label ?? current.label;
-  const color = identity?.color ?? current.color;
   const { markAdding, onCloseAutoFocus } = useAddServerClose();
   return (
     <DropdownMenu onOpenChange={(open) => { if (open) checkServers(true); }}>
       <DropdownMenuTrigger asChild>
         <button type="button" data-slot="server-menu" className={cn("hover:bg-accent flex min-w-0 flex-1 items-center gap-2 rounded-md p-1", collapsed && "md:justify-center")}
           aria-label={`Server: ${label}, ${healthText(current.health)}. Switch server`}>
-          <span className="relative inline-flex shrink-0">
-            <Swatch color={color} className={collapsed ? "size-5 rounded-[4px]" : undefined} />
-            {collapsed && <Dot health={current.health} className="absolute -right-0.5 -bottom-0.5" />}
-          </span>
-          {!collapsed && <span data-slot="server-label" className="min-w-0 flex-1 truncate text-left text-sm font-medium">{label}</span>}
-          {!collapsed && <Dot health={current.health} />}
-          {!collapsed && <ChevronsUpDown className="text-muted-foreground size-3.5 shrink-0" />}
+          {collapsed ? (
+            <span className="relative inline-flex shrink-0">
+              <RoundMark />
+              <Dot health={current.health} className="absolute -right-0.5 -bottom-0.5" />
+            </span>
+          ) : (
+            <>
+              <span data-slot="server-label" className="min-w-0 flex-1 truncate text-left text-sm font-medium">{label}</span>
+              <Dot health={current.health} />
+              <ChevronsUpDown className="text-muted-foreground size-3.5 shrink-0" />
+            </>
+          )}
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="min-w-[12rem] max-w-[18rem]" onCloseAutoFocus={onCloseAutoFocus}>

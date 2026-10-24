@@ -131,14 +131,14 @@ describe("console shell", () => {
   test("the sidebar: server menu, Find, the pages, and the active one marked", async () => {
     await mount();
     const sidebar = container!.querySelector('[data-slot="sidebar"]')!;
-    expect(sidebar.querySelector('[data-slot="server-swatch"]')).not.toBeNull(); // the server's colour tile, top left
-    // A compact button, top left, carrying the server's colour tile, name and status dot — not a
-    // link to Overview, and no subtext under the name. Clicking it opens ONE menu: the server list
-    // (nothing here, with one server and no answer from /api/servers) then the instance scope,
-    // whatever the instance count.
+    // A compact button, top left, carrying the server's name and status dot — no colour tile (the
+    // whole app already takes the server's theme colour) — not a link to Overview, and no subtext
+    // under the name. Clicking it opens ONE menu: the server list (nothing here, with one server and
+    // no answer from /api/servers) then the instance scope, whatever the instance count.
     const switcher = sidebar.querySelector<HTMLButtonElement>('[data-slot="server-menu"]')!;
     expect(switcher.tagName).toBe("BUTTON");
     expect(switcher.getAttribute("aria-haspopup")).toBe("menu");
+    expect(switcher.querySelector('[data-slot="server-swatch"]')).toBeNull(); // no colour tile on the trigger
     expect(switcher.querySelector('[data-health]')).not.toBeNull();
     await pointerdown(switcher);
     expect(switcher.getAttribute("aria-expanded")).toBe("true");
