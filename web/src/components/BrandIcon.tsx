@@ -38,6 +38,10 @@ export const BRANDS: Record<string, Brand> = {
 
 const GENERIC: Record<string, typeof Plug> = { webhook: Webhook, web: Globe };
 
+/** Whether a kind is an integration this file draws (a brand logo or a generic integration icon).
+ *  Not "orca": Orca's own rows keep their own icon. */
+export const isIntegrationKind = (kind: string | undefined): kind is string => !!kind && kind !== "orca" && (kind in BRANDS || kind in GENERIC);
+
 /** The service name for a kind: the brand's title, else the kind itself. */
 export const brandTitle = (kind: string): string => BRANDS[kind]?.title ?? kind;
 

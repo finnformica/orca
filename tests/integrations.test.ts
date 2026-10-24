@@ -20,7 +20,7 @@ import { sign, verify, webhookEnvelope } from "../server/integrations/adapters/w
 import { deadNotification, webNotification } from "../server/integrations/adapters/web";
 import type { Adapter } from "../server/integrations/adapter";
 import {
-  LEVEL_LABEL, LINK_LEVELS, MAX_ATTEMPTS, afterAttempt, effectiveGrant, fenceExternal, grantKey, grantRefusal, inboundEnvelope, paceWait, planDeliveries, secretRefRefusal, topicMatches,
+  LEVEL_LABEL, LINK_LEVELS, MAX_ATTEMPTS, notificationEnvelope, afterAttempt, effectiveGrant, fenceExternal, grantKey, grantRefusal, inboundEnvelope, paceWait, planDeliveries, secretRefRefusal, topicMatches,
   type InboundEnvelope, type SendResult, type Subscription,
 } from "../shared/integrations";
 import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO } from "../web/src/workstream";
@@ -426,7 +426,14 @@ describe("with Postgres", () => {
 
   test("web adapter: an outside message and a dead delivery become notifications", () => {
     expect(webNotification({ key: "slack:e1", topic: "ext.slack.message", source: { adapter: "slack" }, actor: { external: { adapter: "slack", id: "U1", name: "Saajan" } }, text: "is #12 merged?" }))
-      .toEqual({ key: "slack:e1", kind: "external_message", repo: "", title: "Saajan via slack", body: "is #12 merged?" });
+      .toEqual({ key: "slack:e1", kind: "external_message", repo: "", title: "Saajan via slack", body: "is #12 merged?", link: { source: "slack" } });
+    // The integration rides as link.source (its logo in the bell); Orca's own events have none.
+    expect(webNotification({ key: "cf:1", topic: "ext.cloudflare.deploy", source: { adapter: "cloudflare" }, title: "Deploy", text: "x", link: { url: "https://dash.cloudflare.com" } }).link)
+      .toEqual({ url: "https://dash.cloudflare.com", source: "cloudflare" });
+    expect(webNotification({ key: "o:1", topic: "orca.question", source: { adapter: "orca" }, text: "Merge?" }).link).toEqual({ orchestrator: true });
+    // A dead delivery names the target's integration; the envelope written beside a row drops the hint.
+    expect(deadNotification({ id: 9, attempts: 6, target: { kind: "link", id: "L1", adapter: "discord", externalId: "C1" } as never, envelope: { topic: "orca.pr.ci_failed" } }, "down").link).toEqual({ source: "discord" });
+    expect(notificationEnvelope({ key: "k", kind: "integration_failed", repo: "", title: "t", body: "b", link: { source: "discord" } })!.link).toBeUndefined();
   });
 });
 

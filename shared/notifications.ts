@@ -13,7 +13,10 @@ export type NotificationKind = typeof NOTIFICATION_KINDS[number];
 /** Where a notification leads. The in-app page for a workstream is derived by the web from repo +
  *  branch (its PR page once it has one, else its local page), so only what the web can't derive is
  *  stored: an external `url` (a preview), a PR number, or the orchestrator's window. */
-export type NotificationLink = { url?: string; pr?: number; orchestrator?: boolean };
+/** `source`: the integration kind the event came from (slack, cloudflare, gmail…), so the bell, a
+ *  toast and the Inbox draw its logo. Absent for Orca's own notifications. In the `link` JSON, so it
+ *  needs no column. */
+export type NotificationLink = { url?: string; pr?: number; orchestrator?: boolean; source?: string };
 
 export type Notification = {
   id: number;

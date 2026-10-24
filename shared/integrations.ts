@@ -617,13 +617,14 @@ export const NOTIFICATION_TOPICS: Record<string, Topic | undefined> = {
 
 /** The envelope `notify.emit` writes beside a notification row: the same key, so one event is one
  *  row in each table however often it is emitted. */
-export function notificationEnvelope(n: { key: string; kind: string; repo: string; branch?: string; title: string; body: string; link?: { url?: string; pr?: number; orchestrator?: boolean } }, at = Date.now()): InboundEnvelope | undefined {
+export function notificationEnvelope(n: { key: string; kind: string; repo: string; branch?: string; title: string; body: string; link?: { url?: string; pr?: number; orchestrator?: boolean; source?: string } }, at = Date.now()): InboundEnvelope | undefined {
   const topic = NOTIFICATION_TOPICS[n.kind];
   if (!topic) return undefined;
+  const { source: _logo, ...link } = n.link ?? {}; // the logo hint is the bell's, not the event's
   return {
     key: n.key, topic, at, source: { adapter: "orca" },
     scope: { repo: n.repo, ...(n.branch ? { branch: n.branch } : {}) },
-    title: n.title, text: n.body, ...(n.link ? { link: n.link } : {}),
+    title: n.title, text: n.body, ...(Object.keys(link).length ? { link } : {}),
   };
 }
 

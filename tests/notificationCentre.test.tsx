@@ -93,6 +93,25 @@ describe("the notification centre", () => {
     navigate("/");
   });
 
+  test("an integration's notification shows its real logo in the toast and the centre; Orca's own keep the kind icon", async () => {
+    await open("/");
+    const logo = (el: Element) => el.querySelector('[data-slot="brand-icon"]');
+    // A pushed one pops a toast with its integration's logo.
+    const s = await live();
+    await push(s, note({ id: 9041, kind: "external_message", title: "Deploy failed", link: { source: "cloudflare" } }));
+    await push(s, note({ id: 9042, kind: "finished", title: "Login form" }));
+    await push(s, note({ id: 9043, kind: "external_message", title: "Ana via gmail", link: { source: "gmail" } }));
+    const toast = cards().find((t) => t.textContent?.includes("Ana via gmail"))!;
+    expect(logo(toast)!.getAttribute("data-kind")).toBe("gmail");
+    // The centre: the Cloudflare row has the two-tone cloud; Orca's own row keeps its kind icon.
+    await click($("notifications-bell"));
+    const rows = $$("notification-row");
+    const cf = rows.find((r) => r.textContent?.includes("Deploy failed"))!;
+    expect(logo(cf)!.getAttribute("data-kind")).toBe("cloudflare");
+    expect([...logo(cf)!.querySelectorAll("path")].map((p) => p.getAttribute("fill"))).toEqual(["#F38020", "#FBAE40"]);
+    expect(logo(rows.find((r) => r.textContent?.includes("Login form"))!)).toBeNull();
+  });
+
   test("the bell counts the unread rows from the catch-up fetch; loading pops no toasts", async () => {
     apiFake.notificationsData = [note({ kind: "needs_input" }), note({ kind: "failed" }), note({ readAt: Date.now() })];
     await open("/");
