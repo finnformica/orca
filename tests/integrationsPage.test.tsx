@@ -156,6 +156,17 @@ describe("the Integrations page", () => {
     expect(row.textContent).toContain("Disconnect");
   });
 
+  test("an account switched to read-write whose grant lacks gmail.send: Reconnect to allow sending", async () => {
+    const read = ["openid", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/gmail.readonly"];
+    apiFake.integrationsData = { ...overview(), kinds: [...kinds, gmailKind], links: [], pairings: [], integrations: [gmailCard({
+      account: "finn@example.com", scopes: read, missing: ["https://www.googleapis.com/auth/gmail.send"], reconnect: null,
+    })] };
+    await open("/integrations");
+    const row = all("integration-oauth")[0]!;
+    expect(row.textContent).toContain("· read only");
+    expect(all("oauth-connect", row)[0]!.textContent).toBe("Reconnect to allow sending");
+  });
+
   test("the Gmail Connect form shows Watch new mail and the auth check as switches, with the adapter's defaults", async () => {
     apiFake.integrationsData = { ...overview(), kinds: [gmailKind], integrations: [], links: [], pairings: [] };
     await open("/integrations");

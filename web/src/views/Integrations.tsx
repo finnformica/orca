@@ -120,7 +120,15 @@ function oauthReturn(): void {
 }
 
 /** The scopes Google granted, in words (server/integrations/adapters/gmail.ts scopeWords for the browser). */
-const grantedWords = (scopes: string[] = []): string => (scopes.some((x) => x.endsWith("/gmail.readonly")) ? "read only" : "no Gmail scope");
+const grantedWords = (scopes: string[] = []): string =>
+  !scopes.some((x) => x.endsWith("/gmail.readonly")) ? "no Gmail scope" : scopes.some((x) => x.endsWith("/gmail.send")) ? "read + send" : "read only";
+
+/** The Connect button's text: a missing send scope (access switched to read-write) asks to allow sending. */
+export function oauthButtonLabel(label: string, o: IntegrationCard["oauth"]): string {
+  if (!o?.account) return label;
+  if (o.missing?.some((x) => x.endsWith("/gmail.send"))) return "Reconnect to allow sending";
+  return label.replace(/^Connect/, "Reconnect");
+}
 
 /** An OAuth kind's row on the card: the account it connected, or why it needs you, and its Connect /
  *  Reconnect / Disconnect. Connect asks the bridge for Google's consent URL and goes there. */
@@ -147,8 +155,8 @@ function OAuthRow({ card: c, label, onChange }: { card: IntegrationCard; label: 
       </div>
       <div className="flex items-center gap-2 sm:shrink-0">
         {connected && <Button variant="ghost" size="sm" className="max-sm:h-10" onClick={() => ask(`Disconnect ${c.name}?`, "Orca revokes its access at Google and deletes the stored refresh token. The integration, its links and its events stay.", () => void act(`Disconnect ${c.name}`, "oauth/google/disconnect", { id: c.id }, onChange))}>Disconnect</Button>}
-        <Button size="sm" variant={connected && !o?.reconnect ? "secondary" : "default"} disabled={busy} onClick={() => void go()} data-slot="oauth-connect" className="max-sm:h-10 max-sm:flex-1">
-          {connected ? label.replace(/^Connect/, "Reconnect") : label}
+        <Button size="sm" variant={connected && !o?.reconnect && !o?.missing?.length ? "secondary" : "default"} disabled={busy} onClick={() => void go()} data-slot="oauth-connect" className="max-sm:h-10 max-sm:flex-1">
+          {oauthButtonLabel(label, o)}
         </Button>
       </div>
       {confirmNode}

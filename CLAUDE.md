@@ -234,9 +234,12 @@ its sender and the issue as the place. `orca post --reply` comments as you under
 (`parentId`); a thread-linked issue gets PR state. The card shows `last poll` (`lastPollAt`).
 **Gmail** (`adapters/gmail.ts`, `adapters/gmail/{google,oauth}.ts`, `docs/integrations/gmail.md`) is the
 user's own mailboxes, READ ONLY, by **Connect with Google** (OAuth code + PKCE; the card's button from
-`meta.oauth`). Each account is its own named row (`personal`, `smfstudio`). The ONE scope is
-`gmail.readonly` (Finn's call: no `gmail.send`, no `gmail.modify`, no reply path; `caps.outbound` false,
-`send` refuses; nothing is marked read). `POST /api/integrations/oauth/google/start` answers the consent
+`meta.oauth`). Each account is its own named row (`personal`, `smfstudio`). Scopes follow the row's
+access (`gmailAccess`, the access policy's `access`; no field = read): read = `openid`, `userinfo.email`,
+`gmail.readonly`; read-write adds `gmail.send`, and a switch to read-write shows "Reconnect to allow
+sending", which asks Google ONLY for the missing scope (`consentScopes`, `include_granted_scopes=true`).
+Never `gmail.modify`; nothing is marked read. The send verb is NOT built (`caps.outbound` false, `send`
+refuses), so no reply path yet (Finn's call). `POST /api/integrations/oauth/google/start` answers the consent
 URL for the page's `Origin`; Google sends the browser to `<origin>/api/integrations/oauth/google/callback`
 (answered here, never forwarded, so a tailnet HTTPS name works). The PKCE state is encrypted in cursor
 row `<id>:oauth`; the refresh token is the stored secret `integrations/gmail.<id>.refresh_token`; access

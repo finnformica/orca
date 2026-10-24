@@ -1,8 +1,8 @@
 # Gmail
 
-The Gmail adapter connects Orca to your own Gmail with **Sign in with Google** (OAuth 2.0). It is
-**read only**: Orca reads and searches mail, and it never sends mail, changes a label or marks a mail
-read. You can connect several accounts. Each account is its own integration with a name (for example
+The Gmail adapter connects Orca to your own Gmail with **Sign in with Google** (OAuth 2.0). Orca reads
+and searches mail. It never changes a label or marks a mail read. Orca sends no mail yet: an account
+with read-write access gets the `gmail.send` scope ready for a later send verb. You can connect several accounts. Each account is its own integration with a name (for example
 `personal` and `work`). The code is
 `server/integrations/adapters/gmail.ts` and the files in `server/integrations/adapters/gmail/`. The
 adapter contract is [ADAPTERS.md](ADAPTERS.md).
@@ -42,15 +42,32 @@ that you can revoke at Google at any time.
 
 ## 2. Scopes
 
-Orca asks for one scope only:
+The scopes follow the account's **access** setting (the access policy: `read` or `read-write`). An
+account with no access setting is `read`.
 
 | Scope | Asked for | Why |
 |---|---|---|
+| `openid` | Always | Who the account is. |
+| `https://www.googleapis.com/auth/userinfo.email` | Always | The account's address, for the card. |
 | `https://www.googleapis.com/auth/gmail.readonly` | Always | Read the History API, search with the query, read a matching mail, `orca gmail search` and `orca gmail read`. |
-| `https://www.googleapis.com/auth/gmail.send` | Never | Orca sends no mail. |
+| `https://www.googleapis.com/auth/gmail.send` | Only with access `read-write` | Send mail. Orca has no send verb yet, so nothing uses this scope now. |
 | `https://www.googleapis.com/auth/gmail.modify` | Never | Orca changes no label and marks no mail as read. The History API cursor is its position. |
 
-With `gmail.readonly`, Google itself refuses every write. A bug in Orca cannot send or change mail.
+With access `read`, Google itself refuses every write. A bug in Orca cannot send or change mail.
+
+### Change the access later
+
+Orca uses Google's incremental authorization (`include_granted_scopes=true`).
+
+1. Set the account's access to **Read and write** in Settings > Integrations.
+2. The card then shows **Reconnect to allow sending**. Click it.
+3. Google asks only for the new scope, `gmail.send`. Allow it.
+4. The card then says `read + send`.
+
+A first connect, or a grant that Google refused (**reconnect needed**), asks for every scope again.
+
+To go back to read only, set the access to **Read**. Then click **Disconnect** and **Connect with
+Google** again. Google keeps a scope that it granted until you revoke the grant.
 
 ## 3. What Orca reads, and what it does not read
 
@@ -92,8 +109,9 @@ Open **Google Auth Platform** (in older consoles: **APIs & Services > OAuth cons
    - **Personal account** (`@gmail.com`): select **External**.
 3. In **Contact information**, type your address.
 4. Accept the policy. Click **Create**.
-5. Open **Data Access**. Click **Add or remove scopes**. Add `.../auth/gmail.readonly` only. Click
-   **Update**, then **Save**.
+5. Open **Data Access**. Click **Add or remove scopes**. Add `openid`, `.../auth/userinfo.email` and
+   `.../auth/gmail.readonly`. Add `.../auth/gmail.send` too if an account will have read-write access.
+   Click **Update**, then **Save**.
 
 For an **External** app, do these steps too:
 
@@ -187,7 +205,8 @@ and the same client secret.
 **Watch new mail** and the access policy: a shared policy for every adapter (access `read` |
 `read-write`, events `trigger` | `record` | `off`) is in work on another branch. Until it lands,
 `watch` is the one Gmail setting. It maps 1:1: on is events `trigger`, off is events `off`
-(`gmailEvents`). Gmail's access is always `read`, and both verbs are reads (`GMAIL_VERBS`).
+(`gmailEvents`). The scopes read the policy's `access` on the row (`gmailAccess`); until the policy
+lands, every Gmail account is `read`. Both verbs are reads (`GMAIL_VERBS`).
 
 ### More than one Orca server
 

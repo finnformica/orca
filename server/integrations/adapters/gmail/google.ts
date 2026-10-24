@@ -19,11 +19,33 @@ export function endpoints(config: Record<string, unknown>): Endpoints {
   return { auth: s("authUrl") ?? GOOGLE.auth, token: s("tokenUrl") ?? GOOGLE.token, revoke: s("revokeUrl") ?? GOOGLE.revoke, api: s("apiUrl") ?? GOOGLE.api };
 }
 
-/** The ONE scope Orca asks for: read and search mail, and the History API. Gmail integrations are
- *  read only, so never gmail.send (no mail goes out) and never gmail.modify (Orca marks nothing
- *  read and changes no label; the History API cursor is its position). */
-export const SCOPE = { readonly: "https://www.googleapis.com/auth/gmail.readonly" } as const;
-export const SCOPES: readonly string[] = [SCOPE.readonly];
+/** The scopes, tied to the account's access (the access policy's `access`: read | read-write).
+ *  read: who the account is (openid + userinfo.email) and gmail.readonly. read-write adds gmail.send.
+ *  gmail.modify is never asked for: Orca marks nothing read and changes no label (the History API
+ *  cursor is its position). Docs: docs/integrations/gmail.md section 2. */
+export const SCOPE = {
+  openid: "openid",
+  email: "https://www.googleapis.com/auth/userinfo.email",
+  readonly: "https://www.googleapis.com/auth/gmail.readonly",
+  send: "https://www.googleapis.com/auth/gmail.send",
+} as const;
+export type GmailAccess = "read" | "read-write";
+
+/** Every scope an account with `access` needs. Pure. */
+export const scopesFor = (access: GmailAccess): string[] =>
+  [SCOPE.openid, SCOPE.email, SCOPE.readonly, ...(access === "read-write" ? [SCOPE.send] : [])];
+
+/** The scopes `access` needs that the grant does not have (`gmail.send` after a switch to read-write). Pure. */
+export const missingScopes = (access: GmailAccess, granted: readonly string[] = []): string[] =>
+  scopesFor(access).filter((s) => !granted.includes(s));
+
+/** What the consent URL asks for. A first connect, or a grant Google refused: every scope. A
+ *  connected account that needs more (read → read-write): ONLY the missing scopes. Google's
+ *  incremental authorization (`include_granted_scopes=true`) adds them to the grant it has. Pure. */
+export function consentScopes(access: GmailAccess, granted?: readonly string[], fresh = false): string[] {
+  const missing = missingScopes(access, granted);
+  return fresh || !granted?.length || !missing.length ? scopesFor(access) : missing;
+}
 
 /** The callback path. The redirect URI is the Orca page's origin + this path. */
 export const CALLBACK_PATH = "/api/integrations/oauth/google/callback";
@@ -43,6 +65,7 @@ export function authorizeUrl(e: Pick<Endpoints, "auth">, o: { clientId: string; 
   const q = new URLSearchParams({
     client_id: o.clientId, redirect_uri: o.redirectUri, response_type: "code", scope: o.scopes.join(" "),
     state: o.state, code_challenge: o.challenge, code_challenge_method: "S256", access_type: "offline", prompt: "consent",
+    include_granted_scopes: "true",
     ...(o.loginHint ? { login_hint: o.loginHint } : {}),
   });
   return `${e.auth}?${q}`;

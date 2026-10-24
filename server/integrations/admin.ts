@@ -79,7 +79,7 @@ export async function overview(here = db.instanceName(), now = Date.now()): Prom
       ...(c.secretRef ? { secretRef: c.secretRef } : {}), ...(secretSet !== undefined ? { secretSet } : {}),
       ...(auto && runsOn ? { runsOn } : {}), ...(secretMissingOn.length ? { secretMissingOn } : {}),
       running, ...(h ? { health: h } : {}), ...(lastEventAt ? { lastEventAt } : {}), ...(lastPollAt ? { lastPollAt } : {}),
-      ...(s.oauth ? { oauth: s.oauth } : {}),
+      ...(s.oauth ? { oauth: c.kind === "gmail" ? gmailOauth.cardOAuth(c, s.oauth) : s.oauth } : {}),
     };
   });
   const deadRows: DeadRow[] = dead.map((d) => ({

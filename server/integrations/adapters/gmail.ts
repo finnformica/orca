@@ -2,8 +2,10 @@
 // "Connect with Google" (OAuth 2.0, code + PKCE: ./gmail/oauth.ts); Orca never sees a password. Each
 // account is its own integration row (for example "personal" and "work"), with its own refresh token.
 //
-// READ ONLY: Orca asks Google for gmail.readonly alone. It sends no mail, changes no label and marks
-// no mail read (the History API cursor is its position). `send` refuses; `caps.outbound` is false.
+// Scopes follow the account's access (./gmail/google.ts scopesFor): read = openid, userinfo.email and
+// gmail.readonly; read-write adds gmail.send (asked for alone on a later reconnect, incremental). The
+// send verb is NOT built yet: `send` refuses and `caps.outbound` is false. Orca changes no label and
+// marks no mail read (no gmail.modify; the History API cursor is its position).
 //
 // Events: only a row with `watch` on polls (the one "watch new mail" flag; it maps 1:1 to the access
 // policy's events=trigger, off to events=off). The bridge has no public address, so no Pub/Sub push.
@@ -272,7 +274,7 @@ export function gmailAdapter(connection: Connection): Adapter {
     },
     async stop() { local.abort(); },
     async send(): Promise<SendResult> {
-      return { ok: false, retryable: false, error: "the Gmail integration is read only: Orca sends no mail" };
+      return { ok: false, retryable: false, error: "Orca sends no Gmail mail yet: the send verb is not built (with read-write access, the gmail.send scope is ready)" };
     },
     async health() {
       if (!cfg) return { ok: false, detail: (parsed as { error: string }).error };
@@ -284,5 +286,5 @@ export function gmailAdapter(connection: Connection): Adapter {
 /** The scopes a connection granted that the card names, in words. Pure. */
 export function scopeWords(scopes: readonly string[] | undefined): string {
   const s = scopes ?? [];
-  return s.includes(SCOPE.readonly) ? "read only" : "no Gmail scope";
+  return !s.includes(SCOPE.readonly) ? "no Gmail scope" : s.includes(SCOPE.send) ? "read + send" : "read only";
 }

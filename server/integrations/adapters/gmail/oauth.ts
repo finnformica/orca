@@ -19,7 +19,7 @@ import * as secrets from "../../../secrets";
 import type { Connection } from "../../adapter";
 import { INTEGRATION_SCOPE, resolveSecret } from "../../secretValue";
 import * as store from "../../store";
-import { authorizeUrl, endpoints, exchangeCode, Gmail, GoogleError, pkce, redirectUriFor, refreshAccess, revoke, SCOPE, SCOPES } from "./google";
+import { authorizeUrl, endpoints, exchangeCode, Gmail, GoogleError, pkce, redirectUriFor, refreshAccess, revoke, SCOPE, consentScopes, missingScopes, type GmailAccess } from "./google";
 
 export const CLIENT_SECRET_DEFAULT = "ORCA_SECRET_GOOGLE_OAUTH";
 export const PENDING_TTL_MS = 10 * 60_000;
@@ -33,6 +33,18 @@ export type OAuthStatus = { account?: string; scopes?: string[]; connectedAt?: n
 export type OAuthErrorCode = "config" | "not_connected" | "reconnect" | "state" | "google";
 export class OAuthError extends Error {
   constructor(message: string, readonly code: OAuthErrorCode, readonly integrationId?: string) { super(message); }
+}
+
+/** The account's access, from the access policy's `access` on the row (branch
+ *  orca/integration-access-policy). A row without it is READ: a Gmail account is read only unless
+ *  the user set "Read and write". */
+export const gmailAccess = (c: Pick<Connection, "kind"> & { access?: unknown }): GmailAccess => (c.access === "read-write" ? "read-write" : "read");
+
+/** What the card shows of the grant: the status, plus the scopes the access needs and the grant
+ *  lacks (`missing`: then the card says "Reconnect to allow sending"). Undefined when not connected. */
+export function cardOAuth(c: Pick<Connection, "kind"> & { access?: unknown }, s: OAuthStatus | null | undefined): (OAuthStatus & { missing: string[] }) | undefined {
+  if (!s) return undefined;
+  return { ...s, missing: s.account ? missingScopes(gmailAccess(c), s.scopes) : [] };
 }
 
 export const clientSecretRef = (c: Pick<Connection, "secretRef">): string => c.secretRef || CLIENT_SECRET_DEFAULT;
@@ -76,8 +88,11 @@ export async function begin(id: string, pageOrigin: string | undefined, now = Da
   const { verifier, challenge } = pkce();
   const state = `${id}~${randomBytes(16).toString("hex")}`;
   await store.setCursor(pendingKey(id), secrets.encrypt(JSON.stringify({ state, verifier, redirectUri, at: now })));
-  const hint = (await statusOf(id).catch(() => undefined))?.account; // a reconnect offers the same account
-  return { url: authorizeUrl(endpoints(c.config), { clientId: cid, redirectUri, scopes: [...SCOPES], state, challenge, ...(hint ? { loginHint: hint } : {}) }), redirectUri };
+  const prev = await statusOf(id).catch(() => undefined);
+  const hint = prev?.account; // a reconnect offers the same account
+  // An upgrade (read → read-write) asks only for the missing scope; a refused grant asks for all again.
+  const scopes = consentScopes(gmailAccess(c), prev?.account ? prev.scopes : undefined, !!prev?.reconnect);
+  return { url: authorizeUrl(endpoints(c.config), { clientId: cid, redirectUri, scopes, state, challenge, ...(hint ? { loginHint: hint } : {}) }), redirectUri };
 }
 
 /** The integration a callback's state names (before the state is checked), for the page it returns to. */

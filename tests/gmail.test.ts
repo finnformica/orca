@@ -20,7 +20,7 @@ import { resolveSecret, secretValue } from "../server/integrations/secretValue";
 import type { Connection } from "../server/integrations/adapter";
 import { parseMail } from "../server/integrations/adapters/email/mime";
 import { defaultQuery, GMAIL_CAPS, GMAIL_VERBS, gmailConfig, gmailEvents, gmailGate, matchQuery, scopeWords } from "../server/integrations/adapters/gmail";
-import { authorizeUrl, CALLBACK_PATH, endpoints, fromBase64Url, GOOGLE, pkce, SCOPE, SCOPES, tokenError } from "../server/integrations/adapters/gmail/google";
+import { authorizeUrl, CALLBACK_PATH, endpoints, fromBase64Url, GOOGLE, pkce, SCOPE, consentScopes, missingScopes, scopesFor, tokenError } from "../server/integrations/adapters/gmail/google";
 import * as oauth from "../server/integrations/adapters/gmail/oauth";
 import { gmailTool } from "../server/gmailTool";
 import * as orchestrator from "../server/orchestrator";
@@ -182,12 +182,31 @@ describe("decisions (pure)", () => {
       .toMatchObject({ config: { watch: true, checkAuth: false, pollSeconds: 30, allowedSenders: ["ana@example.com", "@acme.test"], query: "label:work" } });
   });
 
-  test("read only: the one scope is gmail.readonly (never send or modify); no outbound side; both verbs are reads", () => {
-    expect(SCOPES).toEqual([SCOPE.readonly]);
-    expect(SCOPES.join(" ")).not.toMatch(/send|modify|compose/);
+  test("scopes follow access: read = openid, userinfo.email, gmail.readonly; read-write adds gmail.send; never modify", () => {
+    expect(scopesFor("read")).toEqual(["openid", "https://www.googleapis.com/auth/userinfo.email", SCOPE.readonly]);
+    expect(scopesFor("read-write")).toEqual([...scopesFor("read"), SCOPE.send]);
+    expect([...scopesFor("read"), ...scopesFor("read-write")].join(" ")).not.toMatch(/modify|compose/);
     expect(scopeWords([SCOPE.readonly])).toBe("read only");
+    expect(scopeWords([SCOPE.readonly, SCOPE.send])).toBe("read + send");
+    // The account's access comes from the access policy's field on the row; without it, read.
+    expect(oauth.gmailAccess({ kind: "gmail" })).toBe("read");
+    expect(oauth.gmailAccess({ kind: "gmail", access: "read-write" })).toBe("read-write");
     expect(GMAIL_CAPS.outbound).toBe(false);
     expect(GMAIL_VERBS).toEqual({ search: "read", read: "read" });
+  });
+
+  test("incremental consent: a switch to read-write asks Google only for gmail.send; a first or refused grant asks for all", () => {
+    const read = scopesFor("read");
+    expect(consentScopes("read")).toEqual(read); // first connect
+    expect(consentScopes("read-write", read)).toEqual([SCOPE.send]); // the upgrade: only the extra scope
+    expect(consentScopes("read-write", read, true)).toEqual(scopesFor("read-write")); // reconnect needed: all
+    expect(consentScopes("read", read)).toEqual(read); // a plain reconnect: the same set
+    expect(missingScopes("read-write", read)).toEqual([SCOPE.send]);
+    expect(missingScopes("read-write", scopesFor("read-write"))).toEqual([]);
+    // The card: missing scopes only for a connected account.
+    expect(oauth.cardOAuth({ kind: "gmail", access: "read-write" }, { account: ACCOUNT, scopes: read })?.missing).toEqual([SCOPE.send]);
+    expect(oauth.cardOAuth({ kind: "gmail" }, { account: ACCOUNT, scopes: read })?.missing).toEqual([]);
+    expect(oauth.cardOAuth({ kind: "gmail", access: "read-write" }, null)).toBeUndefined();
   });
 
   test("watch new mail maps 1:1 to the access policy's events mode: on = trigger, off = off", () => {
@@ -200,10 +219,10 @@ describe("decisions (pure)", () => {
     const p = pkce();
     expect(p.verifier).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(p.challenge).toBe(s256(p.verifier));
-    const u = new URL(authorizeUrl({ auth: GOOGLE.auth }, { clientId: "cid", redirectUri: `https://orca.example.ts.net${CALLBACK_PATH}`, scopes: [...SCOPES], state: "gm~abc", challenge: p.challenge }));
+    const u = new URL(authorizeUrl({ auth: GOOGLE.auth }, { clientId: "cid", redirectUri: `https://orca.example.ts.net${CALLBACK_PATH}`, scopes: scopesFor("read"), state: "gm~abc", challenge: p.challenge }));
     expect(Object.fromEntries(u.searchParams)).toEqual({
-      client_id: "cid", redirect_uri: "https://orca.example.ts.net/api/integrations/oauth/google/callback", response_type: "code", scope: SCOPE.readonly,
-      state: "gm~abc", code_challenge: p.challenge, code_challenge_method: "S256", access_type: "offline", prompt: "consent",
+      client_id: "cid", redirect_uri: "https://orca.example.ts.net/api/integrations/oauth/google/callback", response_type: "code", scope: scopesFor("read").join(" "),
+      state: "gm~abc", code_challenge: p.challenge, code_challenge_method: "S256", access_type: "offline", prompt: "consent", include_granted_scopes: "true",
     });
     expect(endpoints({})).toEqual({ auth: GOOGLE.auth, token: GOOGLE.token, revoke: GOOGLE.revoke, api: GOOGLE.api });
   });
@@ -299,7 +318,8 @@ describe("against a fake Google", () => {
     const { url } = await oauth.begin("gm", "https://orca.example.ts.net");
     const q = new URL(url).searchParams;
     expect(url.startsWith(`${g.base}/auth?`)).toBe(true);
-    expect(q.get("scope")).toBe(SCOPE.readonly);
+    expect(q.get("scope")).toBe(scopesFor("read").join(" ")); // a row with no access policy is read: no gmail.send
+    expect(q.get("include_granted_scopes")).toBe("true");
     expect(q.get("state")).toMatch(/^gm~[0-9a-f]{32}$/);
     // The pending state is encrypted: the verifier is not in the database as text.
     const pending = (await store.cursor("gm:oauth"))!;
@@ -310,7 +330,7 @@ describe("against a fake Google", () => {
     const forged = new URLSearchParams(back); forged.set("state", "gm~00000000000000000000000000000000");
     await expect(oauth.finish(forged)).rejects.toMatchObject({ code: "state" });
     const r = await oauth.finish(back);
-    expect(r).toMatchObject({ id: "gm", account: ACCOUNT, scopes: [SCOPE.readonly] });
+    expect(r).toMatchObject({ id: "gm", account: ACCOUNT, scopes: scopesFor("read") });
     expect(g.st.log).toContain("token authorization_code"); // the fake checked S256(verifier) = challenge
     await expect(oauth.finish(back)).rejects.toMatchObject({ code: "state" }); // one use
 
@@ -327,7 +347,7 @@ describe("against a fake Google", () => {
 
     // Settings shows the account and the scopes on the card.
     const card = (await admin.overview()).integrations.find((c) => c.id === "gm")!;
-    expect(card.oauth).toMatchObject({ account: ACCOUNT, scopes: [SCOPE.readonly], reconnect: null });
+    expect(card.oauth).toMatchObject({ account: ACCOUNT, scopes: scopesFor("read"), reconnect: null, missing: [] });
     expect((await admin.overview()).kinds.find((k) => k.kind === "gmail")).toMatchObject({ oauth: { provider: "google", label: "Connect with Google" }, switches: { watch: false, checkAuth: true } });
   });
 
@@ -395,7 +415,7 @@ describe("against a fake Google", () => {
     await until(() => store.event("gmail:gm:m1"));
     const adapter = registry.adapterFor("gm")!;
     expect(adapter.caps.outbound).toBe(false);
-    expect(await adapter.send({ externalId: "ana@example.com", threadId: "t-m1" }, { text: "hi" }, "k1")).toMatchObject({ ok: false, retryable: false, error: expect.stringContaining("read only") });
+    expect(await adapter.send({ externalId: "ana@example.com", threadId: "t-m1" }, { text: "hi" }, "k1")).toMatchObject({ ok: false, retryable: false, error: expect.stringContaining("send verb is not built") });
     dispatcher.configure({ adapter: (i) => registry.adapterFor(i) });
     dispatcher.setRunning(registry.runningIds);
     await store.addSubscription({ topicPattern: "orca.run.*", filter: { repo: "r" }, targetKind: "link", targetId: "G1" });
