@@ -1,6 +1,6 @@
 // The server switcher's surfaces (lib/server.ts holds the logic): the server list as dropdown-menu
-// items (`ServerMenuItems`, embedded in the sidebar's own menu — Shell.tsx's `SidebarServerMenu`,
-// the repos selector's pattern: a plain trigger, a radio list, a status dot per server) — the Add
+// items (`ServerMenuItems`, embedded in the sidebar's own menu — Shell.tsx's `SidebarServerMenu`, which
+// a phone's top bar renders too; the repos selector's pattern: a plain trigger, a radio list, a status dot per server) — the Add
 // server dialog, and the one inline message for a chosen server that is offline or refuses this
 // browser. The items render nothing until there is something to switch to or to add (`showServerMenu`).
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
