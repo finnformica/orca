@@ -209,3 +209,21 @@ export const newPersonId = (name: string, taken: string[]): string => {
 /** The person an identity belongs to now, if any: a sender with none can be added to one. */
 export const personOf = (people: readonly PersonRow[], adapter: string, externalId: string): PersonRow | undefined =>
   people.find((p) => p.identities.some((i) => i.adapter === adapter && i.externalId === externalId));
+
+/** Why `origin` cannot be the base of an OAuth redirect URI (Connect with Google), or undefined.
+ *  Google takes only https on a domain name, and the browser must come back to the page the user
+ *  opened, so a plain-http page, localhost, 127.0.0.1 or any raw IP is refused with what to open
+ *  instead (`httpsOrigin`, e.g. the box's tailnet HTTPS name). Pure: the bridge and the card share it. */
+export function connectOriginProblem(origin: string | undefined, httpsOrigin?: string): string | undefined {
+  const open = httpsOrigin ? `Open ${httpsOrigin.replace(/\/+$/, "")}/integrations and connect there.` : "Open Orca at its https address (for example its tailnet HTTPS name) and connect there.";
+  let u: URL;
+  try { u = new URL(origin ?? ""); } catch { return `Connect with Google needs the page's https origin, and "${(origin ?? "").slice(0, 80)}" is not one. ${open}`; }
+  const host = u.hostname.replace(/^\[|\]$/g, "");
+  const local = host === "localhost" || host.endsWith(".localhost") || /^127\./.test(host) || host === "::1";
+  const ip = /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(":");
+  if (u.protocol !== "https:" || local || ip) {
+    return `Connect with Google works only from Orca's https address: Google refuses a redirect to ${u.origin}${u.protocol !== "https:" ? " (plain http)" : local ? " (localhost)" : " (an IP address)"}. ${open}`;
+  }
+  if (u.pathname !== "/" || u.search || u.hash) return `"${origin!.slice(0, 80)}" is not an origin (https://host[:port], no path).`;
+  return undefined;
+}

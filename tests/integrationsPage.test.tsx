@@ -129,7 +129,8 @@ describe("the Integrations page", () => {
   const gmailCard = (oauth?: Record<string, unknown>) => ({ id: "gm", kind: "gmail", name: "My Gmail", instance: "*", enabled: true, config: { clientId: "cid" }, running: true, health: { ok: !oauth?.reconnect }, ...(oauth ? { oauth } : {}) });
 
   test("a Gmail card: Connect with Google asks the bridge for Google's consent URL and goes there", async () => {
-    apiFake.integrationsData = { ...overview(), kinds: [...kinds, gmailKind], integrations: [gmailCard()], links: [], pairings: [] };
+    // This test page is plain http (http://orca.test): a configured https redirect origin lets Connect run.
+    apiFake.integrationsData = { ...overview(), kinds: [...kinds, gmailKind], integrations: [{ ...gmailCard(), config: { clientId: "cid", redirectOrigin: "https://orca.example.ts.net" } }], links: [], pairings: [] };
     apiFake.integrationPostAnswers["oauth/google/start"] = { url: "https://accounts.google.com/o/oauth2/v2/auth?client_id=cid", redirectUri: "x" };
     const assign = spyOn(window.location, "assign").mockImplementation(() => {});
     try {
@@ -142,6 +143,18 @@ describe("the Integrations page", () => {
       expect(apiFake.integrationPosts).toEqual([{ path: "oauth/google/start", body: { id: "gm", origin: window.location.origin } }]);
       expect(assign).toHaveBeenCalledWith("https://accounts.google.com/o/oauth2/v2/auth?client_id=cid");
     } finally { assign.mockRestore(); }
+  });
+
+  test("from a plain-http page with no https redirect origin, Connect is off and the card says to open the https address", async () => {
+    apiFake.integrationsData = { ...overview(), kinds: [...kinds, gmailKind], integrations: [gmailCard()], links: [], pairings: [] };
+    await open("/integrations");
+    const row = all("integration-oauth")[0]!;
+    expect(all("oauth-origin", row)[0]!.textContent).toContain("works only from Orca's https address");
+    expect(all("oauth-origin", row)[0]!.textContent).toContain("(plain http)");
+    const button = all("oauth-connect", row)[0]! as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    await click(button);
+    expect(apiFake.integrationPosts).toEqual([]);
   });
 
   test("a connected Gmail card names the account and scopes; a refused grant says reconnect needed and offers Reconnect", async () => {

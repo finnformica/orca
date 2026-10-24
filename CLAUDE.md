@@ -241,7 +241,10 @@ sending", which asks Google ONLY for the missing scope (`consentScopes`, `includ
 Never `gmail.modify`; nothing is marked read. The send verb is NOT built (`caps.outbound` false, `send`
 refuses), so no reply path yet (Finn's call). `POST /api/integrations/oauth/google/start` answers the consent
 URL for the page's `Origin`; Google sends the browser to `<origin>/api/integrations/oauth/google/callback`
-(answered here, never forwarded, so a tailnet HTTPS name works). The PKCE state is encrypted in cursor
+(answered here, never forwarded, so a tailnet HTTPS name works). The origin is `config.redirectOrigin` (a
+configured public base) else the page's Origin, and must be https on a domain name
+(`connectOriginProblem`, shared with the card): never 127.0.0.1:8787, localhost, an IP or plain http,
+which get "open the https address" (ORCA_SERVER_URL when set) and a disabled Connect button. The PKCE state is encrypted in cursor
 row `<id>:oauth`; the refresh token is the stored secret `integrations/gmail.<id>.refresh_token`; access
 tokens stay in memory. The client secret is `config.clientSecretStored` (a stored secret's `scope/name`
 path, e.g. one saved with /secret; the secret itself is refused there) if set, else the row's secret_ref

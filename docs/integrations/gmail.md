@@ -140,14 +140,14 @@ For an **External** app, do these steps too:
    https://<your Orca host>/api/integrations/oauth/google/callback
    ```
 
-   The origin must be the address that you open Orca at, with no path. Google accepts only these:
-   - An `https://` address on a domain name. A Tailscale HTTPS name (`https://<machine>.<tailnet>.ts.net`,
-     from `tailscale serve`) works. Google never connects to it: your browser does the redirect, so a
-     tailnet-only address is correct.
-   - `http://localhost:<port>` (for example `http://localhost:8787`) on the machine that runs Orca.
+   The origin must be the `https://` address that you open Orca at, with no path. A Tailscale HTTPS
+   name (`https://<machine>.<tailnet>.ts.net`, from `tailscale serve`) works. Google never connects to
+   it: your browser does the redirect, so a tailnet-only address is correct.
 
-   Google refuses a raw IP address and a plain `http://` name such as `http://my-box:8787`. Add one
-   URI for each address that you open Orca at.
+   Orca builds the redirect URI from the page's own origin, or from `redirectOrigin` when it is set.
+   It never uses the bridge's own `http://127.0.0.1:8787`. Orca refuses Connect from a plain `http://`
+   page, from `localhost` and from a raw IP address. The card then tells you to open the https
+   address (`ORCA_SERVER_URL`, when it is set) and connect there.
 5. Leave **Authorized JavaScript origins** empty. Click **Create**.
 6. Copy the **Client ID** (`….apps.googleusercontent.com`) and the **Client secret** (`GOCSPX-…`).
 
@@ -239,7 +239,7 @@ Each value can be a string, as the Settings form saves it.
 | `allowedSenders` | none | Addresses, or `@domain` for a domain, separated by commas. Empty: every sender that the query finds. |
 | `checkAuth` | `true` | Require Google's DKIM, SPF or DMARC pass for the From domain. |
 | `keepQuoted` | `false` | Keep the quoted history of a reply in the text. |
-| `redirectOrigin` | the page's origin | A fixed origin for the redirect URI, when you open Orca at more than one address. |
+| `redirectOrigin` | the page's origin | A fixed `https://` origin for the redirect URI (the public base URL). It wins over the page's origin. Plain http, localhost and IP addresses are refused. |
 
 `authUrl`, `tokenUrl`, `revokeUrl` and `apiUrl` change Google's endpoints. Only the tests use them.
 

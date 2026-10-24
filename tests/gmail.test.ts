@@ -25,6 +25,7 @@ import * as oauth from "../server/integrations/adapters/gmail/oauth";
 import { gmailTool } from "../server/gmailTool";
 import * as orchestrator from "../server/orchestrator";
 import { grantRefusal } from "../shared/integrations";
+import { connectOriginProblem } from "../shared/integrationSettings";
 import { native } from "./happydom";
 import { freshSchema, type TestDb } from "./pg";
 
@@ -213,6 +214,17 @@ describe("decisions (pure)", () => {
     expect(oauth.cardOAuth({ kind: "gmail", access: "read-write" }, null)).toBeUndefined();
   });
 
+  test("the redirect origin: https on a domain name only; plain http, localhost and IPs are refused with where to go", () => {
+    expect(connectOriginProblem("https://orca.example.ts.net")).toBeUndefined();
+    expect(connectOriginProblem("https://orca.example.ts.net:8443")).toBeUndefined();
+    expect(connectOriginProblem("http://orca.example.ts.net", "https://orca.example.ts.net")).toBe("Connect with Google works only from Orca's https address: Google refuses a redirect to http://orca.example.ts.net (plain http). Open https://orca.example.ts.net/integrations and connect there.");
+    expect(connectOriginProblem("http://127.0.0.1:8787")).toContain("(plain http)");
+    expect(connectOriginProblem("https://localhost:8787")).toContain("(localhost)");
+    expect(connectOriginProblem("https://100.64.0.1")).toContain("(an IP address)");
+    expect(connectOriginProblem("https://orca.example.ts.net/integrations")).toContain("is not an origin");
+    expect(connectOriginProblem(undefined)).toContain("is not one");
+  });
+
   test("watch new mail maps 1:1 to the access policy's events mode: on = trigger, off = off", () => {
     expect(gmailEvents({ clientId: "cid", watch: "true" })).toBe("trigger");
     expect(gmailEvents({ clientId: "cid", watch: "false" })).toBe("off");
@@ -381,7 +393,18 @@ describe("against a fake Google", () => {
     await expect(oauth.finish(denied)).rejects.toThrow("you did not allow access");
     await store.addIntegration({ ...conn({ clientId: "" }), id: "gm2" });
     await expect(oauth.begin("gm2", "https://x.ts.net")).rejects.toThrow("clientId");
-    await expect(oauth.begin("gm", "not an origin")).rejects.toThrow("not an origin");
+    await expect(oauth.begin("gm", "not an origin")).rejects.toThrow("is not one");
+    // Never the bridge's own loopback or plain http; the message names the https address to open.
+    process.env.ORCA_SERVER_URL = "https://orca.example.ts.net";
+    try {
+      await expect(oauth.begin("gm", "http://127.0.0.1:8787")).rejects.toThrow("Open https://orca.example.ts.net/integrations and connect there.");
+      await expect(oauth.begin("gm", "http://orca.example.ts.net")).rejects.toThrow("(plain http)");
+    } finally { delete process.env.ORCA_SERVER_URL; }
+    // A configured public base (redirectOrigin) wins over the page's origin.
+    await store.addIntegration({ ...conn({ redirectOrigin: "https://orca.example.ts.net/" }), id: "gm4" });
+    expect((await oauth.begin("gm4", "http://127.0.0.1:8787")).redirectUri).toBe(`https://orca.example.ts.net${CALLBACK_PATH}`);
+    await store.addIntegration({ ...conn({ redirectOrigin: "http://orca.example.ts.net" }), id: "gm5" });
+    await expect(oauth.begin("gm5", "https://orca.example.ts.net")).rejects.toThrow("config.redirectOrigin: ");
   });
 
   test("the poll: starts at now, reads only mail the query matches, gates it, and hands it to the core as ext.gmail.message", async () => {

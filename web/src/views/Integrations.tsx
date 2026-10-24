@@ -23,7 +23,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Empty, Pill, SectionTitle, StatusDot, VCard } from "@/components/console";
 import {
-  SUBSCRIPTION_PRESETS, deadTargetLabel, filterText, healthLine, healthTone, identityLabel, identityProblem, instanceText, newPersonId as personId, integrationProblem, linkProblem, parseFilter, targetLabel,
+  SUBSCRIPTION_PRESETS, connectOriginProblem, deadTargetLabel, filterText, healthLine, healthTone, identityLabel, identityProblem, instanceText, newPersonId as personId, integrationProblem, linkProblem, parseFilter, targetLabel,
   type IntegrationCard, type InstanceOption, type IntegrationsOverview, type LinkRow, type Pairing, type PersonRow,
 } from "../../../shared/integrationSettings";
 import { AUTO_INSTANCE, CATCH_ALL, LEVEL_LABEL, LINK_LEVELS as LEVELS, isAutomatic, repoScoped, type AdapterMeta, type LinkLevel } from "../../../shared/integrations";
@@ -137,6 +137,8 @@ function OAuthRow({ card: c, label, onChange }: { card: IntegrationCard; label: 
   const [ask, confirmNode] = useConfirm("Disconnect");
   const o = c.oauth;
   const connected = !!o?.account;
+  // Google redirects only to an https domain: from a plain-http or localhost page, say where to go.
+  const originProblem = typeof c.config.redirectOrigin === "string" && c.config.redirectOrigin ? undefined : connectOriginProblem(window.location.origin);
   const go = async () => {
     setBusy(true);
     const r = await act(`${label} (${c.name})`, "oauth/google/start", { id: c.id, origin: window.location.origin }, () => {});
@@ -151,11 +153,12 @@ function OAuthRow({ card: c, label, onChange }: { card: IntegrationCard; label: 
             ? <>Signed in as <span className="font-medium">{o!.account}</span> · {grantedWords(o!.scopes)}</>
             : "Not connected. Save the client id and secret, then sign in with Google."}
         </div>
+        {originProblem && <div data-slot="oauth-origin" className="text-geist-amber mt-0.5 break-words text-xs">{originProblem}</div>}
         {o?.reconnect && <div data-slot="oauth-reconnect" className="text-geist-red mt-0.5 break-words text-xs">{o.reconnect}</div>}
       </div>
       <div className="flex items-center gap-2 sm:shrink-0">
         {connected && <Button variant="ghost" size="sm" className="max-sm:h-10" onClick={() => ask(`Disconnect ${c.name}?`, "Orca revokes its access at Google and deletes the stored refresh token. The integration, its links and its events stay.", () => void act(`Disconnect ${c.name}`, "oauth/google/disconnect", { id: c.id }, onChange))}>Disconnect</Button>}
-        <Button size="sm" variant={connected && !o?.reconnect && !o?.missing?.length ? "secondary" : "default"} disabled={busy} onClick={() => void go()} data-slot="oauth-connect" className="max-sm:h-10 max-sm:flex-1">
+        <Button size="sm" variant={connected && !o?.reconnect && !o?.missing?.length ? "secondary" : "default"} disabled={busy || !!originProblem} onClick={() => void go()} data-slot="oauth-connect" className="max-sm:h-10 max-sm:flex-1">
           {oauthButtonLabel(label, o)}
         </Button>
       </div>

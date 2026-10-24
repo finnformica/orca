@@ -19,6 +19,7 @@ import * as secrets from "../../../secrets";
 import type { Connection } from "../../adapter";
 import { INTEGRATION_SCOPE, resolveSecret } from "../../secretValue";
 import * as store from "../../store";
+import { connectOriginProblem } from "../../../../shared/integrationSettings";
 import { authorizeUrl, endpoints, exchangeCode, Gmail, GoogleError, pkce, redirectUriFor, refreshAccess, revoke, SCOPE, consentScopes, storedSecretPathProblem, missingScopes, type GmailAccess } from "./google";
 
 export const CLIENT_SECRET_DEFAULT = "ORCA_SECRET_GOOGLE_OAUTH";
@@ -82,12 +83,17 @@ async function gmailRow(id: string): Promise<Connection> {
 const hash = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 16);
 const sameText = (a: string, b: string) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 
-/** The origin Google sends the browser back to: the row's `redirectOrigin`, else the page's own. */
-export function redirectOrigin(c: Pick<Connection, "config">, pageOrigin: string | undefined): string {
-  const fixed = typeof c.config.redirectOrigin === "string" ? c.config.redirectOrigin.trim() : "";
-  const o = fixed || pageOrigin || "";
-  if (!/^https?:\/\/[^/\s]+$/i.test(o.replace(/\/+$/, ""))) throw new OAuthError(`"${o.slice(0, 80)}" is not an origin (https://host[:port])`, "config");
-  return o.replace(/\/+$/, "");
+/** The origin Google sends the browser back to: the row's `redirectOrigin` (a configured public base
+ *  URL), else the page's own Origin. Only https on a domain name: never 127.0.0.1:8787 or plain http
+ *  (`connectOriginProblem`). A refusal names the https address to open (ORCA_SERVER_URL) when known. */
+export function redirectOrigin(c: Pick<Connection, "config">, pageOrigin: string | undefined, serverUrl = process.env.ORCA_SERVER_URL): string {
+  const fixed = typeof c.config.redirectOrigin === "string" ? c.config.redirectOrigin.trim().replace(/\/+$/, "") : "";
+  const o = (fixed || pageOrigin || "").replace(/\/+$/, "");
+  let https: string | undefined;
+  try { const u = serverUrl ? new URL(serverUrl) : undefined; https = u?.protocol === "https:" ? u.origin : undefined; } catch { /* not a URL */ }
+  const why = connectOriginProblem(o, https);
+  if (why) throw new OAuthError(fixed ? `config.redirectOrigin: ${why}` : why, "config");
+  return new URL(o).origin;
 }
 
 /** Step 1: Google's consent URL for integration `id`, with the page's origin for the redirect. */
