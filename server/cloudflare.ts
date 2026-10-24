@@ -1,13 +1,18 @@
 // `orca cloudflare …`: the orchestrator's read access and limited write access to one Cloudflare
 // account (docs/integrations/cloudflare.md). The bridge calls Cloudflare; `bin/orca` only talks to
-// the bridge, like every other verb. The token is an ACCOUNT-scoped API token in
-// `ORCA_SECRET_CLOUDFLARE` — the `ORCA_SECRET_` prefix means `scrubbedEnv` drops it from every spawn,
-// so no agent run sees it — read ONLY here, per call, and never printed or logged. The account id is
-// `ORCA_CLOUDFLARE_ACCOUNT_ID` (in env.ts ORCA_SECRETS, so agents don't get it either).
+// the bridge, like every other verb. The token and the account id come from the connected
+// Cloudflare integration (server/integrations/adapters/cloudflare.ts: the variable its secret_ref
+// names, default `ORCA_SECRET_CLOUDFLARE`, and `config.accountId`), else from the environment:
+// `ORCA_SECRET_CLOUDFLARE` and `ORCA_CLOUDFLARE_ACCOUNT_ID`. The `ORCA_SECRET_` prefix means
+// `scrubbedEnv` drops the token from every spawn, so no agent run sees it; it is never printed or
+// logged. The account id is in env.ts ORCA_SECRETS, so agents don't get it either.
 //
-// Writes are three, each a dry run unless `--confirm`, and each confirmed one logged (who, what, when,
-// the result): roll a Worker back to a version, delete a Worker, add or remove a Worker route.
+// Writes are a dry run unless `--confirm`, and each confirmed one is logged (who, what, when, the
+// result): roll a Worker back to a version, delete a Worker, add or remove a Worker route, attach or
+// detach a Worker custom domain, add or remove a DNS record. There is deliberately NO upload of
+// Worker code: new Workers come from the repos' deploy pipelines.
 // A 401/403 names the token permission that call needs, so the fix is one edit in the dashboard.
+// The account watcher (server/cloudflareWatch.ts) reuses this client.
 
 export const CLOUDFLARE_TOKEN_ENV = "ORCA_SECRET_CLOUDFLARE";
 export const CLOUDFLARE_ACCOUNT_ENV = "ORCA_CLOUDFLARE_ACCOUNT_ID";
@@ -17,7 +22,14 @@ const TIMEOUT_MS = 30_000;
 const MAX_PAGES = 20;
 
 type Env = Record<string, string | undefined>;
-export type CloudflareOpts = { env?: Env; base?: string; fetch?: typeof fetch; log?: (line: string) => void; now?: () => Date };
+export type CloudflareOpts = {
+  env?: Env; base?: string; fetch?: typeof fetch; log?: (line: string) => void; now?: () => Date;
+  /** From the connected integration; each falls back to the environment when absent. */
+  token?: string; account?: string;
+  /** Called after each confirmed write with the names and ids it touched, so the account watcher
+   *  can leave Orca's own changes out (`isOwnWrite`). */
+  onWrite?: (targets: string[], at: number) => unknown;
+};
 type Args = Record<string, unknown> & { _?: unknown[] };
 
 /** The token permission each call needs, as the dashboard names it (the doc lists them all). */
@@ -31,6 +43,7 @@ export const PERMISSIONS = {
   r2: "Workers R2 Storage Read",
   d1: "D1 Read",
   dns: "DNS Read",
+  dnsEdit: "DNS Edit",
   analytics: "Account Analytics Read",
   audit: "Account Audit Logs Read",
 } as const;
@@ -68,7 +81,7 @@ const table = (rows: string[][]): string => {
 type CfError = { code?: number; message?: string };
 type CfBody = { success?: boolean; errors?: CfError[]; result?: unknown; result_info?: { page?: number; total_pages?: number; cursor?: string } };
 
-class Client {
+export class Client {
   constructor(private token: string, readonly account: string, private base: string, private f: typeof fetch) {}
 
   /** One call. A refusal names `perm`; any other failure carries Cloudflare's own message. */
@@ -129,22 +142,22 @@ class Client {
 }
 
 /** The client, or an error that names what to set. */
-function client(opts: CloudflareOpts): Client {
+export function client(opts: CloudflareOpts): Client {
   const env = opts.env ?? process.env;
-  const token = env[CLOUDFLARE_TOKEN_ENV]?.trim();
-  const account = env[CLOUDFLARE_ACCOUNT_ENV]?.trim();
+  const token = opts.token?.trim() || env[CLOUDFLARE_TOKEN_ENV]?.trim();
+  const account = opts.account?.trim() || env[CLOUDFLARE_ACCOUNT_ENV]?.trim();
   const missing = [!token && CLOUDFLARE_TOKEN_ENV, !account && CLOUDFLARE_ACCOUNT_ENV].filter(Boolean);
   if (missing.length) {
-    throw new CloudflareError(`Cloudflare is not set up on this bridge: set ${missing.join(" and ")} in its environment and restart it. Create an account API token with the permissions in ${DOC}.`);
+    throw new CloudflareError(`Cloudflare is not set up on this bridge: connect the Cloudflare integration (Integrations > Connect: account id, and its secret variable set in this bridge's environment), or set ${missing.join(" and ")} and restart it. Create the token with the permissions in ${DOC}.`);
   }
   return new Client(token!, account!, (opts.base ?? env.ORCA_CLOUDFLARE_API ?? CLOUDFLARE_API).replace(/\/$/, ""), opts.fetch ?? Bun.fetch);
 }
 
-type Zone = { id: string; name: string };
+export type Zone = { id: string; name: string };
 const ZONE_ID = /^[0-9a-f]{32}$/;
 
 /** `--zone` as a name or an id → the zone. Without one: every zone of the account. */
-async function zones(c: Client, zone: string | undefined): Promise<Zone[]> {
+export async function zones(c: Client, zone: string | undefined): Promise<Zone[]> {
   if (zone && ZONE_ID.test(zone)) return [{ id: zone, name: zone }];
   const q = `/zones?account.id=${encodeURIComponent(c.account)}${zone ? `&name=${encodeURIComponent(zone)}` : ""}`;
   const list = await c.all<Zone>(q, PERMISSIONS.dns, 50);
@@ -165,7 +178,7 @@ async function account(c: Client): Promise<string> {
   return `Account ${a.name} (${a.id}), created ${day(a.created_on)}.`;
 }
 
-type Script = { id: string; created_on?: string; modified_on?: string; usage_model?: string; handlers?: string[]; last_deployed_from?: string };
+export type Script = { id: string; created_on?: string; modified_on?: string; usage_model?: string; handlers?: string[]; last_deployed_from?: string };
 async function workers(c: Client): Promise<string> {
   const list = await c.get<Script[]>(c.acct("/workers/scripts"), PERMISSIONS.scripts) ?? [];
   if (!list.length) return "No Workers in this account.";
@@ -173,7 +186,7 @@ async function workers(c: Client): Promise<string> {
   return `${list.length} Workers, newest change first:\n${table([["NAME", "CREATED", "MODIFIED", "DEPLOYED FROM"], ...sorted.map((s) => [s.id, day(s.created_on), day(s.modified_on), s.last_deployed_from ?? "—"])])}`;
 }
 
-type Deployment = { id: string; created_on?: string; source?: string; strategy?: string; author_email?: string; versions?: { version_id: string; percentage: number }[]; annotations?: Record<string, string> };
+export type Deployment = { id: string; created_on?: string; source?: string; strategy?: string; author_email?: string; versions?: { version_id: string; percentage: number }[]; annotations?: Record<string, string> };
 async function deployments(c: Client, words: string[]): Promise<string> {
   const name = needWorker(words, "orca cloudflare deployments <worker>");
   const r = await c.get<{ deployments?: Deployment[] }>(c.acct(`/workers/scripts/${encodeURIComponent(name)}/deployments`), PERMISSIONS.scripts);
@@ -208,7 +221,7 @@ async function routes(c: Client, args: Args): Promise<string> {
   return `${rows.length} Worker routes:\n${table([["ZONE", "PATTERN", "WORKER", "ROUTE ID"], ...rows])}`;
 }
 
-type Domain = { id: string; hostname: string; service: string; environment?: string; zone_name?: string };
+export type Domain = { id: string; hostname: string; service: string; environment?: string; zone_name?: string };
 async function domains(c: Client): Promise<string> {
   const list = await c.get<Domain[]>(c.acct("/workers/domains"), PERMISSIONS.scripts) ?? [];
   if (!list.length) return "No Worker custom domains.";
@@ -268,13 +281,14 @@ export const ANALYTICS_QUERY = `query WorkersSummary($accountTag: string!, $sinc
   } }
 }`;
 type Invocation = { sum?: { requests?: number; errors?: number; subrequests?: number }; quantiles?: { cpuTimeP50?: number; cpuTimeP99?: number }; dimensions?: { scriptName?: string } };
-async function analytics(c: Client, args: Args, now: Date): Promise<string> {
-  const since = parseSince(args.since, now), until = args.until !== undefined ? parseSince(args.until, now) : now;
+export type WorkerTotals = { requests: number; errors: number; subrequests: number; p50: number; p99: number };
+/** Each Worker's sums over [since, until], from one GraphQL query. */
+export async function workerTotals(c: Client, since: Date, until: Date): Promise<Map<string, WorkerTotals>> {
   const res = await c.call("POST", "/graphql", PERMISSIONS.analytics, { query: ANALYTICS_QUERY, variables: { accountTag: c.account, since: since.toISOString(), until: until.toISOString() } });
   const data = (res as unknown as { data?: { viewer?: { accounts?: { workersInvocationsAdaptive?: Invocation[] }[] } } }).data;
   const groups = data?.viewer?.accounts?.[0]?.workersInvocationsAdaptive ?? [];
   // The adaptive dataset groups by every dimension asked for; one script may still span rows.
-  const by = new Map<string, { requests: number; errors: number; subrequests: number; p50: number; p99: number }>();
+  const by = new Map<string, WorkerTotals>();
   for (const g of groups) {
     const name = g.dimensions?.scriptName ?? "(unknown)";
     const cur = by.get(name) ?? { requests: 0, errors: 0, subrequests: 0, p50: 0, p99: 0 };
@@ -282,6 +296,11 @@ async function analytics(c: Client, args: Args, now: Date): Promise<string> {
     cur.p50 = Math.max(cur.p50, g.quantiles?.cpuTimeP50 ?? 0); cur.p99 = Math.max(cur.p99, g.quantiles?.cpuTimeP99 ?? 0);
     by.set(name, cur);
   }
+  return by;
+}
+async function analytics(c: Client, args: Args, now: Date): Promise<string> {
+  const since = parseSince(args.since, now), until = args.until !== undefined ? parseSince(args.until, now) : now;
+  const by = await workerTotals(c, since, until);
   const worker = str(args.worker);
   const rows = [...by].filter(([n]) => !worker || n === worker).sort((a, b) => b[1].requests - a[1].requests);
   const span = `${day(since.toISOString())} – ${day(until.toISOString())} UTC`;
@@ -292,7 +311,7 @@ async function analytics(c: Client, args: Args, now: Date): Promise<string> {
   return `Workers analytics, ${span}: ${tot.r} requests, ${tot.e} errors (${pct(tot.e, tot.r)}).\n${table([["WORKER", "REQUESTS", "ERRORS", "ERROR %", "SUBREQUESTS", "CPU P50", "CPU P99"], ...rows.map(([n, v]) => [n, String(v.requests), String(v.errors), pct(v.errors, v.requests), String(v.subrequests), ms(v.p50), ms(v.p99)])])}`;
 }
 
-type AuditLog = { id: string; when?: string; action?: { type?: string; result?: boolean }; actor?: { email?: string; type?: string; ip?: string }; resource?: { id?: string; type?: string }; newValue?: string; oldValue?: string; metadata?: unknown; interface?: string };
+export type AuditLog = { id: string; when?: string; action?: { type?: string; result?: boolean }; actor?: { email?: string; type?: string; ip?: string }; resource?: { id?: string; type?: string }; newValue?: string; oldValue?: string; metadata?: unknown; interface?: string };
 /** Whether `log` mentions `resource` anywhere: id, type, values or metadata (the API has no such filter). Pure. */
 export function auditMatches(log: AuditLog, resource: string): boolean {
   const hay = JSON.stringify([log.resource, log.newValue, log.oldValue, log.metadata]).toLowerCase();
@@ -314,13 +333,25 @@ async function audit(c: Client, args: Args, now: Date): Promise<string> {
 // ---- writes (dry run unless --confirm; a confirmed one is logged) ----
 
 type Who = { by: string };
+
+/** One confirmed write Orca made: when, and the names and ids it touched (lower case). */
+export type OwnWrite = { at: number; targets: string[] };
+export const OWN_WRITE_WINDOW_MS = 15 * 60_000;
+/** Whether `text` (an audit entry, a Worker name) names a target of an own write made within
+ *  OWN_WRITE_WINDOW_MS of `at`. Pure. */
+export function isOwnWrite(text: string, at: number, writes: OwnWrite[]): boolean {
+  const hay = text.toLowerCase();
+  return writes.some((w) => Math.abs(w.at - at) <= OWN_WRITE_WINDOW_MS && w.targets.some((t) => t && hay.includes(t)));
+}
+
 function logWrite(opts: CloudflareOpts, who: Who, what: string, result: string, now: Date): void {
   (opts.log ?? ((l: string) => console.log(l)))(`[cloudflare] ${now.toISOString()} ${who.by}: ${what} → ${result}`);
 }
-async function confirmed(opts: CloudflareOpts, who: Who, what: string, now: Date, act: () => Promise<string>): Promise<string> {
+async function confirmed(opts: CloudflareOpts, who: Who, what: string, now: Date, act: () => Promise<string>, targets: string[] = []): Promise<string> {
   try {
     const out = await act();
     logWrite(opts, who, what, "ok", now);
+    try { await opts.onWrite?.(targets.filter(Boolean).map((t) => t.toLowerCase()), now.getTime()); } catch { /* the write stands; only the watcher's filter misses it */ }
     return out;
   } catch (e) {
     logWrite(opts, who, what, `failed: ${(e as Error).message}`, now);
@@ -344,7 +375,7 @@ async function rollback(c: Client, words: string[], args: Args, opts: Cloudflare
     });
     const id = (r.result as { id?: string } | undefined)?.id;
     return `Rolled back ${name} to version ${version}${id ? ` (deployment ${id})` : ""}.`;
-  });
+  }, [name, version]);
 }
 
 async function remove(c: Client, words: string[], args: Args, opts: CloudflareOpts, who: Who, now: Date): Promise<string> {
@@ -357,7 +388,7 @@ async function remove(c: Client, words: string[], args: Args, opts: CloudflareOp
   return confirmed(opts, who, `delete ${name}`, now, async () => {
     await c.call("DELETE", c.acct(`/workers/scripts/${encodeURIComponent(name)}`), PERMISSIONS.scriptsEdit);
     return `Deleted Worker ${name}.`;
-  });
+  }, [name]);
 }
 
 async function route(c: Client, words: string[], args: Args, opts: CloudflareOpts, who: Who, now: Date): Promise<string> {
@@ -375,7 +406,7 @@ async function route(c: Client, words: string[], args: Args, opts: CloudflareOpt
     return confirmed(opts, who, `route add ${pattern} → ${worker} on ${z!.name}`, now, async () => {
       const r = await c.call("POST", `/zones/${z!.id}/workers/routes`, PERMISSIONS.routesEdit, { pattern, script: worker });
       return `Added route ${pattern} → ${worker} on ${z!.name} (id ${(r.result as { id?: string } | undefined)?.id ?? "?"}).`;
-    });
+    }, [pattern]);
   }
   if (sub === "remove") {
     const id = str(args.id);
@@ -389,9 +420,111 @@ async function route(c: Client, words: string[], args: Args, opts: CloudflareOpt
     return confirmed(opts, who, `route remove ${r.pattern} (${r.id}) on ${z!.name}`, now, async () => {
       await c.call("DELETE", `/zones/${z!.id}/workers/routes/${r.id}`, PERMISSIONS.routesEdit);
       return `Removed route ${r.pattern} from ${z!.name}.`;
-    });
+    }, [r.pattern, r.id]);
   }
   throw new CloudflareError("orca cloudflare route add … | orca cloudflare route remove … (orca cloudflare help)");
+}
+
+/** The zone `hostname` sits in: `--zone` when given (it must contain the hostname), else the
+ *  account zone with the longest matching suffix. */
+async function zoneFor(c: Client, hostname: string, zone: string | undefined): Promise<Zone> {
+  const host = hostname.toLowerCase();
+  const inZone = (z: Zone) => host === z.name.toLowerCase() || host.endsWith(`.${z.name.toLowerCase()}`);
+  if (zone) {
+    const [z] = await zones(c, zone);
+    // A zone given by id has no name yet: the domain call checks the hostname against it.
+    if (z!.name !== z!.id && !inZone(z!)) throw new CloudflareError(`${hostname} is not in zone ${z!.name}`);
+    return z!;
+  }
+  const match = (await zones(c, undefined)).filter(inZone).sort((a, b) => b.name.length - a.name.length)[0];
+  if (!match) throw new CloudflareError(`no zone in this account holds ${hostname} (orca cloudflare zones lists them; or pass --zone)`);
+  return match;
+}
+
+async function domain(c: Client, words: string[], args: Args, opts: CloudflareOpts, who: Who, now: Date): Promise<string> {
+  const sub = words[1];
+  const hostname = str(args.hostname)?.toLowerCase();
+  const list = async () => await c.get<Domain[]>(c.acct("/workers/domains"), PERMISSIONS.scripts) ?? [];
+  if (sub === "add") {
+    const worker = str(args.worker);
+    if (!worker || !hostname) throw new CloudflareError("orca cloudflare domain add --worker <name> --hostname <host> [--zone <zone>] [--confirm]");
+    const scripts = await c.get<Script[]>(c.acct("/workers/scripts"), PERMISSIONS.scripts) ?? [];
+    if (!scripts.some((s) => s.id === worker)) throw new CloudflareError(`no Worker "${worker}" in this account (orca cloudflare workers lists them). Deploy it from its repo's pipeline first`);
+    const same = (await list()).find((d) => d.hostname.toLowerCase() === hostname);
+    if (same) throw new CloudflareError(`${hostname} is already a custom domain of Worker ${same.service} (id ${same.id})${same.service === worker ? "" : "; remove it first"}`);
+    const z = await zoneFor(c, hostname, str(args.zone));
+    // Cloudflare refuses a custom domain on a hostname that has a CNAME record: say so before the call.
+    const cname = await c.all<DnsRecord>(`/zones/${z.id}/dns_records?type=CNAME&name=${encodeURIComponent(hostname)}`, PERMISSIONS.dns);
+    if (cname.length) throw new CloudflareError(`${hostname} has a CNAME record (→ ${cname[0]!.content}, id ${cname[0]!.id}); Cloudflare refuses a custom domain there. Remove the record first (orca cloudflare dns remove --zone ${z.name} --id ${cname[0]!.id})`);
+    const plan = `Attach custom domain ${hostname} → Worker ${worker} on zone ${z.name}. Cloudflare creates its DNS record and certificate.`;
+    if (args.confirm === undefined) return dry(plan);
+    return confirmed(opts, who, `domain add ${hostname} → ${worker} on ${z.name}`, now, async () => {
+      const r = await c.call("PUT", c.acct("/workers/domains"), PERMISSIONS.scriptsEdit, { hostname, service: worker, zone_id: z.id });
+      return `Attached ${hostname} → ${worker} (id ${(r.result as { id?: string } | undefined)?.id ?? "?"}).`;
+    }, [hostname]);
+  }
+  if (sub === "remove") {
+    const id = str(args.id);
+    if (!id && !hostname) throw new CloudflareError("orca cloudflare domain remove (--hostname <host> | --id <domain id>) [--confirm]");
+    const d = (await list()).find((x) => (id ? x.id === id : x.hostname.toLowerCase() === hostname));
+    if (!d) throw new CloudflareError(`no custom domain ${id ?? hostname} (orca cloudflare domains lists them)`);
+    const plan = `Detach custom domain ${d.hostname} from Worker ${d.service} (id ${d.id}). Cloudflare removes its DNS record; the hostname stops serving the Worker.`;
+    if (args.confirm === undefined) return dry(plan);
+    return confirmed(opts, who, `domain remove ${d.hostname} (${d.id})`, now, async () => {
+      await c.call("DELETE", c.acct(`/workers/domains/${encodeURIComponent(d.id)}`), PERMISSIONS.scriptsEdit);
+      return `Detached ${d.hostname} from ${d.service}.`;
+    }, [d.hostname, d.id]);
+  }
+  throw new CloudflareError("orca cloudflare domain add … | orca cloudflare domain remove … (orca cloudflare help)");
+}
+
+/** `www`, `@` or a full name → the record's full name in `zone`. Pure. */
+export function recordName(name: string, zone: string): string {
+  const n = name.toLowerCase().replace(/\.$/, ""), z = zone.toLowerCase();
+  if (n === "@" || n === z) return z;
+  return n.endsWith(`.${z}`) ? n : `${n}.${z}`;
+}
+
+async function dnsWrite(c: Client, words: string[], args: Args, opts: CloudflareOpts, who: Who, now: Date): Promise<string> {
+  const sub = words[1];
+  const zone = str(args.zone);
+  if (sub === "add") {
+    const type = str(args.type)?.toUpperCase(), name = str(args.name), content = str(args.content);
+    if (!zone || !type || !name || !content) throw new CloudflareError("orca cloudflare dns add --zone <zone> --type <A|AAAA|CNAME|TXT|…> --name <name> --content <value> [--proxied] [--ttl <s>] [--comment …] [--confirm]");
+    const [z] = await zones(c, zone);
+    if (z!.name === z!.id) throw new CloudflareError("dns add takes --zone as a zone NAME (example.com), so the record name can be checked");
+    const full = recordName(name, z!.name);
+    const ttl = args.ttl !== undefined ? Number(args.ttl) : 1;
+    if (!Number.isInteger(ttl) || (ttl !== 1 && (ttl < 30 || ttl > 86400))) throw new CloudflareError("--ttl is 1 (automatic) or 30–86400 seconds");
+    const proxied = args.proxied !== undefined && args.proxied !== false && args.proxied !== "false";
+    const there = await c.all<DnsRecord>(`/zones/${z!.id}/dns_records?name=${encodeURIComponent(full)}`, PERMISSIONS.dns);
+    const dup = there.find((r) => r.type === type && r.content === content);
+    if (dup) throw new CloudflareError(`${type} ${full} → ${content} already exists (id ${dup.id})`);
+    // A CNAME may not share its name with any other record (RFC 1034), so neither side may be added.
+    const clash = type === "CNAME" ? there[0] : there.find((r) => r.type === "CNAME");
+    if (clash) throw new CloudflareError(`${full} already has a ${clash.type} record (→ ${clash.content}, id ${clash.id}); a CNAME cannot share a name with another record`);
+    const plan = `Add DNS record ${type} ${full} → ${content} (${proxied ? "proxied" : "dns only"}, TTL ${ttl === 1 ? "auto" : ttl}) on zone ${z!.name}.`;
+    if (args.confirm === undefined) return dry(plan);
+    const comment = str(args.comment);
+    return confirmed(opts, who, `dns add ${type} ${full} → ${content} on ${z!.name}`, now, async () => {
+      const r = await c.call("POST", `/zones/${z!.id}/dns_records`, PERMISSIONS.dnsEdit, { type, name: full, content, proxied, ttl, ...(comment ? { comment } : {}) });
+      return `Added ${type} ${full} → ${content} on ${z!.name} (id ${(r.result as { id?: string } | undefined)?.id ?? "?"}).`;
+    }, [full]);
+  }
+  if (sub === "remove") {
+    const id = str(args.id);
+    if (!zone || !id) throw new CloudflareError("orca cloudflare dns remove --zone <zone> --id <record id> [--confirm] (orca cloudflare dns --zone <zone> lists ids)");
+    const [z] = await zones(c, zone);
+    const r = (await c.all<DnsRecord>(`/zones/${z!.id}/dns_records`, PERMISSIONS.dns)).find((x) => x.id === id);
+    if (!r) throw new CloudflareError(`no DNS record ${id} on ${z!.name} (orca cloudflare dns --zone ${zone} lists them)`);
+    const plan = `Remove DNS record ${r.type} ${r.name} → ${r.content} (id ${r.id}) from zone ${z!.name}.`;
+    if (args.confirm === undefined) return dry(plan);
+    return confirmed(opts, who, `dns remove ${r.type} ${r.name} (${r.id}) on ${z!.name}`, now, async () => {
+      await c.call("DELETE", `/zones/${z!.id}/dns_records/${encodeURIComponent(r.id)}`, PERMISSIONS.dnsEdit);
+      return `Removed ${r.type} ${r.name} from ${z!.name}.`;
+    }, [r.name, r.id]);
+  }
+  throw new CloudflareError("orca cloudflare dns --zone z (read) | dns add … | dns remove … (orca cloudflare help)");
 }
 
 export const CLOUDFLARE_USAGE = [
@@ -400,6 +533,9 @@ export const CLOUDFLARE_USAGE = [
   "  | audit [--resource name] [--actor email] [--since 7d] [--until t] [--limit 50]",
   "  | rollback <worker> --version <id> [--message m] [--confirm] | delete <worker> [--confirm]",
   "  | route add --zone z --pattern p --worker w [--confirm] | route remove --zone z (--id i | --pattern p) [--confirm]",
+  "  | domain add --worker w --hostname h [--zone z] [--confirm] | domain remove (--hostname h | --id i) [--confirm]",
+  "  | dns add --zone z --type t --name n --content c [--proxied] [--ttl s] [--comment m] [--confirm] | dns remove --zone z --id i [--confirm]",
+  "No command uploads Worker code: new Workers come from the repo's deploy pipeline.",
 ].join("\n");
 
 /** `orca cloudflare <sub> …` → the text it prints. `by` names who asked, for the write log. */
@@ -421,12 +557,13 @@ export async function cloudflareTool(args: Args, opts: CloudflareOpts & { by?: s
     case "r2": return r2(c);
     case "d1": return d1(c);
     case "zones": return zoneList(c);
-    case "dns": return dns(c, args);
+    case "dns": return words[1] === "add" || words[1] === "remove" ? dnsWrite(c, words, args, opts, who, now) : dns(c, args);
     case "analytics": return analytics(c, args, now);
     case "audit": return audit(c, args, now);
     case "rollback": return rollback(c, words, args, opts, who, now);
     case "delete": return remove(c, words, args, opts, who, now);
     case "route": return route(c, words, args, opts, who, now);
+    case "domain": return domain(c, words, args, opts, who, now);
     default: throw new CloudflareError(`unknown subcommand "${sub}".\n${CLOUDFLARE_USAGE}`);
   }
 }

@@ -242,13 +242,22 @@ Socket Mode is optional, only with `SLACK_APP_TOKEN`. In: another person's menti
 orchestrator posts — a user id is a DM opened first. `postsAsUser` keeps the core from posting by
 itself there (no pairing code). `orca slack conversations|read|search|post` (`server/slackTool.ts`)
 is your own chat only.
-**Cloudflare** (`server/cloudflare.ts`, `docs/integrations/cloudflare.md`) is not an adapter: it is
-the `orca cloudflare` verb. The bridge calls the REST and GraphQL API with an account token
-(`ORCA_SECRET_CLOUDFLARE`, account `ORCA_CLOUDFLARE_ACCOUNT_ID`, both stripped from agents). Reads
-cover Workers, deployments, versions, routes, domains, Pages, R2, D1, DNS, analytics and the audit
-log. The only writes are `rollback`, `delete`, `route add` and `route remove`: a dry run without
-`--confirm`, a `[cloudflare]` log line with it, and your own chat only (`cloudflareWriteName`). A 401/403
-names the token permission it needs (`PERMISSIONS`).
+**Cloudflare** (`adapters/cloudflare.ts`, `server/cloudflare.ts`, `docs/integrations/cloudflare.md`) is an
+inbound-only adapter plus the `orca cloudflare` verb. No webhooks (the bridge has no public address): every
+`pollMinutes` (5) it reads the audit log since a cursor, Workers and their deployments, custom domains and each
+Worker's error rate, and hands in ONE envelope per topic and place (`ext.cloudflare.audit|dns|deploy|worker|
+domain|errors`, place `zone:<name>` with parent `account`). Its whole state is one JSON value in
+`integration_cursor`. The first Connect (`registry.onConnect`) makes a Viewer `*` link and the orchestrator's
+subscriptions (deploys as an hourly digest). It leaves out Orca's own confirmed writes (stored by `orca
+cloudflare … --confirm` as cursor row `cloudflare:own-writes`) and the deploy actors' audit entries (default
+`github`). `caps.outbound` is false: `orca post` to it is refused (`outboundRefusal`). The verb reads the token
+(the integration's secret, default `ORCA_SECRET_CLOUDFLARE`) and `config.accountId` of the connected
+integration, else the env (`ORCA_CLOUDFLARE_ACCOUNT_ID`). Reads cover Workers, deployments, versions, routes,
+domains, Pages, R2, D1, DNS, analytics and the audit log. The writes are `rollback`, `delete`, `route
+add|remove`, `domain add|remove` and `dns add|remove`: a dry run without `--confirm`, a check of the target,
+a `[cloudflare]` log line with it, and your own chat only (`cloudflareWriteName`). No command uploads Worker
+code: new Workers come from the repos' deploy pipelines. A 401/403 names the token permission it needs
+(`PERMISSIONS`).
 
 ## Forms in the chat and the secret store
 

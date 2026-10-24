@@ -96,13 +96,15 @@ const fail = (msg: string): never => { throw new AdminError(msg); };
 export async function saveIntegration(b: Record<string, unknown>): Promise<void> {
   const c = {
     id: String(b.id ?? "").trim(), kind: String(b.kind ?? ""), name: String(b.name ?? "").trim(), instance: String(b.instance ?? "").trim(),
-    secretRef: typeof b.secretRef === "string" && b.secretRef.trim() ? b.secretRef.trim() : undefined,
+    secretRef: typeof b.secretRef === "string" && b.secretRef.trim() ? b.secretRef.trim() : registry.meta(String(b.kind ?? ""))?.secretDefault,
     config: b.config && typeof b.config === "object" ? Object.fromEntries(Object.entries(b.config as Record<string, unknown>).filter(([, v]) => v !== "" && v != null)) : {},
     enabled: b.enabled !== false,
   };
   const problem = integrationProblem(c, registry.kinds().map((k) => k.kind), ORCA_SECRETS);
   if (problem) fail(problem);
+  const isNew = !(await store.integration(c.id));
   await store.addIntegration(c);
+  if (isNew) await registry.onConnect(c);
   await registry.sync().catch(() => {});
 }
 

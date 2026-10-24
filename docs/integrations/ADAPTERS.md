@@ -1,7 +1,7 @@
 # How to write an Orca adapter
 
 This guide is for the branches that stack on the integrations core: Slack two-way, Discord, email,
-the Settings page, the GitHub poller and Linear. The design is
+the Settings page, the GitHub poller, Linear and Cloudflare. The design is
 [docs/research/integrations.md](../research/integrations.md) section 3. Read this guide first. Do not
 change the core to add an adapter. If an adapter needs a core change, change the core in its own
 commit and update this guide.
@@ -44,7 +44,7 @@ This is the exact contract (`server/integrations/adapter.ts`):
 ```ts
 export type Connection = {
   id: string;
-  kind: AdapterKind;            // "slack" | "discord" | "email" | "github" | "linear" | "webhook" | "web" | string
+  kind: AdapterKind;            // "slack" | "discord" | "email" | "github" | "linear" | "cloudflare" | "webhook" | "web" | string
   name: string;
   instance: string;             // the ONE instance that runs it, or "*" (Automatic)
   auto?: AutoLease;             // Automatic only: the lease holder and its end time
@@ -181,6 +181,10 @@ export type InboundMessage = {
 - `msg.newThread` (`orca post --new-thread "<name>"`): post as usual, then open a thread with that
   name on the post. Return the thread's id as `threadId`. If the platform refuses the thread, keep
   the post and return no new thread. Only Discord does this now.
+- An inbound-only adapter (Cloudflare) sets `caps.outbound: false`. Its `send` returns
+  `{ ok: false, retryable: false }`. `orca post` to its link refuses before it queues
+  (`outboundRefusal`), and `fenceExternal` tells the orchestrator there is no sender to answer
+  (`TAKES_NO_POSTS` in `shared/integrations.ts`).
 
 ### `delete(target, externalMsgId)` (optional)
 
@@ -208,6 +212,11 @@ export type InboundMessage = {
 3. Add the kind's topics to `Topic` in `shared/integrations.ts` only if `ext.<kind>.<event>` is not
    enough.
 4. Write a test in `tests/` that drives the adapter with a stubbed `fetch` or a fake server.
+5. Optional: pass `meta.secretDefault` (the variable a row names when the Connect form leaves the
+   secret empty) and a fourth argument, `onConnect(connection)`. The registry runs it once, on the
+   FIRST save of a row of that kind (`admin.saveIntegration`). Cloudflare uses it to make its
+   catch-all link and its subscriptions to the orchestrator. A later edit does not run it, so a
+   removed link or subscription stays removed.
 
 ## 6. Configure an integration
 
@@ -307,6 +316,7 @@ VALUES ('me', 'orca.pr.ci_failed', '{"repo":"orca"}', 'link', 'eng');
 | Settings UI | `store.ts` (every table), `registry.health()`, `store.retryDead()`, `GET /api/integrations`, the pairing routes (section 10). | Routes to write rows. A Test button that calls `publish` with a test key. An Approve / Deny list over `GET /api/integrations/pairing`. |
 | GitHub poller | `cursor` (an ETag or a timestamp), `ingest` without `actor`, topics `orca.pr.*` or `ext.github.*`. | A poll loop in `start` (`inbound: "poll"`). |
 | Linear | The same as the GitHub poller, plus thread links for issues. | GraphQL polls. |
+| Cloudflare (done: [cloudflare.md](cloudflare.md)) | `cursor` (one JSON state), `ingest` without `actor`, topics `ext.cloudflare.*`, `source.parents` (`zone:<name>` in `account`). | A poll loop in `start`; no outbound (`caps.outbound: false`); `onConnect` for its link and subscriptions. |
 | Unified inbox | The `event` table (`ext.*.message`, `orca.question`). | A view. |
 
 ## 9. Behaviour that stays as before

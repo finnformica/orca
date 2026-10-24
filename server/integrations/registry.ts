@@ -16,17 +16,28 @@ import { WEBHOOK_CAPS, webhookAdapter } from "./adapters/webhook";
 import { DISCORD_CAPS, discordAdapter } from "./adapters/discord";
 import { emailAdapter, emailCaps } from "./adapters/email";
 import { LINEAR_CAPS, linearAdapter } from "./adapters/linear";
+import { CLOUDFLARE_CAPS, cloudflareAdapter, ensureDefaults as cloudflareDefaults } from "./adapters/cloudflare";
 
 const factories = new Map<AdapterKind, AdapterFactory>();
 const metas = new Map<AdapterKind, AdapterMeta>();
 const running = new Map<string, { adapter: Adapter; connection: Connection; abort: AbortController }>();
+const connectHooks = new Map<AdapterKind, (c: Connection) => Promise<void>>();
 
 /** Register a kind. A later adapter (Discord, email, GitHub, Linear) adds one line here. `meta` is
  *  what Settings > Integrations shows for the kind (its card, its Connect form). */
-export function register(kind: AdapterKind, factory: AdapterFactory, meta?: Omit<AdapterMeta, "kind">): void {
+export function register(kind: AdapterKind, factory: AdapterFactory, meta?: Omit<AdapterMeta, "kind">, onConnect?: (c: Connection) => Promise<void>): void {
   factories.set(kind, factory);
   if (meta) metas.set(kind, { kind, ...meta });
+  if (onConnect) connectHooks.set(kind, onConnect);
 }
+
+/** A kind's setup on its FIRST connect (its default links and subscriptions), if it has one. */
+export async function onConnect(c: Connection): Promise<void> {
+  await connectHooks.get(c.kind)?.(c);
+}
+
+/** The meta of one kind, if registered with one. */
+export const meta = (kind: AdapterKind): AdapterMeta | undefined => metas.get(kind);
 register("slack", slackAdapter, {
   label: "Slack", caps: SLACK_CAPS, place: "channel", secretExample: "SLACK_TOKEN",
   help: "Your user token (xoxp-…): Orca posts as you and polls your mentions, DMs and group DMs each minute. Link `im` / `mpim` for DMs. Setup: docs/integrations/slack.md.",
@@ -66,6 +77,20 @@ register("linear", linearAdapter, {
   ],
   help: "A personal API key. Orca polls; it needs no webhook. Link team:<KEY>, project:<id> or *. Setup: docs/integrations/linear.md.",
 });
+
+register("cloudflare", (c) => cloudflareAdapter(c), {
+  label: "Cloudflare", caps: CLOUDFLARE_CAPS, place: "place (* = the whole account, zone:<name>)",
+  secretExample: "ORCA_SECRET_CLOUDFLARE", secretDefault: "ORCA_SECRET_CLOUDFLARE",
+  config: [
+    { key: "accountId", label: "Account id", placeholder: "32 hex characters, from the account home page" },
+    { key: "pollMinutes", label: "Poll every (minutes)", placeholder: "5" },
+    { key: "errorRatePct", label: "Worker error-rate threshold (%)", placeholder: "5" },
+    { key: "minRequests", label: "Fewest requests for an error alert", placeholder: "100" },
+    { key: "zones", label: "Zones to watch (comma-separated; empty = all)", placeholder: "example.com" },
+    { key: "deployActors", label: "Deploy actors to leave out (comma-separated)", placeholder: "github" },
+  ],
+  help: "An account API token. Orca polls the account (audit log, deploys, Worker errors, custom domains, DNS) and tells the orchestrator; it takes no posts. Setup: docs/integrations/cloudflare.md.",
+}, cloudflareDefaults);
 
 /** Every registered kind with what the Settings page shows for it. A kind with no meta gets a plain one. */
 export function kinds(): AdapterMeta[] {

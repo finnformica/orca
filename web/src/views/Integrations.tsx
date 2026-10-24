@@ -275,7 +275,7 @@ function IntegrationDialog({ kinds, options, existing, onClose, onSaved }: { kin
   const [config, setConfig] = useState<Record<string, string>>(() => Object.fromEntries(Object.entries(existing?.config ?? {}).map(([k, v]) => [k, String(v)])));
   const [busy, setBusy] = useState(false);
   const autoId = id || name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-  const body = { id: autoId, kind, name, instance, secretRef, config, enabled: existing?.enabled ?? true };
+  const body = { id: autoId, kind, name, instance, secretRef: secretRef || (existing ? "" : meta?.secretDefault ?? ""), config, enabled: existing?.enabled ?? true };
   const problem = integrationProblem(body, kinds.map((k) => k.kind), STRIPPED);
   const save = async () => { setBusy(true); const r = await act(existing ? `Save ${name}` : `Connect ${name}`, "save", body, onSaved); setBusy(false); if (r) onClose(); };
   return (

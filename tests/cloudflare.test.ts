@@ -2,7 +2,7 @@
 // loopback that answers the v4 REST routes and the GraphQL endpoint the module calls, and records
 // every request. No real Cloudflare call; the token and account below are made up.
 import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
-import { CLOUDFLARE_ACCOUNT_ENV, CLOUDFLARE_TOKEN_ENV, PERMISSIONS, auditMatches, cloudflareTool, parseSince } from "../server/cloudflare";
+import { CLOUDFLARE_ACCOUNT_ENV, CLOUDFLARE_TOKEN_ENV, PERMISSIONS, auditMatches, cloudflareTool, isOwnWrite, parseSince, recordName } from "../server/cloudflare";
 import { scrubbedEnv } from "../server/env";
 import { grantRefusal, type Grant } from "../shared/integrations";
 import { orchestratorPrompt } from "../web/src/workstream";
@@ -19,6 +19,9 @@ type Seen = { method: string; path: string; query: URLSearchParams; auth: string
 let seen: Seen[] = [];
 let deny = new Set<string>(); // paths answered 403, as a token without that permission gets
 let routes: { id: string; pattern: string; script?: string }[] = [];
+type Rec = { id: string; type: string; name: string; content: string; proxied: boolean; ttl: number };
+let records: Rec[] = [];
+let domainRows: { id: string; hostname: string; service: string; environment?: string; zone_name?: string; zone_id?: string }[] = [];
 let server: ReturnType<typeof Bun.serve>;
 const ok = (result: unknown, extra: Record<string, unknown> = {}) => R.json({ success: true, errors: [], messages: [], result, ...extra });
 
@@ -50,7 +53,17 @@ beforeAll(() => {
       if (path === `${a}/workers/scripts/edge-api/versions/ver-1`) return ok({ id: "ver-1", number: 1 });
       if (path.startsWith(`${a}/workers/scripts/edge-api/versions/`)) return R.json({ success: false, errors: [{ code: 10007, message: "version not found" }] }, { status: 404 });
       if (path === `${a}/workers/scripts/edge-api` && req.method === "DELETE") return ok(null);
-      if (path === `${a}/workers/domains`) return ok([{ id: "d1", hostname: "api.example.com", service: "edge-api", environment: "production", zone_name: "example.com" }]);
+      if (path === `${a}/workers/domains` && req.method === "GET") return ok(domainRows);
+      if (path === `${a}/workers/domains` && req.method === "PUT") {
+        const b = body as { hostname: string; service: string; zone_id: string };
+        const d = { id: `d${domainRows.length + 1}`, ...b, zone_name: b.zone_id === ZONE ? "example.com" : "?" };
+        domainRows.push(d);
+        return ok(d);
+      }
+      if (path.startsWith(`${a}/workers/domains/`) && req.method === "DELETE") {
+        domainRows = domainRows.filter((d) => d.id !== path.split("/").pop());
+        return ok(null);
+      }
       if (path === `${a}/pages/projects`) return ok([{ name: "site", domains: ["site.pages.dev", "www.example.com"], production_branch: "main", created_on: "2025-05-05T00:00:00Z", latest_deployment: { created_on: "2026-10-18T00:00:00Z", deployment_trigger: { metadata: { branch: "main", commit_hash: "abcdef1234567" } } } }], { result_info: { total_pages: 1 } });
       if (path === `${a}/r2/buckets`) return ok({ buckets: [{ name: "assets", creation_date: "2025-06-06T00:00:00Z", location: "WEUR" }] });
       if (path === `${a}/d1/database`) return ok([{ uuid: "db-uuid", name: "prod-db", created_at: "2025-07-07T00:00:00Z", num_tables: 4, file_size: 3 * 1024 * 1024 }], { result_info: { total_pages: 1 } });
@@ -70,10 +83,18 @@ beforeAll(() => {
         routes = routes.filter((r) => r.id !== path.split("/").pop());
         return ok({ id: path.split("/").pop() });
       }
-      if (path === `/zones/${ZONE}/dns_records`) return ok([
-        { id: "r1", type: "A", name: "example.com", content: "192.0.2.1", proxied: true, ttl: 1 },
-        { id: "r2", type: "CNAME", name: "www.example.com", content: "example.com", proxied: false, ttl: 300 },
-      ].filter((r) => !url.searchParams.get("type") || r.type === url.searchParams.get("type")), { result_info: { total_pages: 1 } });
+      if (path === `/zones/${ZONE}/dns_records` && req.method === "GET") return ok(records
+        .filter((r) => !url.searchParams.get("type") || r.type === url.searchParams.get("type"))
+        .filter((r) => !url.searchParams.get("name") || r.name === url.searchParams.get("name")), { result_info: { total_pages: 1 } });
+      if (path === `/zones/${ZONE}/dns_records` && req.method === "POST") {
+        const r = { id: `r${records.length + 1}`, ...(body as Omit<Rec, "id">) };
+        records.push(r);
+        return ok(r);
+      }
+      if (path.startsWith(`/zones/${ZONE}/dns_records/`) && req.method === "DELETE") {
+        records = records.filter((r) => r.id !== path.split("/").pop());
+        return ok({ id: path.split("/").pop() });
+      }
       if (path === "/graphql") return R.json({ data: { viewer: { accounts: [{ workersInvocationsAdaptive: [
         { sum: { requests: 900, errors: 9, subrequests: 50 }, quantiles: { cpuTimeP50: 1200, cpuTimeP99: 8000 }, dimensions: { scriptName: "edge-api" } },
         { sum: { requests: 100, errors: 1, subrequests: 0 }, quantiles: { cpuTimeP50: 1000, cpuTimeP99: 9000 }, dimensions: { scriptName: "edge-api" } },
@@ -92,17 +113,25 @@ beforeAll(() => {
   });
 });
 afterAll(() => server.stop(true));
-beforeEach(() => { seen = []; deny = new Set(); routes = [{ id: "route-0", pattern: "api.example.com/*", script: "edge-api" }]; });
+beforeEach(() => {
+  seen = []; deny = new Set(); routes = [{ id: "route-0", pattern: "api.example.com/*", script: "edge-api" }];
+  records = [
+    { id: "r1", type: "A", name: "example.com", content: "192.0.2.1", proxied: true, ttl: 1 },
+    { id: "r2", type: "CNAME", name: "www.example.com", content: "example.com", proxied: false, ttl: 300 },
+  ];
+  domainRows = [{ id: "d1", hostname: "api.example.com", service: "edge-api", environment: "production", zone_name: "example.com" }];
+});
 
 const env = () => ({ [CLOUDFLARE_TOKEN_ENV]: TOKEN, [CLOUDFLARE_ACCOUNT_ENV]: ACCT });
 const logs: string[] = [];
+const wrote: { targets: string[]; at: number }[] = [];
 const cf = (words: string[], flags: Record<string, unknown> = {}) =>
-  cloudflareTool({ ...flags, _: words }, { env: env(), base: `http://127.0.0.1:${server.port}/client/v4`, now: () => NOW, log: (l) => logs.push(l), by: "test" });
+  cloudflareTool({ ...flags, _: words }, { env: env(), base: `http://127.0.0.1:${server.port}/client/v4`, now: () => NOW, log: (l) => logs.push(l), by: "test", onWrite: (targets, at) => wrote.push({ targets, at }) });
 const writes = () => seen.filter((s) => s.method !== "GET" && s.path !== "/graphql");
 
 test("a missing token or account id names both variables and the doc", async () => {
   await expect(cloudflareTool({ _: ["workers"] }, { env: {} })).rejects.toThrow(/ORCA_SECRET_CLOUDFLARE and ORCA_CLOUDFLARE_ACCOUNT_ID.*docs\/integrations\/cloudflare\.md/);
-  await expect(cloudflareTool({ _: ["workers"] }, { env: { [CLOUDFLARE_TOKEN_ENV]: TOKEN } })).rejects.toThrow(/set ORCA_CLOUDFLARE_ACCOUNT_ID in/);
+  await expect(cloudflareTool({ _: ["workers"] }, { env: { [CLOUDFLARE_TOKEN_ENV]: TOKEN } })).rejects.toThrow(/connect the Cloudflare integration.*or set ORCA_CLOUDFLARE_ACCOUNT_ID and restart/);
   expect(await cloudflareTool({ _: [] }, { env: {} })).toContain("orca cloudflare account | workers");
 });
 
@@ -230,7 +259,9 @@ test("an outside sender's wake may read Cloudflare but never write; your own cha
   const admin: Grant = { level: "admin", repos: ["orca"] } as unknown as Grant;
   expect(grantRefusal(ask, "cloudflare", { _: ["workers"] })).toBeUndefined();
   expect(grantRefusal(ask, "cloudflare", { _: ["audit"] })).toBeUndefined();
-  for (const words of [["rollback", "w"], ["delete", "w"], ["route", "add"], ["route", "remove"]]) {
+  expect(grantRefusal(ask, "cloudflare", { _: ["dns"], zone: "example.com" })).toBeUndefined(); // bare dns is the read
+  expect(grantRefusal(ask, "cloudflare", { _: ["domains"] })).toBeUndefined();
+  for (const words of [["rollback", "w"], ["delete", "w"], ["route", "add"], ["route", "remove"], ["domain", "add"], ["domain", "remove"], ["dns", "add"], ["dns", "remove"]]) {
     expect(grantRefusal(admin, "cloudflare", { _: words, confirm: "" })).toContain("needs your own chat");
     expect(grantRefusal(undefined, "cloudflare", { _: words, confirm: "" })).toBeUndefined();
   }
@@ -249,5 +280,73 @@ test("agents never see the token or the account id; the orchestrator's help list
     for (const [k, v] of [[CLOUDFLARE_TOKEN_ENV, saved.t], [CLOUDFLARE_ACCOUNT_ENV, saved.a]] as const) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   }
   const help = orchestratorPrompt({ fresh: false, board: "(empty)", messages: ["hi"] });
-  for (const c of ["orca cloudflare <read>", "orca cloudflare rollback <worker> --version", "orca cloudflare delete <worker>", "orca cloudflare route add", "orca cloudflare route remove"]) expect(help).toContain(c);
+  for (const c of ["orca cloudflare <read>", "orca cloudflare rollback <worker> --version", "orca cloudflare delete <worker>", "orca cloudflare route add", "orca cloudflare route remove",
+    "orca cloudflare domain add --worker", "orca cloudflare domain remove", "orca cloudflare dns add --zone", "orca cloudflare dns remove --zone"]) expect(help).toContain(c);
+});
+
+test("the connected integration's token and account win; the environment is the fallback", async () => {
+  const base = `http://127.0.0.1:${server.port}/client/v4`;
+  expect(await cloudflareTool({ _: ["account"] }, { env: {}, token: TOKEN, account: ACCT, base })).toContain("Finn's account");
+  expect(seen.at(-1)!.auth).toBe(`Bearer ${TOKEN}`);
+  expect(await cloudflareTool({ _: ["account"] }, { env: env(), token: "", base })).toContain("Finn's account");
+  const err = await cloudflareTool({ _: ["account"] }, { env: {} }).catch((e: Error) => e.message);
+  expect(err).toContain("connect the Cloudflare integration");
+});
+
+test("domain add checks the Worker, the hostname and a CNAME, then attaches it behind --confirm; remove detaches it", async () => {
+  logs.length = 0; wrote.length = 0;
+  const add = { worker: "edge-api", hostname: "shop.example.com" };
+  const plan = await cf(["domain", "add"], add);
+  expect(plan).toContain("Dry run, nothing changed. Attach custom domain shop.example.com → Worker edge-api on zone example.com.");
+  expect(writes()).toEqual([]);
+  await expect(cf(["domain", "add"], { ...add, worker: "ghost", confirm: "" })).rejects.toThrow('no Worker "ghost"');
+  await expect(cf(["domain", "add"], { ...add, hostname: "api.example.com", confirm: "" })).rejects.toThrow("already a custom domain of Worker edge-api");
+  await expect(cf(["domain", "add"], { ...add, hostname: "www.example.com", confirm: "" })).rejects.toThrow("has a CNAME record");
+  await expect(cf(["domain", "add"], { ...add, hostname: "x.nowhere.net" })).rejects.toThrow("no zone in this account holds x.nowhere.net");
+  await expect(cf(["domain", "add"], { ...add, zone: "example.org" })).rejects.toThrow("not in zone example.org");
+  expect(writes()).toEqual([]);
+  expect(await cf(["domain", "add"], { ...add, confirm: "" })).toBe("Attached shop.example.com → edge-api (id d2).");
+  expect(writes()).toEqual([expect.objectContaining({ method: "PUT", path: `/accounts/${ACCT}/workers/domains`, body: { hostname: "shop.example.com", service: "edge-api", zone_id: ZONE } })]);
+  expect(logs).toEqual([`[cloudflare] ${NOW.toISOString()} test: domain add shop.example.com → edge-api on example.com → ok`]);
+  expect(wrote).toEqual([{ targets: ["shop.example.com"], at: NOW.getTime() }]);
+  seen = [];
+  expect(await cf(["domain", "remove"], { hostname: "shop.example.com" })).toContain("Detach custom domain shop.example.com from Worker edge-api (id d2)");
+  expect(writes()).toEqual([]);
+  expect(await cf(["domain", "remove"], { id: "d2", confirm: "" })).toBe("Detached shop.example.com from edge-api.");
+  expect(writes().map((w) => `${w.method} ${w.path}`)).toEqual([`DELETE /accounts/${ACCT}/workers/domains/d2`]);
+  await expect(cf(["domain", "remove"], { id: "d2", confirm: "" })).rejects.toThrow("no custom domain d2");
+  deny.add(`/accounts/${ACCT}/workers/domains`);
+  expect(await cf(["domain", "remove"], { id: "d1", confirm: "" }).catch((e: Error) => e.message)).toContain(`"${PERMISSIONS.scripts}"`);
+});
+
+test("dns add and remove: full names, CNAME and duplicate checks, --confirm, DNS Edit named on a refusal", async () => {
+  logs.length = 0; wrote.length = 0;
+  expect(recordName("@", "example.com")).toBe("example.com");
+  expect(recordName("Shop", "example.com")).toBe("shop.example.com");
+  expect(recordName("shop.example.com.", "example.com")).toBe("shop.example.com");
+  const add = { zone: "example.com", type: "a", name: "shop", content: "192.0.2.7" };
+  expect(await cf(["dns", "add"], add)).toContain("Add DNS record A shop.example.com → 192.0.2.7 (dns only, TTL auto) on zone example.com.");
+  expect(writes()).toEqual([]);
+  await expect(cf(["dns", "add"], { ...add, name: "@", content: "192.0.2.1", confirm: "" })).rejects.toThrow("A example.com → 192.0.2.1 already exists (id r1)");
+  await expect(cf(["dns", "add"], { ...add, name: "www", confirm: "" })).rejects.toThrow("already has a CNAME record");
+  await expect(cf(["dns", "add"], { ...add, type: "CNAME", name: "@", content: "x.example.net", confirm: "" })).rejects.toThrow("a CNAME cannot share a name");
+  await expect(cf(["dns", "add"], { ...add, ttl: "5" })).rejects.toThrow("--ttl");
+  await expect(cf(["dns", "add"], { ...add, zone: ZONE })).rejects.toThrow("zone NAME");
+  expect(writes()).toEqual([]);
+  expect(await cf(["dns", "add"], { ...add, proxied: "", ttl: "300", comment: "shop", confirm: "" })).toBe("Added A shop.example.com → 192.0.2.7 on example.com (id r3).");
+  expect(writes()[0]).toMatchObject({ method: "POST", path: `/zones/${ZONE}/dns_records`, body: { type: "A", name: "shop.example.com", content: "192.0.2.7", proxied: true, ttl: 300, comment: "shop" } });
+  expect(logs[0]).toContain("test: dns add A shop.example.com → 192.0.2.7 on example.com → ok");
+  expect(wrote[0]!.targets).toEqual(["shop.example.com"]);
+  seen = [];
+  expect(await cf(["dns", "remove"], { zone: "example.com", id: "r3" })).toContain("Remove DNS record A shop.example.com → 192.0.2.7 (id r3) from zone example.com.");
+  expect(writes()).toEqual([]);
+  await expect(cf(["dns", "remove"], { zone: "example.com", id: "r9", confirm: "" })).rejects.toThrow("no DNS record r9");
+  deny.add(`/zones/${ZONE}/dns_records/r3`);
+  expect(await cf(["dns", "remove"], { zone: "example.com", id: "r3", confirm: "" }).catch((e: Error) => e.message)).toContain(`"${PERMISSIONS.dnsEdit}"`);
+  deny.clear();
+  expect(await cf(["dns", "remove"], { zone: "example.com", id: "r3", confirm: "" })).toBe("Removed A shop.example.com from example.com.");
+  // No command uploads Worker code: the usage says where new Workers come from.
+  expect(await cloudflareTool({ _: ["help"] })).toContain("No command uploads Worker code");
+  expect(isOwnWrite('{"name":"shop.example.com"}', NOW.getTime() + 60_000, wrote)).toBe(true);
+  expect(isOwnWrite('{"name":"shop.example.com"}', NOW.getTime() + 3_600_000, wrote)).toBe(false);
 });
