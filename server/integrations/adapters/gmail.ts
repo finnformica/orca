@@ -1,27 +1,28 @@
 // The Gmail adapter (setup: docs/integrations/gmail.md). The user connects their own Gmail with
-// "Connect with Google" (OAuth 2.0, code + PKCE: ./gmail/oauth.ts); Orca never sees a password.
+// "Connect with Google" (OAuth 2.0, code + PKCE: ./gmail/oauth.ts); Orca never sees a password. Each
+// account is its own integration row (for example "personal" and "work"), with its own refresh token.
 //
-// Inbound: the bridge has no public address, so no Pub/Sub push. Every `pollSeconds` (60) the
-// primary bridge reads the History API from its cursor (`{ historyId, account }` in
-// integration_cursor): each message added (or labelled) since. Only a message that matches the
-// row's Gmail `query` (default `label:Orca OR to:<you>+orca@<domain>`) goes on: Gmail itself
-// decides the match (the query plus `rfc822msgid:` of each new message), so the search syntax is
-// Gmail's. Every other mail stays private: Orca reads its labels and its Message-ID header only.
-// A matching mail passes the mail gate (not Orca's own mail, not automated, `allowedSenders` when
-// set, an aligned DKIM/SPF/DMARC pass from mx.google.com unless the account sent it itself), then
+// READ ONLY: Orca asks Google for gmail.readonly alone. It sends no mail, changes no label and marks
+// no mail read (the History API cursor is its position). `send` refuses; `caps.outbound` is false.
+//
+// Events: only a row with `watch` on polls (the one "watch new mail" flag; it maps 1:1 to the access
+// policy's events=trigger, off to events=off). The bridge has no public address, so no Pub/Sub push.
+// Every `pollSeconds` (60) the primary bridge reads the History API from its cursor
+// (`{ historyId, account }` in integration_cursor): each message added (or labelled) since. Only a
+// message that matches the row's Gmail `query` (default `label:Orca OR to:<you>+orca@<domain>`) goes
+// on: Gmail itself decides the match (the query plus `rfc822msgid:` of each new message), so the
+// search syntax is Gmail's. Every other mail stays private: Orca reads its labels and its Message-ID
+// header only. A matching mail passes the mail gate (not automated, `allowedSenders` when set, an
+// aligned DKIM/SPF/DMARC pass from mx.google.com unless the account sent it itself), then
 // `ctx.ingest` as `ext.gmail.message`, so the core's gate, links, people and subscriptions apply.
 // The channel is the sender's address (one link per correspondent, or the catch-all `*`); the
-// thread is Gmail's own thread id.
-// Outbound (only with `allowSend`, the gmail.send scope): a reply in a thread through
-// users.messages.send, with In-Reply-To / References from the thread's last message. The MIME is the
-// email adapter's (./email/mime.ts), so threading and attachments work the same way.
+// thread is Gmail's own thread id. The MIME parse is the email adapter's (./email/mime.ts).
 import * as attachments from "../../attachments";
-import * as db from "../../db";
-import { clip, inboundEnvelope, type Capabilities, type OutboundMessage, type SendResult, type Target } from "../../../shared/integrations";
+import { clip, inboundEnvelope, type Capabilities, type SendResult } from "../../../shared/integrations";
 import type { Adapter, AdapterContext, Connection } from "../adapter";
-import { authVerdict, buildMail, isAutomated, outboundMessageId, parseMail, senderAllowed, type ParsedMail } from "./email/mime";
-import { inboundText, outboundSubject } from "./email";
-import { fromBase64Url, GoogleError, header, SCOPE, toBase64Url, type Gmail, type GmailMessage } from "./gmail/google";
+import { authVerdict, isAutomated, parseMail, senderAllowed, type ParsedMail } from "./email/mime";
+import { inboundText } from "./email";
+import { fromBase64Url, GoogleError, header, SCOPE, type Gmail } from "./gmail/google";
 import * as oauth from "./gmail/oauth";
 
 export type GmailConfig = {
@@ -29,15 +30,14 @@ export type GmailConfig = {
   /** A Gmail search. Empty = `label:Orca OR to:<local>+orca@<domain>` of the connected account. */
   query?: string;
   pollSeconds: number;
-  /** Ask for gmail.send at Connect, and send replies. Off = read only. */
-  allowSend: boolean;
+  /** "Watch new mail": poll and hand matching mail to the core (events=trigger). Off = no poll, no
+   *  event (events=off); `orca gmail search|read` still work. Default off. */
+  watch: boolean;
   /** Addresses or `@domain`s. Empty = any sender the query lets in (the core's gate still applies). */
   allowedSenders: string[];
   /** Require Google's DKIM/SPF/DMARC pass for the From domain (default true). */
   checkAuth: boolean;
   keepQuoted: boolean;
-  fromName?: string;
-  perHour: number;
 };
 
 export const GMAIL_AUTHSERV = "mx.google.com";
@@ -58,12 +58,10 @@ export function gmailConfig(raw: Record<string, unknown>): { config: GmailConfig
   return { config: {
     clientId, ...(str(raw.query) ? { query: str(raw.query) } : {}),
     pollSeconds: Math.max(0.05, num(raw.pollSeconds, 60)),
-    allowSend: bool(raw.allowSend, false),
+    watch: bool(raw.watch, false),
     allowedSenders: senders.map((s) => s.trim().toLowerCase()).filter(Boolean),
     checkAuth: bool(raw.checkAuth, true),
     keepQuoted: bool(raw.keepQuoted, false),
-    ...(str(raw.fromName) ? { fromName: str(raw.fromName) } : {}),
-    perHour: num(raw.perHour, 20),
   } };
 }
 
@@ -77,11 +75,20 @@ export function defaultQuery(account: string): string {
 export const matchQuery = (query: string, messageIds: string[]): string =>
   `(${query}) {${messageIds.map((m) => `rfc822msgid:${m.replace(/^<|>$/g, "")}`).join(" ")}}`;
 
-export const gmailCaps = (c: Partial<GmailConfig>): Capabilities => ({
-  inbound: "poll", outbound: !!c.allowSend, threads: true, edits: false, reactions: false, attachments: true,
-  maxAttachmentBytes: 20 * 1024 * 1024, maxTextLength: 100_000,
-  rate: { perTarget: c.perHour ?? 20, windowMs: 3_600_000 },
-});
+/** Read only: no outbound side, whatever the config says. */
+export const GMAIL_CAPS: Capabilities = {
+  inbound: "poll", outbound: false, threads: true, edits: false, reactions: false, attachments: false, maxTextLength: 100_000,
+};
+
+/** The class of each `orca gmail` verb, in the access policy's VerbClasses shape (branch
+ *  orca/integration-access-policy: `meta.verbs`). Both are reads; Gmail has no write verb. */
+export const GMAIL_VERBS = { search: "read", read: "read" } as const;
+
+/** The access policy's events mode for a row: the watch flag maps 1:1 (on = trigger, off = off). */
+export function gmailEvents(config: Record<string, unknown>): "trigger" | "off" {
+  const c = gmailConfig(config);
+  return "config" in c && c.config.watch ? "trigger" : "off";
+}
 
 /** Why the mail gate drops a matching message, or undefined to let it in. Pure. */
 export function gmailGate(m: ParsedMail, labels: readonly string[], cfg: Pick<GmailConfig, "allowedSenders" | "checkAuth">, account: string): string | undefined {
@@ -251,66 +258,21 @@ export function gmailAdapter(connection: Connection): Adapter {
     }
   }
 
-  /** In-Reply-To, References and Subject from the thread's last message. */
-  async function inThread(g: Gmail, threadId: string): Promise<{ inReplyTo?: string; references: string[]; subject?: string }> {
-    const t = await g.thread(threadId, ["Message-ID", "References", "Subject"]);
-    const last = (t.messages ?? []).at(-1) as GmailMessage | undefined;
-    if (!last) return { references: [] };
-    const mid = header(last, "Message-ID")?.trim();
-    const refs = (header(last, "References") ?? "").match(/<[^<>\s]+>/g) ?? [];
-    return { ...(mid ? { inReplyTo: mid } : {}), references: mid ? [...refs.filter((r) => r !== mid), mid] : refs, ...(header(last, "Subject") ? { subject: header(last, "Subject") } : {}) };
-  }
-
-  const sendError = (e: unknown): SendResult => {
-    if (e instanceof oauth.OAuthError) return { ok: false, retryable: false, error: e.message };
-    if (e instanceof GoogleError) {
-      if (e.opts.scope) return { ok: false, retryable: false, error: "Gmail refused the send: the grant has no gmail.send. Turn on Allow send and press Reconnect with Google" };
-      return { ok: false, retryable: e.retryable, error: e.message };
-    }
-    return { ok: false, retryable: true, error: errText(e) };
-  };
-
   return {
     kind: "gmail",
-    caps: gmailCaps(cfg ?? {}),
+    caps: GMAIL_CAPS,
     async start(c) {
       if (!cfg) throw new Error((parsed as { error: string }).error);
       ctx = c;
       c.signal.addEventListener("abort", () => local.abort(), { once: true });
+      // Watch off: connected for `orca gmail search|read` only. No poll, so no event and no wake.
+      if (!cfg.watch) { await report(true, "not watching new mail (search and read only)"); return; }
       // Not connected yet is a state the card shows, not a failed start: the loop waits for Connect.
       void loop();
     },
     async stop() { local.abort(); },
-    async send(target: Target, msg: OutboundMessage, key: string): Promise<SendResult> {
-      if (!cfg) return { ok: false, retryable: false, error: (parsed as { error: string }).error };
-      if (!cfg.allowSend) return { ok: false, retryable: false, error: "send is off for this Gmail integration: turn on Allow send, then Reconnect with Google" };
-      const to = target.externalId.trim().toLowerCase();
-      if (!/^[^@\s<>]+@[^@\s<>]+$/.test(to)) return { ok: false, retryable: false, error: `${target.externalId} is not an email address` };
-      try {
-        const g = gmail();
-        const from = account ?? (await me(g)).account;
-        const messageId = outboundMessageId(key, from);
-        // A retried delivery whose first try did reach Gmail: the same Message-ID is in Sent already.
-        const sent = await g.list(`in:sent rfc822msgid:${messageId.replace(/^<|>$/g, "")}`, 1);
-        if (sent.messages?.[0]) return { ok: true, externalMsgId: sent.messages[0].id, threadId: sent.messages[0].threadId };
-        const h = target.threadId ? await inThread(g, target.threadId) : { references: [] as string[] };
-        const reply = !!h.inReplyTo;
-        const subject = outboundSubject({ title: msg.title || (reply ? h.subject?.replace(/^re:\s*/i, "") : undefined), text: msg.text }, reply);
-        const notes: string[] = [];
-        const files: { filename: string; mimeType: string; bytes: Uint8Array }[] = [];
-        for (const ref of msg.attachments ?? []) {
-          const id = ref.match(/([0-9a-f-]{36})/)?.[1];
-          const row = id ? await db.attachment(id).catch(() => undefined) : undefined;
-          if (row) files.push({ filename: row.filename, mimeType: row.mimeType || "application/octet-stream", bytes: row.bytes });
-          else notes.push(`[attachment unavailable: ${ref}]`);
-        }
-        const text = [msg.text, msg.url ?? "", ...notes].filter(Boolean).join("\n\n");
-        const mime = buildMail({ from: { address: from, ...(cfg.fromName ? { name: cfg.fromName } : {}) }, to, subject, text, messageId, ...(h.inReplyTo ? { inReplyTo: h.inReplyTo } : {}), references: h.references, attachments: files });
-        const r = await g.send(toBase64Url(mime), target.threadId);
-        return { ok: true, externalMsgId: r.id, threadId: r.threadId };
-      } catch (e) {
-        return sendError(e);
-      }
+    async send(): Promise<SendResult> {
+      return { ok: false, retryable: false, error: "the Gmail integration is read only: Orca sends no mail" };
     },
     async health() {
       if (!cfg) return { ok: false, detail: (parsed as { error: string }).error };
@@ -322,5 +284,5 @@ export function gmailAdapter(connection: Connection): Adapter {
 /** The scopes a connection granted that the card names, in words. Pure. */
 export function scopeWords(scopes: readonly string[] | undefined): string {
   const s = scopes ?? [];
-  return [s.includes(SCOPE.readonly) ? "read" : "", s.includes(SCOPE.send) ? "send" : ""].filter(Boolean).join(" + ") || "no Gmail scope";
+  return s.includes(SCOPE.readonly) ? "read only" : "no Gmail scope";
 }

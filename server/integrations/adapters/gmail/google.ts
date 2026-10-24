@@ -19,14 +19,11 @@ export function endpoints(config: Record<string, unknown>): Endpoints {
   return { auth: s("authUrl") ?? GOOGLE.auth, token: s("tokenUrl") ?? GOOGLE.token, revoke: s("revokeUrl") ?? GOOGLE.revoke, api: s("apiUrl") ?? GOOGLE.api };
 }
 
-/** The scopes Orca asks for, smallest first. `gmail.modify` is never asked for: Orca marks nothing
- *  read and changes no label (the History API cursor is its position). */
-export const SCOPE = {
-  readonly: "https://www.googleapis.com/auth/gmail.readonly", // read and search mail, the History API
-  send: "https://www.googleapis.com/auth/gmail.send", // send mail (replies in a thread); optional
-} as const;
-
-export const scopesFor = (allowSend: boolean): string[] => [SCOPE.readonly, ...(allowSend ? [SCOPE.send] : [])];
+/** The ONE scope Orca asks for: read and search mail, and the History API. Gmail integrations are
+ *  read only, so never gmail.send (no mail goes out) and never gmail.modify (Orca marks nothing
+ *  read and changes no label; the History API cursor is its position). */
+export const SCOPE = { readonly: "https://www.googleapis.com/auth/gmail.readonly" } as const;
+export const SCOPES: readonly string[] = [SCOPE.readonly];
 
 /** The callback path. The redirect URI is the Orca page's origin + this path. */
 export const CALLBACK_PATH = "/api/integrations/oauth/google/callback";
@@ -154,11 +151,9 @@ export class Gmail {
   metadata = (id: string, headers: string[]) => this.call<GmailMessage>("GET", `messages/${encodeURIComponent(id)}`, { query: { format: "metadata", metadataHeaders: headers } });
   raw = (id: string) => this.call<GmailMessage>("GET", `messages/${encodeURIComponent(id)}`, { query: { format: "raw" } });
   thread = (id: string, headers: string[]) => this.call<{ id: string; messages?: GmailMessage[] }>("GET", `threads/${encodeURIComponent(id)}`, { query: { format: "metadata", metadataHeaders: headers } });
-  send = (raw: string, threadId?: string) => this.call<GmailMessageRef>("POST", "messages/send", { body: { raw, ...(threadId ? { threadId } : {}) } });
 }
 
 /** RFC 4648 §5 base64url, as Gmail's `raw` uses it. */
-export const toBase64Url = (s: string | Uint8Array): string => b64url(Buffer.from(typeof s === "string" ? Buffer.from(s, "utf8") : s));
 export const fromBase64Url = (s: string): Uint8Array => new Uint8Array(Buffer.from(s.replace(/-/g, "+").replace(/_/g, "/"), "base64"));
 
 /** One header of a metadata message, case-insensitive. */

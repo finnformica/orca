@@ -233,19 +233,23 @@ has no `actor` (the link's level is the grant, no pairing); `Envelope.display` g
 its sender and the issue as the place. `orca post --reply` comments as you under that comment
 (`parentId`); a thread-linked issue gets PR state. The card shows `last poll` (`lastPollAt`).
 **Gmail** (`adapters/gmail.ts`, `adapters/gmail/{google,oauth}.ts`, `docs/integrations/gmail.md`) is the
-user's own mailbox by **Connect with Google** (OAuth code + PKCE; the card's button from `meta.oauth`).
-`POST /api/integrations/oauth/google/start` answers the consent URL for the page's `Origin`; Google
-sends the browser to `<origin>/api/integrations/oauth/google/callback` (answered here, never forwarded,
-so a tailnet HTTPS name works). The PKCE state is encrypted in cursor row `<id>:oauth`; the refresh
-token is the stored secret `integrations/gmail.<id>.refresh_token`; access tokens stay in memory. The
-client secret is the row's secret_ref (default `ORCA_SECRET_GOOGLE_OAUTH`), env var else a stored Orca
-secret of that name (`server/integrations/secretValue.ts`, for every adapter). Scopes: `gmail.readonly`,
-plus `gmail.send` only with `allowSend`; never `gmail.modify`. Inbound polls the History API from a
-`{ historyId, account }` cursor; Gmail decides the `query` match (default `label:Orca OR to:<you>+orca@…`,
-plus `rfc822msgid:` of each new mail), so other mail is read only as labels + Message-ID. Topic
-`ext.gmail.message`, channel = sender address, thread = Gmail thread id. A refused refresh token is
-`reconnect needed` on the card and is not tried again. `orca gmail search|read` (`server/gmailTool.ts`)
-is read only and your own chat only.
+user's own mailboxes, READ ONLY, by **Connect with Google** (OAuth code + PKCE; the card's button from
+`meta.oauth`). Each account is its own named row (`personal`, `smfstudio`). The ONE scope is
+`gmail.readonly` (Finn's call: no `gmail.send`, no `gmail.modify`, no reply path; `caps.outbound` false,
+`send` refuses; nothing is marked read). `POST /api/integrations/oauth/google/start` answers the consent
+URL for the page's `Origin`; Google sends the browser to `<origin>/api/integrations/oauth/google/callback`
+(answered here, never forwarded, so a tailnet HTTPS name works). The PKCE state is encrypted in cursor
+row `<id>:oauth`; the refresh token is the stored secret `integrations/gmail.<id>.refresh_token`; access
+tokens stay in memory. The client secret is the row's secret_ref (default `ORCA_SECRET_GOOGLE_OAUTH`),
+env var else a stored Orca secret of that name (`server/integrations/secretValue.ts`, for every adapter).
+Only a row with `watch` on ("Watch new mail", default off) polls the History API from a
+`{ historyId, account }` cursor; `watch` maps 1:1 to the access policy's events `trigger` / `off`
+(`gmailEvents`; the shared policy is branch orca/integration-access-policy, not merged yet — join them
+there). Gmail decides the `query` match (default `label:Orca OR to:<you>+orca@…`, plus `rfc822msgid:` of
+each new mail), so other mail is read only as labels + Message-ID. Topic `ext.gmail.message`, channel =
+sender address, thread = Gmail thread id. A refused refresh token is `reconnect needed` on the card and
+is not tried again. `orca gmail search|read [--account <id or name>]` (`server/gmailTool.ts`; both READ
+verbs, `GMAIL_VERBS`; `--account` may be left out with one account) is your own chat only.
 **Slack** (`adapters/slack.ts`, `docs/integrations/slack.md`) is two-way AS YOU: the row's token is your
 user token (`SLACK_TOKEN`, xoxp) — the ONLY token (Finn's call: no app-level token, no Socket Mode
 setup). Inbound POLLS every `pollSeconds` (60): DMs and group DMs by `conversations.history` (hot ones

@@ -19,7 +19,7 @@ import * as secrets from "../../../secrets";
 import type { Connection } from "../../adapter";
 import { INTEGRATION_SCOPE, resolveSecret } from "../../secretValue";
 import * as store from "../../store";
-import { authorizeUrl, endpoints, exchangeCode, Gmail, GoogleError, pkce, redirectUriFor, refreshAccess, revoke, SCOPE, scopesFor } from "./google";
+import { authorizeUrl, endpoints, exchangeCode, Gmail, GoogleError, pkce, redirectUriFor, refreshAccess, revoke, SCOPE, SCOPES } from "./google";
 
 export const CLIENT_SECRET_DEFAULT = "ORCA_SECRET_GOOGLE_OAUTH";
 export const PENDING_TTL_MS = 10 * 60_000;
@@ -35,8 +35,6 @@ export class OAuthError extends Error {
   constructor(message: string, readonly code: OAuthErrorCode, readonly integrationId?: string) { super(message); }
 }
 
-const bool = (v: unknown): boolean => v === true || (typeof v === "string" && /^(true|yes|on|1)$/i.test(v.trim()));
-export const allowSend = (config: Record<string, unknown>): boolean => bool(config.allowSend);
 export const clientSecretRef = (c: Pick<Connection, "secretRef">): string => c.secretRef || CLIENT_SECRET_DEFAULT;
 
 function clientId(c: Connection): string {
@@ -79,7 +77,7 @@ export async function begin(id: string, pageOrigin: string | undefined, now = Da
   const state = `${id}~${randomBytes(16).toString("hex")}`;
   await store.setCursor(pendingKey(id), secrets.encrypt(JSON.stringify({ state, verifier, redirectUri, at: now })));
   const hint = (await statusOf(id).catch(() => undefined))?.account; // a reconnect offers the same account
-  return { url: authorizeUrl(endpoints(c.config), { clientId: cid, redirectUri, scopes: scopesFor(allowSend(c.config)), state, challenge, ...(hint ? { loginHint: hint } : {}) }), redirectUri };
+  return { url: authorizeUrl(endpoints(c.config), { clientId: cid, redirectUri, scopes: [...SCOPES], state, challenge, ...(hint ? { loginHint: hint } : {}) }), redirectUri };
 }
 
 /** The integration a callback's state names (before the state is checked), for the page it returns to. */

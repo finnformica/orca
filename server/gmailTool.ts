@@ -1,12 +1,13 @@
-// `orca gmail …`: the orchestrator reads the user's Gmail (docs/integrations/gmail.md). The bridge
-// calls the Gmail API with the connected integration's access token (./integrations/adapters/gmail/
-// oauth.ts: the refresh token is a stored secret, the access token stays in memory), never printed.
-// Read only: a reply goes through the adapter (`orca post --reply`, or `orca post --link <id>`), so
-// it is queued, retried and recorded like every other post. The grant check (shared/integrations.ts
-// grantRefusal: an unknown verb is the owner's) keeps `orca gmail` to the user's own chat.
+// `orca gmail …`: the orchestrator reads the user's Gmail (docs/integrations/gmail.md). Each connected
+// account is its own integration row; `--account <id or name>` picks one, and may be left out when
+// only one is connected (the access policy's pickAccount rule). The bridge calls the Gmail API with
+// that row's access token (./integrations/adapters/gmail/oauth.ts: the refresh token is a stored
+// secret, the access token stays in memory), never printed. Both verbs are READS (GMAIL_VERBS); Gmail
+// has no write verb. The grant check (shared/integrations.ts grantRefusal: an unknown verb is the
+// owner's) keeps `orca gmail` to the user's own chat.
 //
-//   orca gmail search "<gmail query>" [--limit 10] [--integration <id>]
-//   orca gmail read <message id> [--integration <id>]
+//   orca gmail search "<gmail query>" [--limit 10] [--account <name>]
+//   orca gmail read <message id> [--account <name>]
 import { clip } from "../shared/integrations";
 import { parseMail } from "./integrations/adapters/email/mime";
 import { fromBase64Url, header, type Gmail } from "./integrations/adapters/gmail/google";
@@ -17,9 +18,9 @@ import type { Connection } from "./integrations/adapter";
 type Args = Record<string, unknown> & { _?: unknown[] };
 
 export const GMAIL_USAGE = [
-  "orca gmail search \"<gmail query>\" [--limit 10] [--integration <id>]   find messages (Gmail search syntax: from:ana newer_than:7d)",
-  "orca gmail read <message id> [--integration <id>]   one message: headers, text and attachment names",
-  "Read only. Answer a mail that woke you with `orca post --reply`.",
+  "orca gmail search \"<gmail query>\" [--limit 10] [--account <name>]   find messages (Gmail search syntax: from:ana newer_than:7d)",
+  "orca gmail read <message id> [--account <name>]   one message: headers, text and attachment names",
+  "Read only: Orca sends no mail and marks nothing read. --account names the account (its id or name); leave it out when only one is connected.",
 ].join("\n");
 
 export const SEARCH_MAX = 50;
@@ -27,16 +28,19 @@ export const READ_TEXT_MAX = 20_000;
 
 export class GmailToolError extends Error {}
 
-/** The Gmail integration to read: `--integration`, else the only enabled one. */
-export async function gmailIntegration(want?: string): Promise<Connection> {
+/** The Gmail account to read: `--account <id or name>` (case-insensitive), else the only enabled one.
+ *  Several and no name is an error, never a guess. */
+export async function gmailAccount(want?: string): Promise<Connection> {
   const rows = (await store.integrations()).filter((c) => c.kind === "gmail" && c.enabled);
-  if (want) {
-    const c = rows.find((r) => r.id === want);
-    if (!c) throw new GmailToolError(`no enabled Gmail integration "${want}" (enabled: ${rows.map((r) => r.id).join(", ") || "none"})`);
+  const list = rows.map((r) => (r.name && r.name !== r.id ? `${r.id} (${r.name})` : r.id)).join(", ");
+  const name = want?.trim().toLowerCase();
+  if (name) {
+    const c = rows.find((r) => r.id.toLowerCase() === name) ?? rows.find((r) => r.name.toLowerCase() === name);
+    if (!c) throw new GmailToolError(`no Gmail account "${want}" (accounts: ${list || "none"})`);
     return c;
   }
-  if (!rows.length) throw new GmailToolError("no Gmail integration is connected: the user connects one in Integrations > Connect > Gmail (docs/integrations/gmail.md)");
-  if (rows.length > 1) throw new GmailToolError(`more than one Gmail integration: name one with --integration (${rows.map((r) => r.id).join(", ")})`);
+  if (!rows.length) throw new GmailToolError("no Gmail account is connected: the user connects one in Integrations > Connect > Gmail (docs/integrations/gmail.md)");
+  if (rows.length > 1) throw new GmailToolError(`${rows.length} Gmail accounts are connected (${list}): name one with --account <name>`);
   return rows[0]!;
 }
 
@@ -81,8 +85,10 @@ export async function gmailTool(args: Args): Promise<string> {
   const words = (args._ ?? []).map(String);
   const sub = words[0] ?? "";
   if (!sub || sub === "help") return GMAIL_USAGE;
-  if (sub !== "search" && sub !== "read") throw new GmailToolError(`unknown subcommand "${sub}" (Gmail is read only here; a reply is orca post --reply).\n${GMAIL_USAGE}`);
-  const c = await gmailIntegration(typeof args.integration === "string" ? args.integration : undefined);
+  if (sub !== "search" && sub !== "read") throw new GmailToolError(`unknown subcommand "${sub}" (Gmail is read only: there is no write verb).\n${GMAIL_USAGE}`);
+  if (args.account !== undefined && (typeof args.account !== "string" || !args.account.trim())) throw new GmailToolError("--account needs an account id or name (orca channels lists them)");
+  const c = await gmailAccount(typeof args.account === "string" ? args.account : undefined);
   const g = oauth.gmailFor(c);
-  return sub === "search" ? search(g, words, args) : read(g, words);
+  const out = sub === "search" ? await search(g, words, args) : await read(g, words);
+  return `Gmail account ${c.name && c.name !== c.id ? `${c.name} (${c.id})` : c.id}\n${out}`;
 }

@@ -19,8 +19,8 @@ import { agentEnv } from "../server/env";
 import { resolveSecret, secretValue } from "../server/integrations/secretValue";
 import type { Connection } from "../server/integrations/adapter";
 import { parseMail } from "../server/integrations/adapters/email/mime";
-import { defaultQuery, gmailConfig, gmailGate, matchQuery, scopeWords } from "../server/integrations/adapters/gmail";
-import { authorizeUrl, CALLBACK_PATH, endpoints, fromBase64Url, GOOGLE, pkce, SCOPE, scopesFor, tokenError } from "../server/integrations/adapters/gmail/google";
+import { defaultQuery, GMAIL_CAPS, GMAIL_VERBS, gmailConfig, gmailEvents, gmailGate, matchQuery, scopeWords } from "../server/integrations/adapters/gmail";
+import { authorizeUrl, CALLBACK_PATH, endpoints, fromBase64Url, GOOGLE, pkce, SCOPE, SCOPES, tokenError } from "../server/integrations/adapters/gmail/google";
 import * as oauth from "../server/integrations/adapters/gmail/oauth";
 import { gmailTool } from "../server/gmailTool";
 import * as orchestrator from "../server/orchestrator";
@@ -175,26 +175,32 @@ function fakeGoogle() {
 }
 
 describe("decisions (pure)", () => {
-  test("the config: client id required, read only by default, auth checked by default, form strings parsed", () => {
+  test("the config: client id required, watch off by default, auth checked by default, form strings parsed", () => {
     expect(gmailConfig({})).toEqual({ error: expect.stringContaining("clientId") });
-    expect(gmailConfig({ clientId: "cid" })).toEqual({ config: { clientId: "cid", pollSeconds: 60, allowSend: false, allowedSenders: [], checkAuth: true, keepQuoted: false, perHour: 20 } });
-    expect(gmailConfig({ clientId: "cid", allowSend: "true", checkAuth: "false", pollSeconds: "30", allowedSenders: "Ana@Example.com, @acme.test", query: "label:work" }))
-      .toMatchObject({ config: { allowSend: true, checkAuth: false, pollSeconds: 30, allowedSenders: ["ana@example.com", "@acme.test"], query: "label:work" } });
+    expect(gmailConfig({ clientId: "cid" })).toEqual({ config: { clientId: "cid", pollSeconds: 60, watch: false, allowedSenders: [], checkAuth: true, keepQuoted: false } });
+    expect(gmailConfig({ clientId: "cid", watch: "true", checkAuth: "false", pollSeconds: "30", allowedSenders: "Ana@Example.com, @acme.test", query: "label:work" }))
+      .toMatchObject({ config: { watch: true, checkAuth: false, pollSeconds: 30, allowedSenders: ["ana@example.com", "@acme.test"], query: "label:work" } });
   });
 
-  test("scopes start minimal: readonly always, send only when asked, never modify", () => {
-    expect(scopesFor(false)).toEqual([SCOPE.readonly]);
-    expect(scopesFor(true)).toEqual([SCOPE.readonly, SCOPE.send]);
-    expect(scopesFor(true).join(" ")).not.toContain("modify");
-    expect(scopeWords([SCOPE.readonly, SCOPE.send])).toBe("read + send");
-    expect(scopeWords([SCOPE.readonly])).toBe("read");
+  test("read only: the one scope is gmail.readonly (never send or modify); no outbound side; both verbs are reads", () => {
+    expect(SCOPES).toEqual([SCOPE.readonly]);
+    expect(SCOPES.join(" ")).not.toMatch(/send|modify|compose/);
+    expect(scopeWords([SCOPE.readonly])).toBe("read only");
+    expect(GMAIL_CAPS.outbound).toBe(false);
+    expect(GMAIL_VERBS).toEqual({ search: "read", read: "read" });
+  });
+
+  test("watch new mail maps 1:1 to the access policy's events mode: on = trigger, off = off", () => {
+    expect(gmailEvents({ clientId: "cid", watch: "true" })).toBe("trigger");
+    expect(gmailEvents({ clientId: "cid", watch: "false" })).toBe("off");
+    expect(gmailEvents({ clientId: "cid" })).toBe("off");
   });
 
   test("PKCE: S256 of the verifier; the consent URL asks for offline access with the challenge", () => {
     const p = pkce();
     expect(p.verifier).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(p.challenge).toBe(s256(p.verifier));
-    const u = new URL(authorizeUrl({ auth: GOOGLE.auth }, { clientId: "cid", redirectUri: `https://orca.example.ts.net${CALLBACK_PATH}`, scopes: scopesFor(false), state: "gm~abc", challenge: p.challenge }));
+    const u = new URL(authorizeUrl({ auth: GOOGLE.auth }, { clientId: "cid", redirectUri: `https://orca.example.ts.net${CALLBACK_PATH}`, scopes: [...SCOPES], state: "gm~abc", challenge: p.challenge }));
     expect(Object.fromEntries(u.searchParams)).toEqual({
       client_id: "cid", redirect_uri: "https://orca.example.ts.net/api/integrations/oauth/google/callback", response_type: "code", scope: SCOPE.readonly,
       state: "gm~abc", code_challenge: p.challenge, code_challenge_method: "S256", access_type: "offline", prompt: "consent",
@@ -270,8 +276,8 @@ describe("against a fake Google", () => {
   });
 
   const conn = (extra: Record<string, unknown> = {}): Connection => ({
-    id: "gm", kind: "gmail", name: "Finn's Gmail", instance: "local", enabled: true,
-    config: { clientId: "cid", allowSend: "true", pollSeconds: "0.05", authUrl: `${g.base}/auth`, tokenUrl: `${g.base}/token`, apiUrl: g.base, revokeUrl: `${g.base}/revoke`, ...extra },
+    id: "gm", kind: "gmail", name: "smfstudio", instance: "local", enabled: true,
+    config: { clientId: "cid", watch: "true", pollSeconds: "0.05", authUrl: `${g.base}/auth`, tokenUrl: `${g.base}/token`, apiUrl: g.base, revokeUrl: `${g.base}/revoke`, ...extra },
   });
   const setup = async (extra: Record<string, unknown> = {}) => {
     const c = conn(extra);
@@ -281,8 +287,8 @@ describe("against a fake Google", () => {
     await store.addPrincipal({ id: "ana", name: "Ana", maxLevel: "work" }, [{ adapter: "gmail", externalId: "ana@example.com" }]);
     return c;
   };
-  const connect = async (origin = "https://orca.example.ts.net") => {
-    const { url, redirectUri } = await oauth.begin("gm", origin);
+  const connect = async (origin = "https://orca.example.ts.net", id = "gm") => {
+    const { url, redirectUri } = await oauth.begin(id, origin);
     expect(redirectUri).toBe(`${origin}${CALLBACK_PATH}`);
     return oauth.finish(g.consent(url));
   };
@@ -293,7 +299,7 @@ describe("against a fake Google", () => {
     const { url } = await oauth.begin("gm", "https://orca.example.ts.net");
     const q = new URL(url).searchParams;
     expect(url.startsWith(`${g.base}/auth?`)).toBe(true);
-    expect(q.get("scope")).toBe(`${SCOPE.readonly} ${SCOPE.send}`);
+    expect(q.get("scope")).toBe(SCOPE.readonly);
     expect(q.get("state")).toMatch(/^gm~[0-9a-f]{32}$/);
     // The pending state is encrypted: the verifier is not in the database as text.
     const pending = (await store.cursor("gm:oauth"))!;
@@ -304,7 +310,7 @@ describe("against a fake Google", () => {
     const forged = new URLSearchParams(back); forged.set("state", "gm~00000000000000000000000000000000");
     await expect(oauth.finish(forged)).rejects.toMatchObject({ code: "state" });
     const r = await oauth.finish(back);
-    expect(r).toMatchObject({ id: "gm", account: ACCOUNT, scopes: [SCOPE.readonly, SCOPE.send] });
+    expect(r).toMatchObject({ id: "gm", account: ACCOUNT, scopes: [SCOPE.readonly] });
     expect(g.st.log).toContain("token authorization_code"); // the fake checked S256(verifier) = challenge
     await expect(oauth.finish(back)).rejects.toMatchObject({ code: "state" }); // one use
 
@@ -321,8 +327,8 @@ describe("against a fake Google", () => {
 
     // Settings shows the account and the scopes on the card.
     const card = (await admin.overview()).integrations.find((c) => c.id === "gm")!;
-    expect(card.oauth).toMatchObject({ account: ACCOUNT, scopes: [SCOPE.readonly, SCOPE.send], reconnect: null });
-    expect((await admin.overview()).kinds.find((k) => k.kind === "gmail")).toMatchObject({ oauth: { provider: "google", label: "Connect with Google" }, switches: { allowSend: false, checkAuth: true } });
+    expect(card.oauth).toMatchObject({ account: ACCOUNT, scopes: [SCOPE.readonly], reconnect: null });
+    expect((await admin.overview()).kinds.find((k) => k.kind === "gmail")).toMatchObject({ oauth: { provider: "google", label: "Connect with Google" }, switches: { watch: false, checkAuth: true } });
   });
 
   test("a missing client secret or client id fails at Start, before the user goes to Google; a denied consent says so", async () => {
@@ -380,54 +386,48 @@ describe("against a fake Google", () => {
     await until(async () => (await registry.health()).gm?.detail?.includes("history expired"));
   });
 
-  test("round trip: an Orca event mails the person and starts the workstream's Gmail thread; their reply in it finds the workstream", async () => {
+  test("read only: Orca sends no mail and makes no write call to Gmail (nothing is marked read), also for a subscribed event", async () => {
     const c = await setup();
     await connect();
     expect(await registry.startOne(c)).toBe(true);
     await until(async () => (await cursor()).historyId);
+    g.deliver({ gid: "m1", id: "<m1@example.com>", subject: "Fix the login" });
+    await until(() => store.event("gmail:gm:m1"));
+    const adapter = registry.adapterFor("gm")!;
+    expect(adapter.caps.outbound).toBe(false);
+    expect(await adapter.send({ externalId: "ana@example.com", threadId: "t-m1" }, { text: "hi" }, "k1")).toMatchObject({ ok: false, retryable: false, error: expect.stringContaining("read only") });
     dispatcher.configure({ adapter: (i) => registry.adapterFor(i) });
     dispatcher.setRunning(registry.runningIds);
     await store.addSubscription({ topicPattern: "orca.run.*", filter: { repo: "r" }, targetKind: "link", targetId: "G1" });
-
-    await router.publish({ key: "run:1:finished", topic: "orca.run.finished", at: 1, source: { adapter: "orca" }, scope: { repo: "r", branch: "b" }, title: "Fix login", text: "Done: the login form works." });
-    expect(await dispatcher.dispatchOnce()).toBe(1);
-    expect(g.st.sent).toHaveLength(1);
-    const first = parseMail(fromBase64Url(g.st.sent[0]!.raw));
-    expect(first).toMatchObject({ subject: "Fix login", from: { address: ACCOUNT }, text: "Done: the login form works." });
-    const [d] = await store.deliveries();
-    expect(d).toMatchObject({ state: "sent", externalMsgId: "sent-1" });
-    expect(await store.threadLink("gmail", "t-sent-1")).toMatchObject({ repo: "r", branch: "b", linkId: "G1" });
-
-    // The next post about the workstream answers in the same Gmail thread, with the mail headers.
-    await router.publish({ key: "run:2:failed", topic: "orca.run.failed", at: 2, source: { adapter: "orca" }, scope: { repo: "r", branch: "b" }, title: "Fix login", text: "Tests failed." });
-    expect(await dispatcher.dispatchOnce()).toBe(1);
-    expect(g.st.sent[1]!.threadId).toBe("t-sent-1");
-    const second = parseMail(fromBase64Url(g.st.sent[1]!.raw));
-    expect(second).toMatchObject({ subject: "Re: Fix login", inReplyTo: first.messageId, references: [first.messageId] });
-
-    // A retried delivery whose first try reached Gmail is found in Sent, not sent twice.
-    const again = await registry.adapterFor("gm")!.send({ externalId: "ana@example.com", threadId: "t-sent-1" }, { text: "Tests failed." }, String((await store.deliveries())[0]!.id));
-    expect(again.ok).toBe(true);
-    expect(g.st.sent).toHaveLength(2);
-
-    // Ana answers in the thread: the reply reaches the workstream.
-    g.deliver({ gid: "r1", id: "<r1@example.com>", threadId: "t-sent-1", subject: "Re: Fix login", text: "Retry with the new fixture." });
-    const ev = await until(() => store.event("gmail:gm:r1"));
-    expect(ev.thread).toEqual({ adapter: "gmail", externalId: "t-sent-1", messageId: "r1" });
-    const targets = (await store.deliveries()).filter((x) => x.envelope.key === ev.key).map((x) => x.target);
-    expect(targets).toEqual(expect.arrayContaining([{ kind: "workstream", repo: "r", branch: "b" }]));
+    await router.publish({ key: "run:1:finished", topic: "orca.run.finished", at: 1, source: { adapter: "orca" }, scope: { repo: "r", branch: "b" }, title: "Fix login", text: "Done." });
+    await dispatcher.dispatchOnce();
+    expect(g.st.sent).toHaveLength(0);
+    // Every Gmail API call was a GET: no send, no modify, no label change.
+    expect(g.st.log.filter((l) => /^(POST|PUT|PATCH|DELETE) /.test(l))).toEqual([]);
+    expect(g.st.messages.find((m) => m.id === "m1")!.labelIds).toContain("UNREAD");
   });
 
-  test("read only: with Allow send off Orca asks Google for gmail.readonly alone and refuses a send", async () => {
-    const c = await setup({ allowSend: "false" });
-    const { url } = await oauth.begin("gm", "https://orca.example.ts.net");
-    expect(new URL(url).searchParams.get("scope")).toBe(SCOPE.readonly);
-    await oauth.finish(g.consent(url));
+  test("two named accounts: smfstudio watches new mail and wakes Orca; personal never polls and brings no event", async () => {
+    const c = await setup();
+    const personal: Connection = { ...conn({ watch: "false" }), id: "personal", name: "personal" };
+    await store.addIntegration(personal);
+    await store.addLink({ id: "P1", integrationId: "personal", externalId: "*", level: "ask", repos: [], requireMention: false });
+    await connect();
+    g.st.nextRefresh = "1//rt-personal-refresh-token";
+    await connect("https://orca.example.ts.net", "personal");
+    expect((await secrets.list()).map((x) => x.name).sort()).toEqual(["gmail.gm.refresh_token", "gmail.personal.refresh_token"]);
+
+    expect(await registry.startOne(personal)).toBe(true);
     expect(await registry.startOne(c)).toBe(true);
-    const adapter = registry.adapterFor("gm")!;
-    expect(adapter.caps.outbound).toBe(false);
-    expect(await adapter.send({ externalId: "ana@example.com" }, { text: "hi" }, "k1")).toMatchObject({ ok: false, retryable: false, error: expect.stringContaining("send is off") });
-    expect(g.st.sent).toHaveLength(0);
+    expect((await registry.health()).personal).toMatchObject({ ok: true, detail: "not watching new mail (search and read only)" });
+    await until(async () => (await cursor()).historyId);
+    g.deliver({ gid: "m1", id: "<m1@example.com>", subject: "Fix the login" });
+    const ev = await until(() => store.event("gmail:gm:m1"));
+    expect(ev.source.integrationId).toBe("gm");
+    expect((await store.deliveries()).some((d) => d.envelope.key === ev.key && d.target.kind === "orchestrator")).toBe(true);
+    await Bun.sleep(200);
+    expect(await store.event("gmail:personal:m1")).toBeUndefined();
+    expect(await store.cursor("personal")).toBeUndefined(); // it never polled
   });
 
   test("a revoked grant: the card says reconnect needed, Google is not asked again with that token, and a Reconnect brings it back", async () => {
@@ -487,9 +487,20 @@ describe("against a fake Google", () => {
     expect(one).toContain("From: Ana Lee <ana@example.com>");
     expect(one).toContain("Subject: Fix the login");
     expect(one).toContain("The login form is broken. Please look.");
+    expect(one.split("\n")[0]).toBe("Gmail account smfstudio (gm)");
     await expect(gmailTool({ _: ["send", "x"] })).rejects.toThrow("read only");
+    await expect(gmailTool({ _: ["read", "m1"], account: "" })).rejects.toThrow("--account needs");
+
+    // A second account: --account picks one by id or name (any case); none named is an error, never a guess.
+    await store.addIntegration({ ...conn({ watch: "false" }), id: "personal", name: "personal" });
+    g.st.nextRefresh = "1//rt-personal-refresh-token";
+    await connect("https://orca.example.ts.net", "personal");
+    await expect(gmailTool({ _: ["read", "m1"] })).rejects.toThrow("2 Gmail accounts are connected (gm (smfstudio), personal): name one with --account <name>");
+    expect((await gmailTool({ _: ["read", "m1"], account: "personal" })).split("\n")[0]).toBe("Gmail account personal");
+    expect((await gmailTool({ _: ["search", "from:ana"], account: "SMFStudio" })).split("\n")[0]).toBe("Gmail account smfstudio (gm)");
+    await expect(gmailTool({ _: ["read", "m1"], account: "work" })).rejects.toThrow('no Gmail account "work"');
     // Through the orchestrator's tool route: your own chat may, an outside sender may not.
     const cfg = { repos: [], portRange: [0, 0], staleHours: 1 } as never;
-    expect(await orchestrator.tool(cfg, "gmail", { _: ["read", "m1"] })).toContain("Subject: Fix the login");
+    expect(await orchestrator.tool(cfg, "gmail", { _: ["read", "m1"], account: "personal" })).toContain("Subject: Fix the login");
   });
 });

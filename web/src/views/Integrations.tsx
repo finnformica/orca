@@ -119,9 +119,8 @@ function oauthReturn(): void {
   window.history.replaceState(window.history.state, "", `${window.location.pathname}${q.size ? `?${q}` : ""}${window.location.hash}`);
 }
 
-/** The scopes Google granted, in words (shared/../gmail.ts scopeWords for the browser). */
-const grantedWords = (scopes: string[] = []): string =>
-  scopes.some((x) => x.endsWith("/gmail.send")) ? "read + send" : scopes.some((x) => x.endsWith("/gmail.readonly")) ? "read only" : "no Gmail scope";
+/** The scopes Google granted, in words (server/integrations/adapters/gmail.ts scopeWords for the browser). */
+const grantedWords = (scopes: string[] = []): string => (scopes.some((x) => x.endsWith("/gmail.readonly")) ? "read only" : "no Gmail scope");
 
 /** An OAuth kind's row on the card: the account it connected, or why it needs you, and its Connect /
  *  Reconnect / Disconnect. Connect asks the bridge for Google's consent URL and goes there. */

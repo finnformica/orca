@@ -124,8 +124,8 @@ describe("the Integrations page", () => {
     expect(apiFake.integrationPosts[0]!.body.notifyAgent).toBeUndefined(); // only the switch you flipped
   });
 
-  const gmailKind = { kind: "gmail", label: "Gmail", caps: {}, place: "sender address", oauth: { provider: "google", label: "Connect with Google" }, switches: { allowSend: false, checkAuth: true },
-    config: [{ key: "clientId", label: "OAuth client id" }, { key: "allowSend", label: "Allow send" }, { key: "checkAuth", label: "Require auth" }] };
+  const gmailKind = { kind: "gmail", label: "Gmail", caps: {}, place: "sender address", oauth: { provider: "google", label: "Connect with Google" }, switches: { watch: false, checkAuth: true },
+    config: [{ key: "clientId", label: "OAuth client id" }, { key: "watch", label: "Watch new mail" }, { key: "checkAuth", label: "Require auth" }] };
   const gmailCard = (oauth?: Record<string, unknown>) => ({ id: "gm", kind: "gmail", name: "My Gmail", instance: "*", enabled: true, config: { clientId: "cid" }, running: true, health: { ok: !oauth?.reconnect }, ...(oauth ? { oauth } : {}) });
 
   test("a Gmail card: Connect with Google asks the bridge for Google's consent URL and goes there", async () => {
@@ -146,21 +146,21 @@ describe("the Integrations page", () => {
 
   test("a connected Gmail card names the account and scopes; a refused grant says reconnect needed and offers Reconnect", async () => {
     apiFake.integrationsData = { ...overview(), kinds: [...kinds, gmailKind], links: [], pairings: [], integrations: [gmailCard({
-      account: "finn@example.com", scopes: ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.send"], reconnect: "reconnect needed: Google refused the grant",
+      account: "finn@example.com", scopes: ["https://www.googleapis.com/auth/gmail.readonly"], reconnect: "reconnect needed: Google refused the grant",
     })] };
     await open("/integrations");
     const row = all("integration-oauth")[0]!;
-    expect(row.textContent).toContain("Signed in as finn@example.com · read + send");
+    expect(row.textContent).toContain("Signed in as finn@example.com · read only");
     expect(all("oauth-reconnect", row)[0]!.textContent).toBe("reconnect needed: Google refused the grant");
     expect(all("oauth-connect", row)[0]!.textContent).toBe("Reconnect with Google");
     expect(row.textContent).toContain("Disconnect");
   });
 
-  test("the Gmail Connect form shows Allow send and the auth check as switches, with the adapter's defaults", async () => {
+  test("the Gmail Connect form shows Watch new mail and the auth check as switches, with the adapter's defaults", async () => {
     apiFake.integrationsData = { ...overview(), kinds: [gmailKind], integrations: [], links: [], pairings: [] };
     await open("/integrations");
     await click(all("integration-connect")[0]!);
-    const send = dialog()!.querySelector<HTMLElement>('[data-slot="int-cfg-allowSend"]')!;
+    const send = dialog()!.querySelector<HTMLElement>('[data-slot="int-cfg-watch"]')!;
     expect(send.getAttribute("role")).toBe("switch");
     expect(send.getAttribute("aria-checked")).toBe("false");
     expect(dialog()!.querySelector<HTMLElement>('[data-slot="int-cfg-checkAuth"]')!.getAttribute("aria-checked")).toBe("true");

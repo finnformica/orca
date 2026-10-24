@@ -17,7 +17,7 @@ import { WEBHOOK_CAPS, webhookAdapter } from "./adapters/webhook";
 import { DISCORD_CAPS, discordAdapter } from "./adapters/discord";
 import { emailAdapter, emailCaps } from "./adapters/email";
 import { LINEAR_CAPS, linearAdapter } from "./adapters/linear";
-import { gmailAdapter, gmailCaps } from "./adapters/gmail";
+import { GMAIL_CAPS, gmailAdapter } from "./adapters/gmail";
 
 const factories = new Map<AdapterKind, AdapterFactory>();
 const metas = new Map<AdapterKind, AdapterMeta>();
@@ -70,19 +70,19 @@ register("linear", linearAdapter, {
 });
 
 register("gmail", gmailAdapter, {
-  label: "Gmail", caps: gmailCaps({ allowSend: true }), place: "sender address (* = every sender)", secretExample: "ORCA_SECRET_GOOGLE_OAUTH",
+  label: "Gmail", caps: GMAIL_CAPS, place: "sender address (* = every sender)", secretExample: "ORCA_SECRET_GOOGLE_OAUTH",
   oauth: { provider: "google", label: "Connect with Google" },
-  switches: { allowSend: false, checkAuth: true },
+  switches: { watch: false, checkAuth: true },
   config: [
     { key: "clientId", label: "OAuth client id", placeholder: "1234-abc.apps.googleusercontent.com" },
     { key: "query", label: "Gmail query (optional)", placeholder: "empty = label:Orca OR to:you+orca@yourdomain.com" },
-    { key: "allowSend", label: "Allow send (asks for gmail.send: replies in a thread)" },
+    { key: "watch", label: "Watch new mail (matching mail wakes Orca)" },
     { key: "pollSeconds", label: "Poll every (seconds)", placeholder: "60" },
     { key: "allowedSenders", label: "Allowed senders (optional; comma-separated, @domain for a domain)", placeholder: "empty = any sender the query finds" },
     { key: "checkAuth", label: "Require Google's DKIM/SPF/DMARC pass (default on)" },
     { key: "redirectOrigin", label: "Redirect origin (optional)", placeholder: "empty = this page's origin" },
   ],
-  help: "Your own Gmail, by Sign in with Google. The secret is the OAuth client secret (empty = ORCA_SECRET_GOOGLE_OAUTH, from .env or a stored Orca secret). Save, then press Connect with Google. Only mail that matches the query reaches Orca. Setup: docs/integrations/gmail.md.",
+  help: "One Gmail account, read only, by Sign in with Google. Connect each account as its own row and name it (personal, work). The secret is the OAuth client secret (empty = ORCA_SECRET_GOOGLE_OAUTH, from .env or a stored Orca secret). Save, then press Connect with Google. With Watch new mail on, mail that matches the query wakes Orca. Setup: docs/integrations/gmail.md.",
 });
 
 /** Every registered kind with what the Settings page shows for it. A kind with no meta gets a plain one. */
