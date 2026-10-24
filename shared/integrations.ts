@@ -113,6 +113,15 @@ export type AdapterMeta = {
   /** The class of each CLI verb of the kind (`orca <kind> <verb>`), for the access check
    *  (`integrationAccessRefusal`). `send` and `delete` are the core's (CORE_VERBS). */
   verbs?: VerbClasses;
+  /** Config keys the form shows as a Switch, stored as "true" / "false", each with the value the
+   *  adapter takes while it is unset (Gmail: watch off, checkAuth on). */
+  switches?: Record<string, boolean>;
+  /** The kind connects by OAuth in the browser: the card shows this provider's Connect button
+   *  (Gmail: Google), and the row's `status.oauth` says which account it connected. */
+  oauth?: { provider: "google"; label: string };
+  /** A new row's access and events when the Connect form names neither (Gmail: read, off). An
+   *  edit keeps the stored values. Absent: the core's defaults (read-write, trigger). */
+  policyDefaults?: { access?: Access; events?: EventsMode };
 };
 
 export type Capabilities = {

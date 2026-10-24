@@ -3,7 +3,7 @@
 // and one level named plainly ("Admin", never "Up to Admin"); Add identity posts to the person; an
 // approval preselects the person of the same name; the Discord card leads with its catch-all link,
 // which says it posts to any channel with --channel.
-import { afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { afterEach, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
@@ -145,5 +145,90 @@ describe("the Integrations page", () => {
     await click(sw("All channels and DMs", "link-notify-me"));
     expect(apiFake.integrationPosts).toEqual([{ path: "links/save", body: expect.objectContaining({ id: "discord-all", notifyMe: false }) }]);
     expect(apiFake.integrationPosts[0]!.body.notifyAgent).toBeUndefined(); // only the switch you flipped
+  });
+
+  const gmailKind = { kind: "gmail", label: "Gmail", caps: {}, place: "sender address", oauth: { provider: "google", label: "Connect with Google" }, switches: { checkAuth: true },
+    config: [{ key: "clientId", label: "OAuth client id" }, { key: "checkAuth", label: "Require auth" }] };
+  const gmailCard = (oauth?: Record<string, unknown>) => ({ id: "gm", kind: "gmail", name: "My Gmail", instance: "*", enabled: true, access: "read", events: "off", config: { clientId: "cid" }, running: true, health: { ok: !oauth?.reconnect }, ...(oauth ? { oauth } : {}) });
+
+  test("a Gmail card: Connect with Google asks the bridge for Google's consent URL and goes there", async () => {
+    // This test page is plain http (http://orca.test): a configured https redirect origin lets Connect run.
+    apiFake.integrationsData = { ...overview(), kinds: [...kinds, gmailKind], integrations: [{ ...gmailCard(), config: { clientId: "cid", redirectOrigin: "https://orca.example.ts.net" } }], links: [], pairings: [] };
+    apiFake.integrationPostAnswers["oauth/google/start"] = { url: "https://accounts.google.com/o/oauth2/v2/auth?client_id=cid", redirectUri: "x" };
+    const assign = spyOn(window.location, "assign").mockImplementation(() => {});
+    try {
+      await open("/integrations");
+      const row = all("integration-oauth")[0]!;
+      expect(row.textContent).toContain("Not connected");
+      const button = all("oauth-connect", row)[0]!;
+      expect(button.textContent).toBe("Connect with Google");
+      await click(button);
+      expect(apiFake.integrationPosts).toEqual([{ path: "oauth/google/start", body: { id: "gm", origin: window.location.origin } }]);
+      expect(assign).toHaveBeenCalledWith("https://accounts.google.com/o/oauth2/v2/auth?client_id=cid");
+    } finally { assign.mockRestore(); }
+  });
+
+  test("from a plain-http page with no https redirect origin, Connect is off and the card says to open the https address", async () => {
+    apiFake.integrationsData = { ...overview(), kinds: [...kinds, gmailKind], integrations: [gmailCard()], links: [], pairings: [] };
+    await open("/integrations");
+    const row = all("integration-oauth")[0]!;
+    expect(all("oauth-origin", row)[0]!.textContent).toContain("works only from Orca's https address");
+    expect(all("oauth-origin", row)[0]!.textContent).toContain("(plain http)");
+    const button = all("oauth-connect", row)[0]! as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    await click(button);
+    expect(apiFake.integrationPosts).toEqual([]);
+  });
+
+  test("a connected Gmail card names the account and scopes; a refused grant says reconnect needed and offers Reconnect", async () => {
+    apiFake.integrationsData = { ...overview(), kinds: [...kinds, gmailKind], links: [], pairings: [], integrations: [gmailCard({
+      account: "finn@example.com", scopes: ["https://www.googleapis.com/auth/gmail.readonly"], reconnect: "reconnect needed: Google refused the grant",
+    })] };
+    await open("/integrations");
+    const row = all("integration-oauth")[0]!;
+    expect(row.textContent).toContain("Signed in as finn@example.com · read only");
+    expect(all("oauth-reconnect", row)[0]!.textContent).toBe("reconnect needed: Google refused the grant");
+    expect(all("oauth-connect", row)[0]!.textContent).toBe("Reconnect with Google");
+    expect(row.textContent).toContain("Disconnect");
+  });
+
+  test("an account switched to read-write whose grant lacks gmail.send: Reconnect to allow sending", async () => {
+    const read = ["openid", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/gmail.readonly"];
+    apiFake.integrationsData = { ...overview(), kinds: [...kinds, gmailKind], links: [], pairings: [], integrations: [gmailCard({
+      account: "finn@example.com", scopes: read, missing: ["https://www.googleapis.com/auth/gmail.send"], reconnect: null,
+    })] };
+    await open("/integrations");
+    const row = all("integration-oauth")[0]!;
+    expect(row.textContent).toContain("· read only");
+    expect(all("oauth-connect", row)[0]!.textContent).toBe("Reconnect to allow sending");
+  });
+
+  test("the Gmail Connect form shows the auth check as a switch, with the adapter's default (on)", async () => {
+    apiFake.integrationsData = { ...overview(), kinds: [gmailKind], integrations: [], links: [], pairings: [] };
+    await open("/integrations");
+    await click(all("integration-connect")[0]!);
+    expect(dialog()!.querySelector('[data-slot="int-cfg-watch"]')).toBeNull(); // events are the core policy, on the card
+    const auth = dialog()!.querySelector<HTMLElement>('[data-slot="int-cfg-checkAuth"]')!;
+    expect(auth.getAttribute("role")).toBe("switch");
+    expect(auth.getAttribute("aria-checked")).toBe("true");
+    await click(auth);
+    expect(auth.getAttribute("aria-checked")).toBe("false");
+  });
+
+  test("a Gmail card carries the core policy row (Access, Events) beside Connect with Google", async () => {
+    apiFake.integrationsData = { ...overview(), kinds: [gmailKind], integrations: [gmailCard()], links: [], pairings: [] };
+    await open("/integrations");
+    const card = all("integration-card")[0]!;
+    expect(all("integration-policy", card)).toHaveLength(1);
+    expect(card.querySelector('[aria-label="My Gmail access"]')!.textContent).toBe("Read");
+    expect(card.querySelector('[aria-label="My Gmail events"]')!.textContent).toBe("Off");
+    expect(all("integration-oauth", card)).toHaveLength(1);
+  });
+
+  test("back from Google with a failure: one action-failed notification, and the query leaves the URL", async () => {
+    apiFake.integrationsData = { ...overview(), kinds: [gmailKind], integrations: [gmailCard()], links: [], pairings: [] };
+    await open("/integrations?oauth=failed&id=gm&detail=you%20did%20not%20allow%20access%20at%20Google");
+    expect(window.location.search).toBe("");
+    expect(document.body.textContent).toContain("you did not allow access at Google");
   });
 });

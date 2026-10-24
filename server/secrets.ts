@@ -181,6 +181,16 @@ export function listText(rows: db.SecretRow[], k = keyInfo()): string {
   ].join("\n");
 }
 
+/** The value of one stored secret, for the bridge's own use (an integration's token). It never
+ *  leaves the bridge, so it writes no audit row; the store and the delete do. Throws a SecretError
+ *  when the secret is missing or was stored with another instance's key. */
+export async function valueOf(ref: string): Promise<string> {
+  const s = await resolve(ref);
+  const k = key();
+  if (s.keyId !== k.id) throw new SecretError(`"${secretRef(s.scope, s.name)}" was stored with key ${s.keyId}, but this bridge has key ${k.id}. Set ${SECRETS_KEY_ENV} to the same key on every instance.`);
+  return decrypt(s.ciphertext, k);
+}
+
 // ---- use ----
 
 /** A stored value for a BRIDGE-side caller only (an integration's token, `secret:<name>`:

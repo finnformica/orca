@@ -17,6 +17,7 @@ import { WEBHOOK_CAPS, webhookAdapter } from "./adapters/webhook";
 import { DISCORD_CAPS, discordAdapter } from "./adapters/discord";
 import { emailAdapter, emailCaps } from "./adapters/email";
 import { LINEAR_CAPS, linearAdapter } from "./adapters/linear";
+import { GMAIL_CAPS, GMAIL_VERBS, gmailAdapter } from "./adapters/gmail";
 import { CLOUDFLARE_CAPS, cloudflareAdapter, ensureDefaults as cloudflareDefaults } from "./adapters/cloudflare";
 import { SLACK_VERBS } from "../slackTool";
 import { CLOUDFLARE_VERBS } from "../cloudflare";
@@ -103,6 +104,23 @@ register("cloudflare", (c) => cloudflareAdapter(c), {
   ],
   help: "An account API token, in Orca's secret store (Stored secret) or a secret variable. Orca polls the account (audit log, deploys, Worker errors, custom domains, DNS) and tells the orchestrator; it takes no posts. Setup: docs/integrations/cloudflare.md.",
 }, cloudflareDefaults);
+register("gmail", gmailAdapter, {
+  label: "Gmail", caps: GMAIL_CAPS, place: "sender address (* = every sender)", secretExample: "secret:chat/google-oauth-secret", secretDefault: "ORCA_SECRET_GOOGLE_OAUTH",
+  oauth: { provider: "google", label: "Connect with Google" },
+  switches: { checkAuth: true },
+  // Read only, events off until you set them on the card (docs/integrations/POLICY.md section 6).
+  policyDefaults: { access: "read", events: "off" },
+  verbs: GMAIL_VERBS,
+  config: [
+    { key: "clientId", label: "OAuth client id", placeholder: "1234-abc.apps.googleusercontent.com" },
+    { key: "query", label: "Gmail query (optional)", placeholder: "empty = label:Orca OR to:you+orca@yourdomain.com" },
+    { key: "pollSeconds", label: "Poll every (seconds, at least 10; only with Events on)", placeholder: "30" },
+    { key: "allowedSenders", label: "Allowed senders (optional; comma-separated, @domain for a domain)", placeholder: "empty = any sender the query finds" },
+    { key: "checkAuth", label: "Require Google's DKIM/SPF/DMARC pass (default on)" },
+    { key: "redirectOrigin", label: "Redirect origin (optional)", placeholder: "empty = this page's origin" },
+  ],
+  help: "One Gmail account, read only, by Sign in with Google. Connect each account as its own row and name it (personal, work). The secret is the OAuth client secret: secret:<stored name> (e.g. one saved with /secret) or a variable (empty = ORCA_SECRET_GOOGLE_OAUTH). Save, then press Connect with Google. Access read asks Google for gmail.readonly; Events Wake an agent polls, and matching mail wakes Orca. Setup: docs/integrations/gmail.md.",
+});
 
 /** Every registered kind with what the Settings page shows for it. A kind with no meta gets a plain one. */
 export function kinds(): AdapterMeta[] {

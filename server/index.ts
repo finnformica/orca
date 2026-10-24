@@ -30,6 +30,8 @@ import * as integrationStore from "./integrations/store";
 import { filterInbox, inboundConversation, inboxFacets, inboxRows, inboxWindow, muteKey, noticeOf, notificationIdOf, notificationRows, notificationSender, OWN_EVENT, parseConversation, threadActions, threadItems, workstreamOf } from "../shared/inbox";
 import { replyToEvent } from "./integrations/router";
 import * as integrationAdmin from "./integrations/admin";
+import * as gmailOauth from "./integrations/adapters/gmail/oauth";
+import { CALLBACK_PATH as GOOGLE_CALLBACK_PATH } from "./integrations/adapters/gmail/google";
 import { deadNotification, webAdapter } from "./integrations/adapters/web";
 import * as orchestrator from "./orchestrator";
 import * as primary from "./primary";
@@ -608,6 +610,39 @@ async function api(req: Request, url: URL): Promise<Response> {
   // before the JSON parse. Answered by the instance that runs the integration, never forwarded.
   const inbound = req.method === "POST" && p.match(/^\/api\/integrations\/([A-Za-z0-9_.-]+)\/inbound$/);
   if (inbound) return integrations.handle(inbound[1]!, req, await req.text());
+  // "Connect with Google" for a Gmail integration (server/integrations/adapters/gmail/oauth.ts). Start
+  // answers Google's consent URL for the page's own origin; the callback is the browser coming back
+  // from Google. Both are answered HERE, never forwarded: the redirect URI names this origin, and the
+  // pending state, the client secret and the refresh token are in the shared database (or this env).
+  if (req.method === "POST" && (p === "/api/integrations/oauth/google/start" || p === "/api/integrations/oauth/google/disconnect")) {
+    const b = await req.json().catch(() => ({})) as { id?: unknown; origin?: unknown };
+    const id = String(b.id ?? "");
+    try {
+      if (p.endsWith("/disconnect")) {
+        const r = await gmailOauth.disconnect(id);
+        await integrations.stopOne(id);
+        await integrations.sync().catch(() => {});
+        return json({ ok: true, ...r });
+      }
+      return json(await gmailOauth.begin(id, req.headers.get("origin") ?? (typeof b.origin === "string" ? b.origin : undefined)));
+    } catch (e) {
+      if (e instanceof gmailOauth.OAuthError) return json({ error: e.message }, 400);
+      throw e;
+    }
+  }
+  if (req.method === "GET" && p === GOOGLE_CALLBACK_PATH) {
+    const back = (q: Record<string, string>) => new Response(null, { status: 302, headers: { location: `/integrations?${new URLSearchParams(q)}`, "cache-control": "no-store", "referrer-policy": "no-referrer" } });
+    try {
+      const r = await gmailOauth.finish(url.searchParams);
+      await integrations.stopOne(r.id); // its loop reads the new token at once, not at the next poll
+      await integrations.sync().catch(() => {});
+      return back({ oauth: "connected", id: r.id });
+    } catch (e) {
+      const id = e instanceof gmailOauth.OAuthError ? e.integrationId : gmailOauth.stateIntegration(url.searchParams.get("state"));
+      console.error(`orca: Connect with Google${id ? ` (${id})` : ""} failed: ${e instanceof Error ? e.message : String(e)}`);
+      return back({ oauth: "failed", ...(id ? { id } : {}), detail: (e instanceof Error ? e.message : String(e)).slice(0, 300) });
+    }
+  }
   // PUT carries a body too (the pasted config document) — parsing only POST silently handed the
   // handler an empty object, which then failed validation as "repos must be a non-empty array".
   const body: any = req.method === "POST" || req.method === "PUT" ? await req.json().catch(() => ({})) : {};

@@ -119,7 +119,9 @@ Settings shows Access and Events on each account's card. `orca channels` shows t
 | Cloudflare | `read-write` | `trigger` | Reads, and the writes behind `--confirm`. The adapter's events wake an agent. |
 
 The Gmail and Cloudflare adapters come from other branches. Each adopts the policy with a small
-change: register its verbs with `meta.verbs`, and call `policy.useAccount` in its CLI verb.
+change: register its verbs with `meta.verbs`, and call `policy.useAccount` in its CLI verb. Gmail
+does this ([gmail.md](gmail.md)). It also sets `meta.policyDefaults` (`read`, `off`), so a new Gmail
+row starts read only with no events, and its `access` chooses the OAuth scopes.
 
 ## 7. What changes
 
