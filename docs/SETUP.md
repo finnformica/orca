@@ -274,7 +274,9 @@ auto-deploy to fail.
 | `repos` | **required**, not empty | The managed repos. The first repo is the default. See below. |
 | `portRange` | `[30000, 40000]` | The port range for preview services. The range includes the two limits. |
 | `staleHours` | `24` | The time before Orca can bump the Slack message of a PR. |
-| `agentTimeoutMinutes` | none | The maximum time for one agent run. The seed config sets `45`. When this limit stops a run, the run ends with SIGTERM (exit 143). |
+| `agentIdleMinutes` | `20` | Orca stops an agent run after this many minutes with no progress. Progress is a new event from the CLI (a tool call, a tool result, text), or a heavy-queue job of the run that waits or runs. Time in the heavy queue is never idle time. See [Run limits](#run-limits). |
+| `agentMaxRunMinutes` | `240` | The hard limit for one agent run, a safety net above `agentIdleMinutes`. |
+| `agentTimeoutMinutes` | none | Deprecated. An alias of `agentMaxRunMinutes`. Orca reads it only when `agentMaxRunMinutes` is not set. Remove it from your config. |
 | `agentModel` | the default of the CLI | The default `--model` for the Claude runs of all repos. |
 | `instances` | none | `{ "<name>": "http://<tailnet-ip>:8787" }` for each instance. With this setting, each instance can forward to the other. |
 | `instanceHourlyUsd` | none | `{ "<name>": <usd per hour> }`. If it is not set, Orca uses an EC2 on-demand estimate from instance metadata. If that is not available, the value is 0. |
@@ -282,6 +284,17 @@ auto-deploy to fail.
 | `orchestratorShell` | `true` | `false` limits the orchestrator to `orca`, reading, the web and read-only subagents. Use this on a shared box. |
 | `orchestratorWakeBudgetUsd` | none (no limit) | `--max-budget-usd` for one orchestrator wake. |
 | `agentCpuWeight` | `50` | The systemd `CPUWeight` for the scope of each agent run (1–10000). With it, workers give CPU to the bridge first. |
+
+### Run limits
+
+Orca stops a headless agent run for one of two reasons:
+
+- **No progress.** The run shows no progress for `agentIdleMinutes` (default 20). Progress is any new event from the CLI stream: a tool call, a tool result or text. A heavy-queue job of the run (`orca-run`) that waits or runs is also progress. A wait on the CLI's own background task is also progress (`backgroundWait` limits that wait).
+- **The hard limit.** The run reaches `agentMaxRunMinutes` (default 240). This is a safety net only.
+
+Each stop sends SIGTERM (exit 143). Orca labels the turn and the worker report, for example `stopped: no progress for 20 min`. It does not show a bare `exit 143`. The model ladder does not count either stop as a model failure. The work so far stays in the worktree.
+
+Why: the old rule (`agentTimeoutMinutes`) stopped a run after a fixed wall-clock time. Runs then stopped while they waited in the heavy queue or on a long pre-push gate, and good work stayed unpushed. `agentTimeoutMinutes` is now a deprecated alias of `agentMaxRunMinutes`.
 
 ### Per-repo settings
 
@@ -804,7 +817,9 @@ the box).
 | `Previews are not enabled for <repo>` | Set `features.previews: true` and add `previewServices`. |
 | A preview opens `localhost`, or the laptop cannot get access to it | Set `ORCA_PREVIEW_HOST` (the tailnet name) and `ORCA_PREVIEW_BIND` (the tailnet IP) in the `.env` of the box. `bootstrap.sh` does not set the second one. |
 | A preview answers 403 "Blocked request" | The Vite config of the app does not permit the tailnet host. See [§9](#9-previews-and-the-template-database). |
-| A run ends with exit 143 | SIGTERM. Usually the cause is `agentTimeoutMinutes` (45 in the seed config). Workers must commit and push early. |
+| A run ends with `stopped: no progress for 20 min` | The agent sent no event for `agentIdleMinutes`, and the run had no heavy-queue job. The work so far stays in the worktree. Continue it with a follow-up. See [Run limits](#run-limits). |
+| A run ends with `stopped: hard limit of 240 min reached` | The run reached `agentMaxRunMinutes`. Give the worker a smaller task, or increase the limit. |
+| A run ends with a bare exit 143 | SIGTERM from outside Orca's run limits: a Stop, a restart, or another process. |
 | `out of memory (4 GB ceiling)` | Increase the `agentMemoryMaxGb` of that repo. Run fewer tests, and run narrower tests. |
 | The box does not respond, and the load average is very high | Make sure that the per-run cgroups are active (`loginctl show-user orca -p Linger` → `yes`). Make sure that no process runs a headless browser. |
 | `deferred: busy` in `autodeploy.log` for a long time | This is normal while agents or the orchestrator run. Wait, or deploy manually when it is safe ([§13](#13-upgrading-and-auto-deploy)). |

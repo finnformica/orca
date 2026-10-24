@@ -7,7 +7,7 @@
 import * as db from "../db";
 import * as primary from "../primary";
 import { ORCA_SECRETS } from "../env";
-import { AUTO_LEASE_MS, isAutomatic, leaseHolder, runsOn, secretRefRefusal, type AdapterKind, type AdapterMeta, type InboundEnvelope } from "../../shared/integrations";
+import { AUTO_LEASE_MS, isAutomatic, leaseHolder, runsOn, secretRefRefusal, type AdapterKind, type AdapterMeta, type InboundEnvelope, type VerbClasses } from "../../shared/integrations";
 import type { Adapter, AdapterContext, AdapterFactory, Connection } from "./adapter";
 import * as router from "./router";
 import * as store from "./store";
@@ -17,11 +17,14 @@ import { WEBHOOK_CAPS, webhookAdapter } from "./adapters/webhook";
 import { DISCORD_CAPS, discordAdapter } from "./adapters/discord";
 import { emailAdapter, emailCaps } from "./adapters/email";
 import { LINEAR_CAPS, linearAdapter } from "./adapters/linear";
-import { GMAIL_CAPS, gmailAdapter } from "./adapters/gmail";
+import { GMAIL_CAPS, GMAIL_VERBS, gmailAdapter } from "./adapters/gmail";
+import { SLACK_VERBS } from "../slackTool";
+import { CLOUDFLARE_VERBS } from "../cloudflare";
 
 const factories = new Map<AdapterKind, AdapterFactory>();
 const metas = new Map<AdapterKind, AdapterMeta>();
 const running = new Map<string, { adapter: Adapter; connection: Connection; abort: AbortController }>();
+const cliVerbs = new Map<AdapterKind, VerbClasses>();
 
 /** Register a kind. A later adapter (Discord, email, GitHub, Linear) adds one line here. `meta` is
  *  what Settings > Integrations shows for the kind (its card, its Connect form). */
@@ -29,8 +32,14 @@ export function register(kind: AdapterKind, factory: AdapterFactory, meta?: Omit
   factories.set(kind, factory);
   if (meta) metas.set(kind, { kind, ...meta });
 }
+/** Declare the verb classes of a kind that has an `orca <kind>` CLI but no adapter yet (the account
+ *  policy, docs/integrations/POLICY.md). A kind's `meta.verbs` wins over this. */
+export function registerVerbs(kind: AdapterKind, verbs: VerbClasses): void { cliVerbs.set(kind, verbs); }
+/** The verb classes of a kind, for `integrationAccessRefusal`. */
+export const verbsFor = (kind: AdapterKind): VerbClasses => metas.get(kind)?.verbs ?? cliVerbs.get(kind) ?? {};
+
 register("slack", slackAdapter, {
-  label: "Slack", caps: SLACK_CAPS, place: "channel", secretExample: "SLACK_TOKEN",
+  label: "Slack", caps: SLACK_CAPS, place: "channel", secretExample: "SLACK_TOKEN", verbs: SLACK_VERBS,
   help: "Your user token (xoxp-…): Orca posts as you and polls your mentions, DMs and group DMs each minute. Link `im` / `mpim` for DMs. Setup: docs/integrations/slack.md.",
 });
 register("webhook", webhookAdapter, { label: "Webhook", caps: WEBHOOK_CAPS, place: "hook", secretExample: "ORCA_SECRET_WEBHOOK", help: "Signed POSTs to /api/integrations/<id>/inbound (HMAC sha256 of the body)." });
@@ -69,21 +78,25 @@ register("linear", linearAdapter, {
   help: "A personal API key. Orca polls; it needs no webhook. Link team:<KEY>, project:<id> or *. Setup: docs/integrations/linear.md.",
 });
 
+// Cloudflare's CLI exists before its adapter (orca cloudflare, server/cloudflare.ts).
+registerVerbs("cloudflare", CLOUDFLARE_VERBS);
 register("gmail", gmailAdapter, {
   label: "Gmail", caps: GMAIL_CAPS, place: "sender address (* = every sender)", secretExample: "ORCA_SECRET_GOOGLE_OAUTH",
   oauth: { provider: "google", label: "Connect with Google" },
-  switches: { watch: false, checkAuth: true },
+  switches: { checkAuth: true },
+  // Read only, events off until you set them on the card (docs/integrations/POLICY.md section 6).
+  policyDefaults: { access: "read", events: "off" },
+  verbs: GMAIL_VERBS,
   config: [
     { key: "clientId", label: "OAuth client id", placeholder: "1234-abc.apps.googleusercontent.com" },
     { key: "clientSecretStored", label: "Client secret: stored Orca secret (optional)", placeholder: "scope/name of the stored secret; empty = the secret variable" },
     { key: "query", label: "Gmail query (optional)", placeholder: "empty = label:Orca OR to:you+orca@yourdomain.com" },
-    { key: "watch", label: "Watch new mail (matching mail wakes Orca)" },
-    { key: "pollSeconds", label: "Poll every (seconds, at least 10; only with Watch new mail)", placeholder: "30" },
+    { key: "pollSeconds", label: "Poll every (seconds, at least 10; only with Events on)", placeholder: "30" },
     { key: "allowedSenders", label: "Allowed senders (optional; comma-separated, @domain for a domain)", placeholder: "empty = any sender the query finds" },
     { key: "checkAuth", label: "Require Google's DKIM/SPF/DMARC pass (default on)" },
     { key: "redirectOrigin", label: "Redirect origin (optional)", placeholder: "empty = this page's origin" },
   ],
-  help: "One Gmail account, read only, by Sign in with Google. Connect each account as its own row and name it (personal, work). The secret is the OAuth client secret (empty = ORCA_SECRET_GOOGLE_OAUTH, from .env or a stored Orca secret). Save, then press Connect with Google. With Watch new mail on, mail that matches the query wakes Orca. Setup: docs/integrations/gmail.md.",
+  help: "One Gmail account, read only, by Sign in with Google. Connect each account as its own row and name it (personal, work). The secret is the OAuth client secret (empty = ORCA_SECRET_GOOGLE_OAUTH, from .env or a stored Orca secret). Save, then press Connect with Google. Access read asks Google for gmail.readonly; Events Wake an agent polls, and matching mail wakes Orca. Setup: docs/integrations/gmail.md.",
 });
 
 /** Every registered kind with what the Settings page shows for it. A kind with no meta gets a plain one. */

@@ -17,6 +17,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { Tip } from "@/components/ui/tip";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
@@ -26,7 +27,7 @@ import {
   SUBSCRIPTION_PRESETS, connectOriginProblem, deadTargetLabel, filterText, healthLine, healthTone, identityLabel, identityProblem, instanceText, newPersonId as personId, integrationProblem, linkProblem, parseFilter, targetLabel,
   type IntegrationCard, type InstanceOption, type IntegrationsOverview, type LinkRow, type Pairing, type PersonRow,
 } from "../../../shared/integrationSettings";
-import { AUTO_INSTANCE, CATCH_ALL, LEVEL_LABEL, LINK_LEVELS as LEVELS, isAutomatic, repoScoped, type AdapterMeta, type LinkLevel } from "../../../shared/integrations";
+import { ACCESS_LABEL, ACCESS_VALUES, AUTO_INSTANCE, CATCH_ALL, EVENTS_LABEL, EVENTS_VALUES, LEVEL_LABEL, LINK_LEVELS as LEVELS, effectiveNotify, isAutomatic, repoScoped, type AdapterMeta, type EventsMode, type LinkLevel } from "../../../shared/integrations";
 
 type Overview = IntegrationsOverview;
 // Friendly names (Notify, Viewer, Editor, Admin); the stored values stay notify / ask / work / admin.
@@ -39,6 +40,9 @@ const NOTIFY_SWITCHES = [
   { key: "notifyAgent", label: "Notify agent", slot: "link-notify-agent", hint: "Each message wakes the orchestrator. A paired person keeps their level; an unknown sender is read-only: the agent tells you and does not reply." },
 ] as const;
 const LEVEL_TONE = { notify: "default", ask: "blue", work: "green", admin: "purple" } as const;
+// The account policy (docs/integrations/POLICY.md), one line each in the select.
+const ACCESS_HINT = { read: "Search, read and list only", "read-write": "Also post, send, reply and delete" } as const;
+const EVENTS_HINT = { trigger: "Show it and wake an agent", record: "Show it in the Inbox; wake no agent", off: "Record nothing" } as const;
 // The page's own copy of server/env.ts ORCA_SECRETS (the server checks again): enough to warn early.
 const STRIPPED = ["SLACK_TOKEN"] as const;
 
@@ -226,11 +230,12 @@ function IntegrationCardView({ card: c, data, onChange }: { card: IntegrationCar
           <Button variant="secondary" size="sm" disabled={test.busy} onClick={() => void runTest()} className="max-sm:h-10 max-sm:flex-1">Test</Button>
         </div>
       </div>
+      <PolicyRow card={c} onChange={onChange} />
       {meta?.oauth && <OAuthRow card={c} label={meta.oauth.label} onChange={onChange} />}
       {links.length === 0
         ? <div className="text-muted-foreground flex items-center justify-between gap-2 px-4 py-3 text-xs">No {meta?.place ?? "link"}s linked. Orca listens only where a link says so.
             <Button variant="ghost" size="sm" onClick={() => setLinkOpen("new")}><Plus />Add</Button></div>
-        : <ul data-slot="integration-links" className="divide-y">{links.map((l) => <LinkRowView key={l.id} link={l} onEdit={() => setLinkOpen(l)} onChange={onChange} />)}</ul>}
+        : <ul data-slot="integration-links" className="divide-y">{links.map((l) => <LinkRowView key={l.id} link={l} events={c.events} onEdit={() => setLinkOpen(l)} onChange={onChange} />)}</ul>}
       {linkOpen && <LinkDialog integration={c} meta={meta} link={linkOpen === "new" ? undefined : linkOpen} onClose={() => setLinkOpen(null)} onSaved={onChange} />}
       {editOpen && <IntegrationDialog kinds={data.kinds} options={options} existing={c} onClose={() => setEditOpen(false)} onSaved={onChange} />}
       {confirmNode}
@@ -238,7 +243,37 @@ function IntegrationCardView({ card: c, data, onChange }: { card: IntegrationCar
   );
 }
 
-function LinkRowView({ link: l, onEdit, onChange }: { link: LinkRow; onEdit: () => void; onChange: () => void }) {
+/** The account's Access and Events (docs/integrations/POLICY.md). The core reads them per call, so a
+ *  change applies at once. Events narrow every link's switches; a link never widens them. */
+function PolicyRow({ card: c, onChange }: { card: IntegrationCard; onChange: () => void }) {
+  const set = (key: "access" | "events", value: string, label: string) => void act(`Set ${label} for ${c.name}`, "policy", { id: c.id, [key]: value }, onChange);
+  return (
+    <div data-slot="integration-policy" className="flex flex-col gap-3 px-4 py-3 text-sm sm:flex-row sm:items-center sm:gap-6">
+      <div data-slot="integration-access" className="flex items-center gap-2">
+        <Label htmlFor={`access-${c.id}`} className="text-muted-foreground w-14 text-xs font-normal sm:w-auto">Access</Label>
+        <Select value={c.access} onValueChange={(v) => set("access", v, "access")}>
+          <SelectTrigger id={`access-${c.id}`} size="sm" aria-label={`${c.name} access`} className="w-40 max-sm:h-10 max-sm:flex-1"><SelectValue>{ACCESS_LABEL[c.access]}</SelectValue></SelectTrigger>
+          <SelectContent>{ACCESS_VALUES.map((v) => (
+            <SelectItem key={v} value={v}><span className="flex flex-col"><span>{ACCESS_LABEL[v]}</span><span className="text-muted-foreground text-xs">{ACCESS_HINT[v]}</span></span></SelectItem>
+          ))}</SelectContent>
+        </Select>
+      </div>
+      <div data-slot="integration-events" className="flex items-center gap-2">
+        <Label htmlFor={`events-${c.id}`} className="text-muted-foreground w-14 text-xs font-normal sm:w-auto">Events</Label>
+        <Select value={c.events} onValueChange={(v) => set("events", v, "events")}>
+          <SelectTrigger id={`events-${c.id}`} size="sm" aria-label={`${c.name} events`} className="w-40 max-sm:h-10 max-sm:flex-1"><SelectValue>{EVENTS_LABEL[c.events]}</SelectValue></SelectTrigger>
+          <SelectContent>{EVENTS_VALUES.map((v) => (
+            <SelectItem key={v} value={v}><span className="flex flex-col"><span>{EVENTS_LABEL[v]}</span><span className="text-muted-foreground text-xs">{EVENTS_HINT[v]}</span></span></SelectItem>
+          ))}</SelectContent>
+        </Select>
+      </div>
+    </div>
+  );
+}
+
+function LinkRowView({ link: l, events, onEdit, onChange }: { link: LinkRow; events: EventsMode; onEdit: () => void; onChange: () => void }) {
+  // The account's events mode can turn a switch off for every link (never on).
+  const allowed = effectiveNotify({ me: true, agent: true }, events);
   const [test, setTest] = useState<{ busy?: boolean; state?: string; error?: string }>({});
   const run = async () => {
     setTest({ busy: true });
@@ -271,7 +306,12 @@ function LinkRowView({ link: l, onEdit, onChange }: { link: LinkRow; onEdit: () 
           {NOTIFY_SWITCHES.map(({ key, label, slot }) => (
             <div key={key} data-slot={slot} className="flex items-center gap-2">
               <Label htmlFor={`${slot}-${l.id}`} className="text-muted-foreground text-xs font-normal">{label}</Label>
-              <Switch id={`${slot}-${l.id}`} checked={l[key] !== false} onCheckedChange={(on) => setSwitch(key, on)} aria-label={`${label} for ${name}`} />
+              {(() => {
+                const on = allowed[key === "notifyMe" ? "me" : "agent"];
+                const sw = <Switch id={`${slot}-${l.id}`} checked={l[key] !== false && on} disabled={!on}
+                  onCheckedChange={(v) => setSwitch(key, v)} aria-label={`${label} for ${name}`} />;
+                return on ? sw : <Tip label={`Off for every link: the account's Events is "${EVENTS_LABEL[events]}"`}>{sw}</Tip>;
+              })()}
             </div>
           ))}
         </div>

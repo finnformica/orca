@@ -7,8 +7,9 @@
 // send verb is NOT built yet: `send` refuses and `caps.outbound` is false. Orca changes no label and
 // marks no mail read (no gmail.modify; the History API cursor is its position).
 //
-// Events: only a row with `watch` on polls (the one "watch new mail" flag; it maps 1:1 to the access
-// policy's events=trigger, off to events=off). The bridge has no public address, so no Pub/Sub push.
+// Events: the core's account policy (docs/integrations/POLICY.md). With events `off` the loop makes no
+// Gmail call (it rereads the row each tick, so the card's change applies at once); `trigger` and
+// `record` poll, and the core decides whether an agent wakes. No public address, so no Pub/Sub push.
 // Every `pollSeconds` (30, at least 10) the primary bridge reads the History API from its cursor
 // (`{ historyId, account }` in integration_cursor): each message added (or labelled) since. Only a
 // message that matches the row's Gmail `query` (default `label:Orca OR to:<you>+orca@<domain>`) goes
@@ -27,6 +28,7 @@ import { inboundText } from "./email";
 import { fromBase64Url, GoogleError, header, SCOPE, storedSecretPathProblem, type Gmail } from "./gmail/google";
 export { storedSecretPathProblem } from "./gmail/google";
 import * as oauth from "./gmail/oauth";
+import * as store from "../store";
 
 export type GmailConfig = {
   clientId: string;
@@ -36,9 +38,6 @@ export type GmailConfig = {
   /** A Gmail search. Empty = `label:Orca OR to:<local>+orca@<domain>` of the connected account. */
   query?: string;
   pollSeconds: number;
-  /** "Watch new mail": poll and hand matching mail to the core (events=trigger). Off = no poll, no
-   *  event (events=off); `orca gmail search|read` still work. Default off. */
-  watch: boolean;
   /** Addresses or `@domain`s. Empty = any sender the query lets in (the core's gate still applies). */
   allowedSenders: string[];
   /** Require Google's DKIM/SPF/DMARC pass for the From domain (default true). */
@@ -47,7 +46,7 @@ export type GmailConfig = {
 };
 
 export const GMAIL_AUTHSERV = "mx.google.com";
-/** The poll interval of a watched account: 30 s unless set, never below 10 s. A quiet tick is ONE
+/** The poll interval of an account with events on: 30 s unless set, never below 10 s. A quiet tick is ONE
  *  users.history.list call (Gmail's quota is per user, and a minute of quiet costs 2 calls). Only the
  *  tests' fake Gmail (the `apiUrl` override) may poll faster. */
 export const GMAIL_POLL_DEFAULT_S = 30;
@@ -72,7 +71,6 @@ export function gmailConfig(raw: Record<string, unknown>): { config: GmailConfig
   return { config: {
     clientId, ...(stored ? { clientSecretStored: stored } : {}), ...(str(raw.query) ? { query: str(raw.query) } : {}),
     pollSeconds: Math.max(typeof raw.apiUrl === "string" && raw.apiUrl ? 0.05 : GMAIL_POLL_MIN_S, num(raw.pollSeconds, GMAIL_POLL_DEFAULT_S)),
-    watch: bool(raw.watch, false),
     allowedSenders: senders.map((s) => s.trim().toLowerCase()).filter(Boolean),
     checkAuth: bool(raw.checkAuth, true),
     keepQuoted: bool(raw.keepQuoted, false),
@@ -98,11 +96,6 @@ export const GMAIL_CAPS: Capabilities = {
  *  orca/integration-access-policy: `meta.verbs`). Both are reads; Gmail has no write verb. */
 export const GMAIL_VERBS = { search: "read", read: "read" } as const;
 
-/** The access policy's events mode for a row: the watch flag maps 1:1 (on = trigger, off = off). */
-export function gmailEvents(config: Record<string, unknown>): "trigger" | "off" {
-  const c = gmailConfig(config);
-  return "config" in c && c.config.watch ? "trigger" : "off";
-}
 
 /** Why the mail gate drops a matching message, or undefined to let it in. Pure. */
 export function gmailGate(m: ParsedMail, labels: readonly string[], cfg: Pick<GmailConfig, "allowedSenders" | "checkAuth">, account: string): string | undefined {
@@ -258,6 +251,9 @@ export function gmailAdapter(connection: Connection): Adapter {
     while (!local.signal.aborted) {
       let wait = cfg!.pollSeconds * 1000;
       try {
+        // Events off: no Gmail call at all. Read per tick, so a change on the card applies at once.
+        const events = (await store.integration(connection.id).catch(() => undefined))?.events ?? connection.events;
+        if (events === "off") { await report(true, "events off: no poll (orca gmail search and read still work)"); await sleep(wait, local.signal); continue; }
         const detail = await poll();
         lastPollAt = Date.now();
         await report(true, `${detail} · polling every ${cfg!.pollSeconds}s`);
@@ -279,8 +275,6 @@ export function gmailAdapter(connection: Connection): Adapter {
       if (!cfg) throw new Error((parsed as { error: string }).error);
       ctx = c;
       c.signal.addEventListener("abort", () => local.abort(), { once: true });
-      // Watch off: connected for `orca gmail search|read` only. No poll, so no event and no wake.
-      if (!cfg.watch) { await report(true, "not watching new mail (search and read only)"); return; }
       // Not connected yet is a state the card shows, not a failed start: the loop waits for Connect.
       void loop();
     },

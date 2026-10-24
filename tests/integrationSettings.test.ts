@@ -24,7 +24,7 @@ beforeAll(() => { Object.assign(globalThis, native); });
 afterAll(() => { Object.assign(globalThis, dom); });
 
 describe("decisions (pure)", () => {
-  const card = (over: Partial<IntegrationCard> = {}): IntegrationCard => ({ id: "s", kind: "slack", name: "Work Slack", instance: "cloud", enabled: true, config: {}, running: false, ...over });
+  const card = (over: Partial<IntegrationCard> = {}): IntegrationCard => ({ id: "s", kind: "slack", name: "Work Slack", instance: "cloud", enabled: true, config: {}, access: "read-write", events: "trigger", running: false, ...over });
 
   test("health tone: off gray, missing secret red, unchecked amber, stale remote amber, else green", () => {
     const now = 100 * 60_000;

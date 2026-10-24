@@ -205,6 +205,12 @@ gets `grantScope` and runs in SCOPED mode (`agent.scopedRules`: `claude -p --per
 plus allow and deny rules — files in the worktree, git and the toolchain, no secrets, no
 `--no-verify`, no push to the base branch; never `bypassPermissions`, which approves everything).
 Only a wake whose every message is yours clears it on a steer; `orca status --clear-grant` clears it.
+**Account policy** (`docs/integrations/POLICY.md`, named step `20261024-integration-access-events`):
+each `integration` row (one account; several per kind work) has `access` (`read` | `read-write`) and
+`events` (`trigger` | `record` | `off`), defaults = the old behaviour. ONE check,
+`integrationAccessRefusal`, at every door (publish, the dispatcher, a link's Test, `orca <kind>` via
+`policy.useAccount`, which also takes `--account`); an undeclared verb is a write. `events` narrows
+the link switches (`effectiveNotify`), never widens them. Adapters declare CLI verbs in `meta.verbs`.
 **Every link notifies you AND the agent by default** (Finn's call): two Switches per link, **Notify me**
 and **Notify agent** (`channel_link.notify_me` / `notify_agent`, named step `20261023-link-switches`,
 true for old links too; `#420`'s `pairing` column is unused). The gate stamps them on the envelope
@@ -251,16 +257,16 @@ path, e.g. one saved with /secret; the secret itself is refused there) if set, e
 (default `ORCA_SECRET_GOOGLE_OAUTH`): env var, else a stored Orca secret of that name
 (`server/integrations/secretValue.ts`, for every adapter). The client id is box config (the Connect
 form), never in the repo.
-Only a row with `watch` on ("Watch new mail", default off) polls the History API from a
-`{ historyId, account }` cursor, every `pollSeconds` (30, at least 10: `GMAIL_POLL_DEFAULT_S` /
+Events are the core's account policy (`docs/integrations/POLICY.md`; a new Gmail row is `read` + `off`
+via `meta.policyDefaults`, verbs via `meta.verbs`): with events `off` the loop makes no Gmail call (it
+rereads the row each tick, so the card's change applies at once); `trigger` / `record` poll the History
+API from a `{ historyId, account }` cursor every `pollSeconds` (30, at least 10: `GMAIL_POLL_DEFAULT_S` /
 `GMAIL_POLL_MIN_S`; a quiet tick is ONE users.history.list call; push by Gmail watch + a Pub/Sub pull
-subscription is a documented later step); `watch` maps 1:1 to the access policy's events `trigger` / `off`
-(`gmailEvents`; the shared policy is branch orca/integration-access-policy, not merged yet — join them
-there). Gmail decides the `query` match (default `label:Orca OR to:<you>+orca@…`, plus `rfc822msgid:` of
+subscription is a documented later step). Gmail decides the `query` match (default `label:Orca OR to:<you>+orca@…`, plus `rfc822msgid:` of
 each new mail), so other mail is read only as labels + Message-ID. Topic `ext.gmail.message`, channel =
 sender address, thread = Gmail thread id. A refused refresh token is `reconnect needed` on the card and
 is not tried again. `orca gmail search|read [--account <id or name>]` (`server/gmailTool.ts`; both READ
-verbs, `GMAIL_VERBS`; `--account` may be left out with one account) is your own chat only.
+verbs, `GMAIL_VERBS`; the account by `policy.useAccount`) is your own chat only.
 **Slack** (`adapters/slack.ts`, `docs/integrations/slack.md`) is two-way AS YOU: the row's token is your
 user token (`SLACK_TOKEN`, xoxp) — the ONLY token (Finn's call: no app-level token, no Socket Mode
 setup). Inbound POLLS every `pollSeconds` (60): DMs and group DMs by `conversations.history` (hot ones
@@ -944,6 +950,12 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   run and queues ONE resume of the same session (`BACKGROUND_MARKER`, each task's command and output
   tail); a resumed run that ends the same way is an error. The worker report says `N commits not
   pushed` (`git.unpushedHere`).
+  (4) **A run stops on no progress, not on wall-clock time** (2026-10-24, Finn: runs died in the
+  heavy queue or a long pre-push gate). `agentIdleMinutes` (20): no stream event and no heavy-queue
+  job of the run (queued or running) for that long stops it (`idleExpired`, `agent.idleWatch`).
+  `agentMaxRunMinutes` (240) is the hard ceiling; `agentTimeoutMinutes` is its deprecated alias
+  (`config.runLimits`). Both stops are labelled (`runStopLabel`: `stopped: no progress for 20 min`,
+  never a bare exit 143) on the turn and the worker report, and the model ladder does not count them.
 - **One primary bridge per instance** (`server/primary.ts`; incident 2026-10-14: four hand-started
   bridges from reaped worktrees kept running stale code on the shared database, and one woke the
   orchestrator with a deleted `bin/` on PATH). Background duties — orchestrator wakes/recovery, the

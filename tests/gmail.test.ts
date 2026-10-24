@@ -19,12 +19,12 @@ import { agentEnv } from "../server/env";
 import { resolveSecret, secretValue } from "../server/integrations/secretValue";
 import type { Connection } from "../server/integrations/adapter";
 import { parseMail } from "../server/integrations/adapters/email/mime";
-import { defaultQuery, GMAIL_CAPS, GMAIL_VERBS, gmailConfig, gmailEvents, gmailGate, matchQuery, scopeWords } from "../server/integrations/adapters/gmail";
+import { defaultQuery, GMAIL_CAPS, GMAIL_VERBS, gmailConfig, gmailGate, matchQuery, scopeWords } from "../server/integrations/adapters/gmail";
 import { authorizeUrl, CALLBACK_PATH, endpoints, fromBase64Url, GOOGLE, pkce, SCOPE, consentScopes, missingScopes, scopesFor, tokenError } from "../server/integrations/adapters/gmail/google";
 import * as oauth from "../server/integrations/adapters/gmail/oauth";
 import { gmailTool } from "../server/gmailTool";
 import * as orchestrator from "../server/orchestrator";
-import { grantRefusal } from "../shared/integrations";
+import { grantRefusal, integrationAccessRefusal } from "../shared/integrations";
 import { connectOriginProblem } from "../shared/integrationSettings";
 import { native } from "./happydom";
 import { freshSchema, type TestDb } from "./pg";
@@ -176,11 +176,11 @@ function fakeGoogle() {
 }
 
 describe("decisions (pure)", () => {
-  test("the config: client id required, watch off by default, auth checked by default, form strings parsed", () => {
+  test("the config: client id required, auth checked by default, form strings parsed", () => {
     expect(gmailConfig({})).toEqual({ error: expect.stringContaining("clientId") });
-    expect(gmailConfig({ clientId: "cid" })).toEqual({ config: { clientId: "cid", pollSeconds: 30, watch: false, allowedSenders: [], checkAuth: true, keepQuoted: false } });
-    expect(gmailConfig({ clientId: "cid", watch: "true", checkAuth: "false", pollSeconds: "30", allowedSenders: "Ana@Example.com, @acme.test", query: "label:work" }))
-      .toMatchObject({ config: { watch: true, checkAuth: false, pollSeconds: 30, allowedSenders: ["ana@example.com", "@acme.test"], query: "label:work" } });
+    expect(gmailConfig({ clientId: "cid" })).toEqual({ config: { clientId: "cid", pollSeconds: 30, allowedSenders: [], checkAuth: true, keepQuoted: false } });
+    expect(gmailConfig({ clientId: "cid", checkAuth: "false", pollSeconds: "30", allowedSenders: "Ana@Example.com, @acme.test", query: "label:work" }))
+      .toMatchObject({ config: { checkAuth: false, pollSeconds: 30, allowedSenders: ["ana@example.com", "@acme.test"], query: "label:work" } });
     // The poll interval: 30 s by default, never below 10 s (only the tests' fake Gmail may go faster).
     expect(gmailConfig({ clientId: "cid", pollSeconds: "5" })).toMatchObject({ config: { pollSeconds: 10 } });
     expect(gmailConfig({ clientId: "cid", pollSeconds: "45" })).toMatchObject({ config: { pollSeconds: 45 } });
@@ -229,10 +229,10 @@ describe("decisions (pure)", () => {
     expect(connectOriginProblem(undefined)).toContain("is not one");
   });
 
-  test("watch new mail maps 1:1 to the access policy's events mode: on = trigger, off = off", () => {
-    expect(gmailEvents({ clientId: "cid", watch: "true" })).toBe("trigger");
-    expect(gmailEvents({ clientId: "cid", watch: "false" })).toBe("off");
-    expect(gmailEvents({ clientId: "cid" })).toBe("off");
+  test("the core's account policy: Gmail declares both verbs as reads, and a read account still searches and reads", () => {
+    expect(registry.verbsFor("gmail")).toEqual({ search: "read", read: "read" });
+    for (const verb of ["search", "read"]) expect(integrationAccessRefusal({ id: "gm", kind: "gmail", access: "read" }, verb, registry.verbsFor("gmail"))).toBeUndefined();
+    expect(integrationAccessRefusal({ id: "gm", kind: "gmail", access: "read" }, "send", registry.verbsFor("gmail"))).toContain("has read access");
   });
 
   test("PKCE: S256 of the verifier; the consent URL asks for offline access with the challenge", () => {
@@ -315,8 +315,8 @@ describe("against a fake Google", () => {
   });
 
   const conn = (extra: Record<string, unknown> = {}): Connection => ({
-    id: "gm", kind: "gmail", name: "smfstudio", instance: "local", enabled: true,
-    config: { clientId: "cid", watch: "true", pollSeconds: "0.05", authUrl: `${g.base}/auth`, tokenUrl: `${g.base}/token`, apiUrl: g.base, revokeUrl: `${g.base}/revoke`, ...extra },
+    id: "gm", kind: "gmail", name: "smfstudio", instance: "local", enabled: true, access: "read", events: "trigger",
+    config: { clientId: "cid", pollSeconds: "0.05", authUrl: `${g.base}/auth`, tokenUrl: `${g.base}/token`, apiUrl: g.base, revokeUrl: `${g.base}/revoke`, ...extra },
   });
   const setup = async (extra: Record<string, unknown> = {}) => {
     const c = conn(extra);
@@ -368,7 +368,7 @@ describe("against a fake Google", () => {
     // Settings shows the account and the scopes on the card.
     const card = (await admin.overview()).integrations.find((c) => c.id === "gm")!;
     expect(card.oauth).toMatchObject({ account: ACCOUNT, scopes: scopesFor("read"), reconnect: null, missing: [] });
-    expect((await admin.overview()).kinds.find((k) => k.kind === "gmail")).toMatchObject({ oauth: { provider: "google", label: "Connect with Google" }, switches: { watch: false, checkAuth: true } });
+    expect((await admin.overview()).kinds.find((k) => k.kind === "gmail")).toMatchObject({ oauth: { provider: "google", label: "Connect with Google" }, switches: { checkAuth: true }, policyDefaults: { access: "read", events: "off" } });
   });
 
   test("the client secret as a stored Orca secret by path (clientSecretStored): Connect works, and the path wins over the env var", async () => {
@@ -477,9 +477,9 @@ describe("against a fake Google", () => {
     expect(g.st.messages.find((m) => m.id === "m1")!.labelIds).toContain("UNREAD");
   });
 
-  test("two named accounts: smfstudio watches new mail and wakes Orca; personal never polls and brings no event", async () => {
+  test("two named accounts: smfstudio (events trigger) wakes Orca; personal (events off) makes no Gmail call and brings no event", async () => {
     const c = await setup();
-    const personal: Connection = { ...conn({ watch: "false" }), id: "personal", name: "personal" };
+    const personal: Connection = { ...conn(), id: "personal", name: "personal", events: "off" };
     await store.addIntegration(personal);
     await store.addLink({ id: "P1", integrationId: "personal", externalId: "*", level: "ask", repos: [], requireMention: false });
     await connect();
@@ -489,7 +489,7 @@ describe("against a fake Google", () => {
 
     expect(await registry.startOne(personal)).toBe(true);
     expect(await registry.startOne(c)).toBe(true);
-    expect((await registry.health()).personal).toMatchObject({ ok: true, detail: "not watching new mail (search and read only)" });
+    expect((await registry.health()).personal).toMatchObject({ ok: true, detail: "events off: no poll (orca gmail search and read still work)" });
     await until(async () => (await cursor()).historyId);
     g.deliver({ gid: "m1", id: "<m1@example.com>", subject: "Fix the login" });
     const ev = await until(() => store.event("gmail:gm:m1"));
@@ -524,6 +524,42 @@ describe("against a fake Google", () => {
     await until(async () => (await registry.health()).gm?.ok);
     expect(await secrets.valueOf("integrations/gmail.gm.refresh_token")).toBe("1//rt-two-refresh-token");
     expect((await admin.overview()).integrations.find((x) => x.id === "gm")!.oauth).toMatchObject({ account: ACCOUNT, reconnect: null });
+  });
+
+  test("a new Gmail row is read + events off unless the form says otherwise; an edit keeps the stored policy", async () => {
+    await admin.saveIntegration({ id: "personal", kind: "gmail", name: "personal", instance: "local", config: { clientId: "cid" } });
+    expect(await store.integration("personal")).toMatchObject({ access: "read", events: "off" });
+    await admin.saveIntegration({ id: "work", kind: "gmail", name: "work", instance: "local", config: { clientId: "cid" }, events: "trigger" });
+    expect(await store.integration("work")).toMatchObject({ access: "read", events: "trigger" });
+    await admin.setPolicy({ id: "personal", events: "record" });
+    await admin.saveIntegration({ id: "personal", kind: "gmail", name: "Personal mail", instance: "local", config: { clientId: "cid" } });
+    expect(await store.integration("personal")).toMatchObject({ name: "Personal mail", access: "read", events: "record" });
+  });
+
+  test("a switch to read-write asks Google ONLY for gmail.send (incremental); a switch to events trigger starts the poll at once", async () => {
+    await setup();
+    const personal: Connection = { ...conn(), id: "personal", name: "personal", events: "off" };
+    await store.addIntegration(personal);
+    await connect("https://orca.example.ts.net", "personal");
+    expect(await registry.startOne(personal)).toBe(true);
+    await until(async () => (await registry.health()).personal?.detail?.startsWith("events off"));
+    expect((await admin.overview()).integrations.find((x) => x.id === "personal")!.oauth?.missing).toEqual([]);
+
+    // Settings: Access → Read and write. The card asks for a reconnect; Google is asked for the one new scope.
+    await admin.setPolicy({ id: "personal", access: "read-write" });
+    expect((await admin.overview()).integrations.find((x) => x.id === "personal")!.oauth?.missing).toEqual([SCOPE.send]);
+    const { url } = await oauth.begin("personal", "https://orca.example.ts.net");
+    expect(new URL(url).searchParams.get("scope")).toBe(SCOPE.send);
+    expect(new URL(url).searchParams.get("include_granted_scopes")).toBe("true");
+    g.st.nextRefresh = "1//rt-personal-rw-refresh-token";
+    const r = await oauth.finish(g.consent(url, [...scopesFor("read"), SCOPE.send].join(" ")));
+    expect(r.scopes).toEqual(scopesFor("read-write"));
+    expect((await admin.overview()).integrations.find((x) => x.id === "personal")!.oauth?.missing).toEqual([]);
+
+    // Settings: Events → Wake an agent. The running adapter polls from its next tick, no restart.
+    expect(await store.cursor("personal")).toBeUndefined();
+    await admin.setPolicy({ id: "personal", events: "trigger" });
+    await until(async () => (await store.cursor("personal")) !== undefined);
   });
 
   test("Disconnect and Remove revoke the grant at Google and delete the stored refresh token", async () => {
@@ -562,13 +598,13 @@ describe("against a fake Google", () => {
     await expect(gmailTool({ _: ["read", "m1"], account: "" })).rejects.toThrow("--account needs");
 
     // A second account: --account picks one by id or name (any case); none named is an error, never a guess.
-    await store.addIntegration({ ...conn({ watch: "false" }), id: "personal", name: "personal" });
+    await store.addIntegration({ ...conn(), id: "personal", name: "personal", events: "off" });
     g.st.nextRefresh = "1//rt-personal-refresh-token";
     await connect("https://orca.example.ts.net", "personal");
-    await expect(gmailTool({ _: ["read", "m1"] })).rejects.toThrow("2 Gmail accounts are connected (gm (smfstudio), personal): name one with --account <name>");
+    await expect(gmailTool({ _: ["read", "m1"] })).rejects.toThrow("2 gmail accounts are connected (gm (smfstudio), personal): name one with --account <id>");
     expect((await gmailTool({ _: ["read", "m1"], account: "personal" })).split("\n")[0]).toBe("Gmail account personal");
     expect((await gmailTool({ _: ["search", "from:ana"], account: "SMFStudio" })).split("\n")[0]).toBe("Gmail account smfstudio (gm)");
-    await expect(gmailTool({ _: ["read", "m1"], account: "work" })).rejects.toThrow('no Gmail account "work"');
+    await expect(gmailTool({ _: ["read", "m1"], account: "work" })).rejects.toThrow('no gmail account "work"');
     // Through the orchestrator's tool route: your own chat may, an outside sender may not.
     const cfg = { repos: [], portRange: [0, 0], staleHours: 1 } as never;
     expect(await orchestrator.tool(cfg, "gmail", { _: ["read", "m1"], account: "personal" })).toContain("Subject: Fix the login");

@@ -17,6 +17,7 @@ import * as db from "../server/db";
 import * as agent from "../server/agent";
 import * as verbs from "../server/verbs";
 import * as git from "../server/git";
+import * as heavy from "../server/heavy";
 import { run } from "../server/run";
 import type { OrcaConfig } from "../server/config";
 import { BACKGROUND_MARKER, backgroundResumeInstruction, isBackgroundResume } from "../shared/agent";
@@ -119,16 +120,19 @@ let pg: TestDb;
 let prev: Record<string, string | undefined> = {};
 const saved = { ...agent.backgroundWait };
 let timeoutMinutes: number | undefined;
+let idleMinutes: number | undefined;
+const savedWatch = { ...agent.idleWatch };
 
 const cfg = (): OrcaConfig => ({
   repos: [{ name: "r", repoPath: repo, worktreeRoot: worktrees, baseBranch: "main", previewServices: [], providers: ["claude"] }],
-  portRange: [30000, 40000], staleHours: 24, agentTimeoutMinutes: timeoutMinutes,
+  portRange: [30000, 40000], staleHours: 24, agentTimeoutMinutes: timeoutMinutes, agentIdleMinutes: idleMinutes,
 });
 const repoCfg = () => cfg().repos[0]!;
 
 // The fake CLI. ORCA_FAKE_MODE: `finish` (the task ends after ORCA_FAKE_TASK_MS, the CLI starts its
 // next turn), `hang` (the task never ends; a SIGTERM stops it as the CLI does), `busy` (an active
-// turn that outlasts the timeout). A resume message (Orca's marker) answers at once, or hangs too
+// turn that outlasts the timeout), `quiet` (writes its ORCA_RUN_ID, then sends nothing for
+// ORCA_FAKE_TASK_MS and answers). A resume message (Orca's marker) answers at once, or hangs too
 // with ORCA_FAKE_RESUME=hang.
 const FAKE = `#!/usr/bin/env bun
 const argv = process.argv.slice(2);
@@ -140,6 +144,12 @@ const resume = prompt.includes(${JSON.stringify(BACKGROUND_MARKER)});
 const mode = resume ? (process.env.ORCA_FAKE_RESUME ?? "ok") : process.env.ORCA_FAKE_MODE;
 say({ type: "system", subtype: "init" });
 if (mode === "ok") { say({ type: "result", subtype: "success", result: "Pushed the branch.", is_error: false }); process.exit(0); }
+if (mode === "quiet") {
+  await Bun.write(process.env.ORCA_FAKE_LOG + "/runid", process.env.ORCA_RUN_ID ?? "");
+  await Bun.sleep(Number(process.env.ORCA_FAKE_TASK_MS ?? 1000));
+  say({ type: "result", subtype: "success", result: "Done after a quiet wait.", is_error: false });
+  process.exit(0);
+}
 if (mode === "busy") { await Bun.sleep(5000); say({ type: "result", subtype: "success", result: "late", is_error: false }); process.exit(0); }
 const out = process.env.ORCA_FAKE_LOG + "/task-" + process.pid + ".output";
 await Bun.write(out, "Enumerating objects: 5, done.\\nrunning the pre-push gate\\n");
@@ -182,11 +192,13 @@ describe("a run with a background task", () => {
     process.env.ORCA_DATABASE_URL = pg.url;
     await db.close();
     timeoutMinutes = undefined;
+    idleMinutes = undefined;
     agent.onQueuedMessage(async (m) => { await verbs.launchQueued(cfg(), repoCfg(), m); });
   });
 
   afterEach(async () => {
     Object.assign(agent.backgroundWait, saved);
+    Object.assign(agent.idleWatch, savedWatch);
     for (let i = 0; i < 400 && wt && agent.isRunning(wt); i++) await new Promise((r) => setTimeout(r, 25));
     await agent.afterRunsSettled();
     agent.onQueuedMessage(async () => {});
@@ -199,7 +211,7 @@ describe("a run with a background task", () => {
 
   let wt = "";
   const launches = async () => {
-    const files = (await readdir(log)).filter((f) => !f.startsWith("task-")).sort();
+    const files = (await readdir(log)).filter((f) => !f.startsWith("task-") && f !== "runid").sort();
     return Promise.all(files.map(async (f) => JSON.parse(await readFile(join(log, f), "utf8")) as string[]));
   };
   async function settled(n: number) {
@@ -236,6 +248,41 @@ describe("a run with a background task", () => {
     const [turn] = await settled(1);
     expect(turn!.failed).toBe(true);
     expect(await launches()).toHaveLength(1);
+  });
+
+  test("no progress: Orca stops a silent run and labels it, never a bare exit 143", async () => {
+    idleMinutes = 0.01; // 600 ms
+    agent.idleWatch.everyMs = 50;
+    process.env.ORCA_FAKE_MODE = "quiet";
+    process.env.ORCA_FAKE_TASK_MS = "5000";
+    await start();
+    const [turn] = await settled(1);
+    expect(turn!.failed).toBe(true);
+    expect(turn!.response).toStartWith("stopped: no progress for 0.01 min (exit ");
+    expect(turn!.response).toContain("The work so far stands in the worktree.");
+  });
+
+  test("a heavy-queue job of the run is progress: the silent run is not stopped while it holds a slot", async () => {
+    idleMinutes = 0.01;
+    agent.idleWatch.everyMs = 50;
+    process.env.ORCA_FAKE_MODE = "quiet";
+    process.env.ORCA_FAKE_TASK_MS = "2500";
+    await start();
+    let runId = "";
+    for (let i = 0; i < 200 && !runId; i++) {
+      runId = await readFile(join(log, "runid"), "utf8").catch(() => "");
+      if (!runId) await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(runId).not.toBe("");
+    const grant = await heavy.slots().acquire({ kind: "test", command: "bun test", runId });
+    try {
+      const [turn] = await settled(1);
+      expect(turn!.failed).toBeFalsy();
+      expect(turn!.stopReason).toBe("end_turn");
+      expect(turn!.response).toBe("Done after a quiet wait.");
+    } finally {
+      heavy.slots().release(grant.id);
+    }
   });
 
   test("the wait cap: Orca stops the run and resumes the SAME session with the task's output tail", async () => {

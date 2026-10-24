@@ -39,7 +39,7 @@ const kinds = [
 ];
 const overview = () => ({
   instance: "local", kinds,
-  integrations: [{ id: "discord", kind: "discord", name: "Discord", instance: "*", enabled: true, config: {}, running: true, health: { ok: true } }],
+  integrations: [{ id: "discord", kind: "discord", name: "Discord", instance: "*", enabled: true, config: {}, access: "read-write", events: "trigger", running: true, health: { ok: true } }],
   links: [
     { id: "discord-chan", integrationId: "discord", externalId: "C1", label: "#chan", level: "ask", repos: [], requireMention: true },
     { id: "discord-all", integrationId: "discord", externalId: "*", label: "All channels and DMs", level: "admin", repos: ["r"], requireMention: true },
@@ -106,6 +106,29 @@ describe("the Integrations page", () => {
     expect(all("link-level", second)[0]!.textContent).toBe("Viewer");
   });
 
+  test("each account shows its Access and Events; an account's events turn a link's switch off, never on", async () => {
+    const data = overview();
+    apiFake.integrationsData = data;
+    await open("/integrations");
+    const card = all("integration-card")[0]!;
+    expect(card.querySelector('[aria-label="Discord access"]')!.textContent).toBe("Read and write");
+    expect(card.querySelector('[aria-label="Discord events"]')!.textContent).toBe("Wake an agent");
+    const agentSwitch = () => all("integration-link")[0]!.querySelector<HTMLElement>('[data-slot="link-notify-agent"] [role="switch"]')!;
+    expect(agentSwitch().getAttribute("aria-checked")).toBe("true");
+    expect(agentSwitch().hasAttribute("disabled")).toBe(false);
+    act(() => root?.unmount());
+    container?.remove();
+
+    apiFake.integrationsData = { ...data, integrations: [{ ...data.integrations[0]!, access: "read", events: "record" }] };
+    await open("/integrations");
+    const ro = all("integration-card")[0]!;
+    expect(ro.querySelector('[aria-label="Discord access"]')!.textContent).toBe("Read");
+    expect(ro.querySelector('[aria-label="Discord events"]')!.textContent).toBe("Inbox only");
+    expect(agentSwitch().getAttribute("aria-checked")).toBe("false"); // the link says on; the account says no agent
+    expect(agentSwitch().hasAttribute("disabled")).toBe(true);
+    expect(all("integration-link")[0]!.querySelector<HTMLElement>('[data-slot="link-notify-me"] [role="switch"]')!.getAttribute("aria-checked")).toBe("true");
+  });
+
   test("each link has two switches, Notify me and Notify agent, on unless the link says off; a click saves that one switch", async () => {
     const data = overview();
     data.links = [{ ...data.links[0]!, notifyAgent: false } as typeof data.links[0], data.links[1]!];
@@ -124,9 +147,9 @@ describe("the Integrations page", () => {
     expect(apiFake.integrationPosts[0]!.body.notifyAgent).toBeUndefined(); // only the switch you flipped
   });
 
-  const gmailKind = { kind: "gmail", label: "Gmail", caps: {}, place: "sender address", oauth: { provider: "google", label: "Connect with Google" }, switches: { watch: false, checkAuth: true },
-    config: [{ key: "clientId", label: "OAuth client id" }, { key: "watch", label: "Watch new mail" }, { key: "checkAuth", label: "Require auth" }] };
-  const gmailCard = (oauth?: Record<string, unknown>) => ({ id: "gm", kind: "gmail", name: "My Gmail", instance: "*", enabled: true, config: { clientId: "cid" }, running: true, health: { ok: !oauth?.reconnect }, ...(oauth ? { oauth } : {}) });
+  const gmailKind = { kind: "gmail", label: "Gmail", caps: {}, place: "sender address", oauth: { provider: "google", label: "Connect with Google" }, switches: { checkAuth: true },
+    config: [{ key: "clientId", label: "OAuth client id" }, { key: "checkAuth", label: "Require auth" }] };
+  const gmailCard = (oauth?: Record<string, unknown>) => ({ id: "gm", kind: "gmail", name: "My Gmail", instance: "*", enabled: true, access: "read", events: "off", config: { clientId: "cid" }, running: true, health: { ok: !oauth?.reconnect }, ...(oauth ? { oauth } : {}) });
 
   test("a Gmail card: Connect with Google asks the bridge for Google's consent URL and goes there", async () => {
     // This test page is plain http (http://orca.test): a configured https redirect origin lets Connect run.
@@ -180,16 +203,26 @@ describe("the Integrations page", () => {
     expect(all("oauth-connect", row)[0]!.textContent).toBe("Reconnect to allow sending");
   });
 
-  test("the Gmail Connect form shows Watch new mail and the auth check as switches, with the adapter's defaults", async () => {
+  test("the Gmail Connect form shows the auth check as a switch, with the adapter's default (on)", async () => {
     apiFake.integrationsData = { ...overview(), kinds: [gmailKind], integrations: [], links: [], pairings: [] };
     await open("/integrations");
     await click(all("integration-connect")[0]!);
-    const send = dialog()!.querySelector<HTMLElement>('[data-slot="int-cfg-watch"]')!;
-    expect(send.getAttribute("role")).toBe("switch");
-    expect(send.getAttribute("aria-checked")).toBe("false");
-    expect(dialog()!.querySelector<HTMLElement>('[data-slot="int-cfg-checkAuth"]')!.getAttribute("aria-checked")).toBe("true");
-    await click(send);
-    expect(send.getAttribute("aria-checked")).toBe("true");
+    expect(dialog()!.querySelector('[data-slot="int-cfg-watch"]')).toBeNull(); // events are the core policy, on the card
+    const auth = dialog()!.querySelector<HTMLElement>('[data-slot="int-cfg-checkAuth"]')!;
+    expect(auth.getAttribute("role")).toBe("switch");
+    expect(auth.getAttribute("aria-checked")).toBe("true");
+    await click(auth);
+    expect(auth.getAttribute("aria-checked")).toBe("false");
+  });
+
+  test("a Gmail card carries the core policy row (Access, Events) beside Connect with Google", async () => {
+    apiFake.integrationsData = { ...overview(), kinds: [gmailKind], integrations: [gmailCard()], links: [], pairings: [] };
+    await open("/integrations");
+    const card = all("integration-card")[0]!;
+    expect(all("integration-policy", card)).toHaveLength(1);
+    expect(card.querySelector('[aria-label="My Gmail access"]')!.textContent).toBe("Read");
+    expect(card.querySelector('[aria-label="My Gmail events"]')!.textContent).toBe("Off");
+    expect(all("integration-oauth", card)).toHaveLength(1);
   });
 
   test("back from Google with a failure: one action-failed notification, and the query leaves the URL", async () => {

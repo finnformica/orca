@@ -2,7 +2,7 @@
 // so both the store and the e2e tests import it directly.
 
 import type { CiFailureEvidence, CiStatus, ConversationComment, Mergeable, ReviewSignal, ReviewStatus, ReviewThreadEvidence } from "../../server/gh";
-import { AUTOFIX_MARKER, OUTCOME_CONTRACT, withOutcomeContract, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn, type TurnCheck, type TurnSource } from "../../shared/agent";
+import { AUTOFIX_MARKER, OUTCOME_CONTRACT, runStopLabel, withOutcomeContract, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn, type RunStop, type TurnCheck, type TurnSource } from "../../shared/agent";
 import { AUTO_MODEL, MODELS, modelLabel, prettyModel } from "../../shared/models";
 import { SNIPPETS, WRITING_STYLE } from "../../shared/writingStyle";
 import { asksForInput } from "../../shared/notifications";
@@ -1182,6 +1182,7 @@ export function ladderStep(streak: FailStreak | undefined, mode: "suggest" | "ap
 export type WakeExit =
   | { kind: "budget"; budgetUsd: number }
   | { kind: "timeout"; minutes: number }
+  | { kind: "idle"; minutes: number }
   | { kind: "restart" }
   | { kind: "no-reply" }
   | { kind: "error"; code: number; stderr: string };
@@ -1193,6 +1194,7 @@ export function wakeExitReason(exit: WakeExit): string {
   switch (exit.kind) {
     case "budget": return `hit the ${exit.budgetUsd} USD budget cap`;
     case "timeout": return `timed out at ${exit.minutes} minute${exit.minutes === 1 ? "" : "s"}`;
+    case "idle": return `made no progress for ${Number(exit.minutes.toPrecision(3))} min`;
     case "restart": return "was cut off by an Orca restart";
     case "no-reply": return "ended without a reply";
     case "error": return `exited with code ${exit.code}${exit.stderr ? `: ${exit.stderr}` : ""}`;
@@ -1398,14 +1400,17 @@ export function workerEvent(input: {
   denied?: string[];
   /** HEAD's commits on no remote when the run ended (git.unpushedHere). */
   unpushed?: number;
+  /** Orca stopped the run itself (no progress, or the hard ceiling): the header names it. */
+  stop?: RunStop;
 }): string {
   const { outcome: o, check } = input;
   const list = (label: string, items: string[] | undefined) => (items?.length ? [`${label}:`, ...items.map((i) => `- ${i}`)] : []);
   return [
-    `${WORKER_EVENT_MARKER} ${input.repo}/${input.branch}${input.title ? ` "${input.title}"` : ""} — ${input.status}`,
+    `${WORKER_EVENT_MARKER} ${input.repo}/${input.branch}${input.title ? ` "${input.title}"` : ""} — ${input.stop ? runStopLabel(input.stop) : input.status}`,
     ...(check ? [`Orca's check \`${check.command}\` ${check.ok ? "passed" : `FAILED (exit ${check.exitCode}):\n${clip(check.output, 600)}`}`] : []),
     // After the check line: isWorkerProblem reads a failed check on line two.
     ...(input.unpushed ? [`${input.unpushed} commit${input.unpushed === 1 ? "" : "s"} not pushed`] : []),
+    ...(input.stop ? ["Orca stopped this run. This is not a model failure: the model ladder does not count it. The work so far stands; continue it with orca send."] : []),
     ...(o ? [`Outcome: ${clip(o.outcome, 1500)}`, ...list("Remaining", o.remaining), ...list("Decisions", o.decisions), ...list("Commits", o.commits)]
       : [`Response: ${clip(input.response ?? "(none)", 1500)}`]),
     ...list("Denied tool calls (scoped mode — tell the user if the work needs them)", input.denied?.slice(0, 10)),
@@ -1824,7 +1829,11 @@ const ORCA_COMMANDS = [
   "                                  (from:ana newer_than:7d …). --account: its id or name; omit it with one account",
   "  orca gmail read <message id> [--account <name>]   one mail: headers, text and attachment names.",
   "                                  Read only: no verb sends mail or marks it read. Tell the user what a mail says",
-  "  orca channels                   the channel links (Slack, Discord, email…), subscriptions and pairing codes",
+  "  --account <id or name>          on orca slack / orca cloudflare / orca gmail: the connected account to use. Needed only when",
+  "                                  the kind has more than one. An account with read access refuses every write",
+  "                                  verb (post, send, delete…): tell the user, never work around it",
+  "  orca channels                   each account's access and events, the channel links (Slack, Discord, email…),",
+  "                                  subscriptions and pairing codes",
   "  orca post --link <id> [--thread <id> | --repo <repo> --branch <branch>] \"<text>\"   post through a channel",
   "                                  link (retried if it fails); with --repo/--branch, in that workstream's thread.",
   "                                  Answer an outside sender on the link their message came from",

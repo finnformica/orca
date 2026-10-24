@@ -16,12 +16,17 @@ that you can revoke at Google at any time.
 - **Connect.** You press **Connect with Google** on the integration's card. Google asks you to allow
   access. Google sends your browser back to Orca. Orca stores the refresh token encrypted in its
   secret store. Orca never sees your Google password.
-- **Watch new mail.** Each account has one switch, **Watch new mail** (`watch`, default off).
-  - On (events `trigger`): every `pollSeconds` (default 30, at least 10) the primary bridge reads
-    the Gmail History API from a stored cursor (`users.history.list` from a `historyId`). Matching
-    mail wakes Orca. A tick with no new mail is one API call.
-  - Off: Orca does not poll the account, and its mail brings no event. The orchestrator can still
-    use `orca gmail search` and `orca gmail read` on it.
+- **Access and Events.** Each account has the two settings of the core's account policy
+  ([POLICY.md](POLICY.md)), on its card. A new Gmail account starts at Access **Read** and Events
+  **Off**.
+  - Events **Wake an agent** (`trigger`): every `pollSeconds` (default 30, at least 10) the primary
+    bridge reads the Gmail History API from a stored cursor (`users.history.list` from a
+    `historyId`). Matching mail wakes Orca. A tick with no new mail is one API call.
+  - Events **Inbox only** (`record`): Orca polls the same way. Matching mail shows in the bell and
+    the Inbox, and wakes no agent.
+  - Events **Off**: Orca makes no Gmail call for events, and the account brings no event. The
+    orchestrator can still use `orca gmail search` and `orca gmail read` on it.
+  - A change on the card applies at the next tick. The adapter does not restart.
   - Orca has no public address, so it does not use Pub/Sub push (section 11 tells a later way).
 - **The query.** Only mail that matches the integration's Gmail `query` goes to Orca. The default is
   `label:Orca OR to:<you>+orca@<your domain>`. Gmail does the match with its own search, so the
@@ -43,8 +48,8 @@ that you can revoke at Google at any time.
 
 ## 2. Scopes
 
-The scopes follow the account's **access** setting (the access policy: `read` or `read-write`). An
-account with no access setting is `read`.
+The scopes follow the account's **Access** setting on its card (the core's account policy: `read`
+or `read-write`). A new Gmail account is `read`.
 
 | Scope | Asked for | Why |
 |---|---|---|
@@ -78,7 +83,7 @@ Google** again. Google keeps a scope that it granted until you revoke the grant.
   Only that mail becomes an event.
 - Every other mail stays private. Orca does not keep it, show it or give it to an agent.
 - `orca gmail search` and `orca gmail read` let the orchestrator read any mail in a connected
-  account, also an account with **Watch new mail** off. They are read only. They work only in your own chat with the orchestrator. Orca refuses them for a wake
+  account, also an account with Events **Off**. They are read only. They work only in your own chat with the orchestrator. Orca refuses them for a wake
   that an outside sender caused.
 - The refresh token is AES-256-GCM ciphertext in the `secret` table (scope `integrations`, name
   `gmail.<integration id>.refresh_token`). The access token is in the bridge's memory only. No token
@@ -179,18 +184,19 @@ with `ORCA_SECRET_`, so agents never see it. An empty box means `ORCA_SECRET_GOO
 3. Paste the **OAuth client id**. It is not a secret, but keep it out of the repo: it is per box.
 4. If the client secret is a stored Orca secret, type its path in **Client secret: stored Orca
    secret**.
-5. Turn on **Watch new mail** if matching mail must wake Orca. Leave it off for search and read only.
-6. Change the **Gmail query** if you want. Empty means `label:Orca OR to:<you>+orca@<your domain>`.
-7. Click **Save**.
-8. On the new card, click **Connect with Google**.
-9. Select the Google account for this integration. Allow the access that Google shows.
-10. Google sends you back to the Integrations page. The card says
+5. Change the **Gmail query** if you want. Empty means `label:Orca OR to:<you>+orca@<your domain>`.
+6. Click **Save**.
+7. On the new card, click **Connect with Google**.
+8. Select the Google account for this integration. Allow the access that Google shows.
+9. Google sends you back to the Integrations page. The card says
    `Signed in as <your address> · read only`.
-11. Add a link. Use the catch-all link (external id `*`) for every sender, or one link for each
+10. Add a link. Use the catch-all link (external id `*`) for every sender, or one link for each
     sender address.
-12. Add yourself as a person, with your Gmail address as an identity. Then your own notes to your
+11. Add yourself as a person, with your Gmail address as an identity. Then your own notes to your
     `+orca` address get your grant. A sender who is not a person gets a read-only grant (ADAPTERS.md
     section 10).
+
+On the card, set **Events** (Wake an agent, Inbox only or Off) and keep **Access** at Read.
 
 In Gmail, make a label named `Orca`. Put the label on a mail to give it to Orca. You can also make a
 Gmail filter that puts the label on some mail. A mail to `<you>+orca@<your domain>` goes to Orca with
@@ -204,16 +210,16 @@ Do the steps in this section one time for each account. All accounts can use the
 and the same client secret.
 
 - Give each account its own name, for example `personal` and `work`.
-- Turn on **Watch new mail** only for an account whose mail must wake Orca. For example, turn it on
-  for `work` and leave it off for `personal`. Orca then never polls `personal`.
+- Set Events to **Wake an agent** only for an account whose mail must wake Orca. For example, set
+  it for `work` and leave `personal` at **Off**. Orca then never polls `personal`.
 - In step 8, select the right Google account. Google shows an account chooser.
 - Each account has its own refresh token, its own cursor and its own card.
 
-**Watch new mail** and the access policy: a shared policy for every adapter (access `read` |
-`read-write`, events `trigger` | `record` | `off`) is in work on another branch. Until it lands,
-`watch` is the one Gmail setting. It maps 1:1: on is events `trigger`, off is events `off`
-(`gmailEvents`). The scopes read the policy's `access` on the row (`gmailAccess`); until the policy
-lands, every Gmail account is `read`. Both verbs are reads (`GMAIL_VERBS`).
+The two settings are the core's account policy ([POLICY.md](POLICY.md)): `access` (`read` |
+`read-write`) chooses the scopes (`gmailAccess`), and `events` (`trigger` | `record` | `off`) chooses
+whether Orca polls and whether an agent wakes. Both `orca gmail` verbs are reads (`GMAIL_VERBS`,
+`meta.verbs`), and `--account` uses the core's `policy.useAccount`. A new Gmail row starts at `read`
+and `off` (`meta.policyDefaults`).
 
 ### More than one Orca server
 
@@ -235,8 +241,7 @@ Each value can be a string, as the Settings form saves it.
 | `clientId` | (required) | The OAuth client id. |
 | `clientSecretStored` | none | The path (`scope/name`) of a stored Orca secret that holds the client secret. It wins over the secret variable. |
 | `query` | `label:Orca OR to:<you>+orca@<domain>` | The Gmail search that selects Orca's mail. |
-| `watch` | `false` | Watch new mail: poll, and let matching mail wake Orca. |
-| `pollSeconds` | 30 | The poll interval of a watched account, in seconds. At least 10. An account with **Watch new mail** off does not poll. |
+| `pollSeconds` | 30 | The poll interval in seconds, at least 10. An account with Events **Off** does not poll. |
 | `allowedSenders` | none | Addresses, or `@domain` for a domain, separated by commas. Empty: every sender that the query finds. |
 | `checkAuth` | `true` | Require Google's DKIM, SPF or DMARC pass for the From domain. |
 | `keepQuoted` | `false` | Keep the quoted history of a reply in the text. |

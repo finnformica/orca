@@ -35,10 +35,11 @@ import { stateDir } from "./state";
 import { API_PORT } from "./ports";
 import { reachable } from "./peer";
 import { machineReport } from "./liveMetrics";
-import { cloudflareTool } from "./cloudflare";
+import { CLOUDFLARE_ACCOUNT_ENV, CLOUDFLARE_TOKEN_ENV, cloudflareTool, cloudflareVerb } from "./cloudflare";
 import { slackTool } from "./slackTool";
 import { gmailTool } from "./gmailTool";
-import { featuresOf, runsHere, type OrcaConfig, type RepoConfig } from "./config";
+import * as policy from "./integrations/policy";
+import { featuresOf, runLimits, runsHere, type OrcaConfig, type RepoConfig } from "./config";
 import {
   MODEL_LADDER, NO_REPLY_PLACEHOLDER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, boardText, briefProblems, continuation, isWorkerEvent, isWorkerProblem, onlyCleanReports,
   handoffRef, joinMessages, ladderStep, mergedPrIsHistory, nextFailStreak, orchStatusText, orchStatusUpdate, verifiedMark, verifiedState, orchestratorPrompt, sessionHint, sweepText, turnSource, wakeExitReason, wakeProgress, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
@@ -191,7 +192,7 @@ export function compact(cfg: OrcaConfig): Promise<{ runId: string }> {
       provider: "claude", resume: b.sessionId, repo: ORCHESTRATOR_REPO, branch: ORCHESTRATOR_BRANCH,
       instruction: "/compact", action: "compact", queue: false, model: modelOf(cfg, b), source: "human", // your button
       mcpAllow: "all", // its cwd's `.mcp.json` is yours (minus any browser server)
-      timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
+      ...runLimits(cfg),
     });
     return { runId };
   });
@@ -244,7 +245,7 @@ export async function onRunFinished(cfg: OrcaConfig, run: agent.RunFinished): Pr
   const unpushed = await git.unpushedHere(run.cwd);
   const text = workerEvent({
     repo, branch, title: e.title as string | undefined, runId: run.runId, status: run.status,
-    outcome: run.structured, response: run.result, check: run.check, denied: run.meta?.permissionDenials, unpushed,
+    outcome: run.structured, response: run.result, check: run.check, denied: run.meta?.permissionDenials, unpushed, stop: run.exit.stop,
   }) + (opened ? `\n${opened}` : "") + (step ? `\n${step}` : "");
   await report(cfg, text, run.key);
 }
@@ -256,7 +257,8 @@ export async function onRunFinished(cfg: OrcaConfig, run: agent.RunFinished): Pr
 async function ladder(cfg: OrcaConfig, repoName: string, branch: string, e: db.Fields, run: agent.RunFinished): Promise<string | undefined> {
   const prev = e.failStreak as FailStreak | undefined;
   const failed = run.status === "error" || run.check?.ok === false;
-  const streak = run.status === "stopped" ? prev : nextFailStreak(prev, run.options.model ?? (e.preferredModel as string | undefined), failed);
+  // A run you stopped, or one Orca stopped (no progress, the hard ceiling), is not a model failure.
+  const streak = run.status === "stopped" || run.exit.stop ? prev : nextFailStreak(prev, run.options.model ?? (e.preferredModel as string | undefined), failed);
   if (JSON.stringify(streak) !== JSON.stringify(prev)) await db.patchEnrichment(repoName, branch, { failStreak: streak ?? null });
   if (run.continued) return undefined;
   const repo = cfg.repos.find((r) => r.name === repoName);
@@ -323,6 +325,7 @@ export async function deliverReport(cfg: OrcaConfig, text: string, key?: string)
 function wakeExit(cfg: OrcaConfig, run: agent.RunFinished): WakeExit | undefined {
   if (run.status === "stopped") return undefined;
   if (run.exit.budgetReached) return { kind: "budget", budgetUsd: run.options.maxBudgetUsd ?? budgetOf(cfg) ?? 0 };
+  if (run.exit.stop) return { kind: run.exit.stop.kind === "idle" ? "idle" : "timeout", minutes: run.exit.stop.minutes };
   if (run.exit.timedOut) return { kind: "timeout", minutes: (run.options.timeoutMs ?? 0) / 60_000 };
   if (run.status === "error") return { kind: "error", code: run.exit.code, stderr: run.exit.stderr || (run.result ?? "").slice(-300) };
   if (run.result?.trim() === NO_REPLY_PLACEHOLDER) return { kind: "no-reply" };
@@ -460,7 +463,7 @@ async function wake(cfg: OrcaConfig, fresh: string[], grant?: Grant, freshReplyT
       source: turnSource(messages),
       model: modelOf(cfg, b), maxBudgetUsd: budgetOf(cfg),
       mcpAllow: "all", // its cwd's `.mcp.json` is yours (minus any browser server)
-      timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
+      ...runLimits(cfg),
       // Everything Claude Code has in a terminal (bypassPermissions), as the user asked: a manager
       // who can find things out, run things and fix the machine. `orchestratorShell: false` keeps
       // it to `orca`, reading, the web and read-only subagents — nothing that can change this machine.
@@ -634,13 +637,15 @@ async function refuseAttachments(integrationId: string, refs: string[]): Promise
 async function channelsText(): Promise<string> {
   const [links, conns, subs, pairings] = await Promise.all([integrationStore.links(), integrationStore.integrations(), integrationStore.subscriptions(), integrationStore.pendingPairings()]);
   const byId = new Map(conns.map((c) => [c.id, c]));
+  // Each account's policy first (docs/integrations/POLICY.md): what Orca may do, and what its events do.
+  const accounts = conns.map((c) => `account ${c.id} · ${c.kind} ${c.name} · access ${c.access ?? "read-write"}${c.access === "read" ? " (no post, send or delete)" : ""} · events ${c.events ?? "trigger"}${c.events === "record" ? " (inbox only, never wakes an agent)" : c.events === "off" ? " (nothing is recorded)" : ""}`);
   const lines = links.length ? links.map((l) => {
     const c = byId.get(l.integrationId);
     return `link ${l.id} · ${c?.kind ?? "?"} ${c?.name ?? l.integrationId} on ${c ? (c.instance === "*" ? "automatic" : c.instance) : "?"} · ${l.externalId}${l.label ? ` (${l.label})` : ""} · ${l.level}${repoScoped(l.level) ? ` on ${l.repos.join(", ") || "no repos"}` : ""}${l.requireMention ? " · mention required" : ""}${l.notifyMe === false ? " · notify me off" : ""}${l.notifyAgent === false ? " · notify agent off: it never wakes you" : ""}${l.externalId === "*" ? " · catch-all: post with --channel <id> [--thread <id>]" : ""}`;
   }) : ["no channel links"];
   const subLines = subs.map((s) => `sub ${s.id} · ${s.topicPattern}${Object.keys(s.filter).length ? ` ${JSON.stringify(s.filter)}` : ""} → ${s.targetKind}${s.targetId ? ` ${s.targetId}` : ""}${s.digestSeconds ? ` · digest ${s.digestSeconds}s` : ""}`);
   const pairLines = pairings.map((p) => `pairing ${p.code} · ${p.adapter}:${p.externalId}${p.name ? ` (${p.name})` : ""} waits for the user's approval`);
-  return [...lines, ...subLines, ...pairLines].join("\n");
+  return [...accounts, ...lines, ...subLines, ...pairLines].join("\n");
 }
 
 /** Who an outside grant came from, for the card: the paired person's name and the link's adapter
@@ -1001,12 +1006,26 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
     case "handoff": return handoffVerb(cfg, words, args);
     // `orca cloudflare …` (server/cloudflare.ts): reads, and three writes behind --confirm. The grant
     // check above keeps the writes to the user's own chat; the write log names who woke it.
-    case "cloudflare": return cloudflareTool(args, { by: wakeGrant ? `outside sender (${wakeGrant.level} grant)` : "orchestrator (your chat)" });
+    // `--account` picks one Cloudflare account, and its access is checked (policy.useAccount).
+    case "cloudflare": {
+      const by = wakeGrant ? `outside sender (${wakeGrant.level} grant)` : "orchestrator (your chat)";
+      if (!words.length || words[0] === "help") return cloudflareTool(args, { by });
+      const c = await policy.useAccount("cloudflare", cloudflareVerb(words), args.account);
+      const accountId = typeof c?.config.accountId === "string" ? c.config.accountId : undefined;
+      return cloudflareTool(args, { by, env: policy.accountEnv(c, CLOUDFLARE_TOKEN_ENV, { [CLOUDFLARE_ACCOUNT_ENV]: accountId }) });
+    }
     // `orca slack …` (server/slackTool.ts): read, search and post as the user. The grant check above
     // keeps it to the user's own chat (an unknown verb is the owner's); the post log names who.
-    case "slack": return slackTool(args, { by: wakeGrant ? `outside sender (${wakeGrant.level} grant)` : "orchestrator (your chat)" });
-    // `orca gmail search|read` (server/gmailTool.ts): read only, the user's own chat only (the grant
-    // check above refuses an unknown verb for an outside sender). A reply goes through `orca post`.
+    // `--account` picks one Slack account, and its access is checked (policy.useAccount).
+    case "slack": {
+      const by = wakeGrant ? `outside sender (${wakeGrant.level} grant)` : "orchestrator (your chat)";
+      const sub = String(words[0] ?? "");
+      if (!sub || sub === "help") return slackTool(args, { by });
+      const c = await policy.useAccount("slack", sub, args.account);
+      return slackTool(args, { by, env: policy.accountEnv(c, "SLACK_TOKEN") });
+    }
+    // `orca gmail search|read` (server/gmailTool.ts): both READ verbs (GMAIL_VERBS); `--account` picks
+    // the account through the access policy (policy.useAccount), your own chat only (the grant check).
     case "gmail": return gmailTool(args);
     case "notes": {
       if (words[0] !== "set") return (await blob()).notes || "(empty)";

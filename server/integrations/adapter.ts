@@ -1,7 +1,7 @@
 // The Adapter contract (docs/research/integrations.md §3.3; how to write one: docs/integrations/
 // ADAPTERS.md). One adapter per platform. The core owns everything else — dedupe, the permission
 // gate, routing, the durable outbox, retry, threads — so an adapter only speaks its platform.
-import type { AdapterKind, AutoLease, Capabilities, InboundEnvelope, OutboundMessage, SendResult, Target } from "../../shared/integrations";
+import type { Access, AdapterKind, AutoLease, EventsMode, Capabilities, InboundEnvelope, OutboundMessage, SendResult, Target } from "../../shared/integrations";
 /** What `ingest` did with one inbound message (see `AdapterContext.ingest`). */
 export type IngestVerdict = "new" | "noted" | "duplicate" | "rejected";
 
@@ -18,6 +18,10 @@ export type Connection = {
   secretRef?: string; // an environment variable name: ORCA_SECRET_* or one of server/env.ts ORCA_SECRETS
   enabled: boolean;
   auto?: AutoLease; // an Automatic row's lease (status.auto): who runs it now
+  /** The account policy (docs/integrations/POLICY.md). Absent = the defaults: read-write, trigger.
+   *  The core enforces both; an adapter only reads them (to skip a poll that has events off). */
+  access?: Access;
+  events?: EventsMode;
 };
 
 /** What the core hands an adapter at start. */

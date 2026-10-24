@@ -1,6 +1,6 @@
 // `orca gmail …`: the orchestrator reads the user's Gmail (docs/integrations/gmail.md). Each connected
 // account is its own integration row; `--account <id or name>` picks one, and may be left out when
-// only one is connected (the access policy's pickAccount rule). The bridge calls the Gmail API with
+// only one is connected (the core's account policy: policy.useAccount, docs/integrations/POLICY.md). The bridge calls the Gmail API with
 // that row's access token (./integrations/adapters/gmail/oauth.ts: the refresh token is a stored
 // secret, the access token stays in memory), never printed. Both verbs are READS (GMAIL_VERBS); Gmail
 // has no write verb. The grant check (shared/integrations.ts grantRefusal: an unknown verb is the
@@ -12,8 +12,7 @@ import { clip } from "../shared/integrations";
 import { parseMail } from "./integrations/adapters/email/mime";
 import { fromBase64Url, header, type Gmail } from "./integrations/adapters/gmail/google";
 import * as oauth from "./integrations/adapters/gmail/oauth";
-import * as store from "./integrations/store";
-import type { Connection } from "./integrations/adapter";
+import * as policy from "./integrations/policy";
 
 type Args = Record<string, unknown> & { _?: unknown[] };
 
@@ -27,22 +26,6 @@ export const SEARCH_MAX = 50;
 export const READ_TEXT_MAX = 20_000;
 
 export class GmailToolError extends Error {}
-
-/** The Gmail account to read: `--account <id or name>` (case-insensitive), else the only enabled one.
- *  Several and no name is an error, never a guess. */
-export async function gmailAccount(want?: string): Promise<Connection> {
-  const rows = (await store.integrations()).filter((c) => c.kind === "gmail" && c.enabled);
-  const list = rows.map((r) => (r.name && r.name !== r.id ? `${r.id} (${r.name})` : r.id)).join(", ");
-  const name = want?.trim().toLowerCase();
-  if (name) {
-    const c = rows.find((r) => r.id.toLowerCase() === name) ?? rows.find((r) => r.name.toLowerCase() === name);
-    if (!c) throw new GmailToolError(`no Gmail account "${want}" (accounts: ${list || "none"})`);
-    return c;
-  }
-  if (!rows.length) throw new GmailToolError("no Gmail account is connected: the user connects one in Integrations > Connect > Gmail (docs/integrations/gmail.md)");
-  if (rows.length > 1) throw new GmailToolError(`${rows.length} Gmail accounts are connected (${list}): name one with --account <name>`);
-  return rows[0]!;
-}
 
 const dateOf = (internalDate?: string): string => {
   const n = Number(internalDate);
@@ -86,8 +69,9 @@ export async function gmailTool(args: Args): Promise<string> {
   const sub = words[0] ?? "";
   if (!sub || sub === "help") return GMAIL_USAGE;
   if (sub !== "search" && sub !== "read") throw new GmailToolError(`unknown subcommand "${sub}" (Gmail is read only: there is no write verb).\n${GMAIL_USAGE}`);
-  if (args.account !== undefined && (typeof args.account !== "string" || !args.account.trim())) throw new GmailToolError("--account needs an account id or name (orca channels lists them)");
-  const c = await gmailAccount(typeof args.account === "string" ? args.account : undefined);
+  // The core's account policy picks the row and checks its access (both verbs are reads: GMAIL_VERBS).
+  const c = await policy.useAccount("gmail", sub, args.account);
+  if (!c) throw new GmailToolError("no Gmail account is connected: the user connects one in Integrations > Connect > Gmail (docs/integrations/gmail.md)");
   const g = oauth.gmailFor(c);
   const out = sub === "search" ? await search(g, words, args) : await read(g, words);
   return `Gmail account ${c.name && c.name !== c.id ? `${c.name} (${c.id})` : c.id}\n${out}`;
