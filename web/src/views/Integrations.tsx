@@ -24,7 +24,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Empty, Pill, SectionTitle, StatusDot, VCard } from "@/components/console";
 import {
-  SUBSCRIPTION_PRESETS, deadTargetLabel, filterText, healthLine, healthTone, identityLabel, identityProblem, instanceText, newPersonId as personId, integrationProblem, linkProblem, parseFilter, targetLabel,
+  SUBSCRIPTION_PRESETS, connectOriginProblem, deadTargetLabel, filterText, healthLine, healthTone, identityLabel, identityProblem, instanceText, newPersonId as personId, integrationProblem, linkProblem, parseFilter, targetLabel,
   type IntegrationCard, type InstanceOption, type IntegrationsOverview, type LinkRow, type Pairing, type PersonRow,
 } from "../../../shared/integrationSettings";
 import { ACCESS_LABEL, ACCESS_VALUES, AUTO_INSTANCE, CATCH_ALL, EVENTS_LABEL, EVENTS_VALUES, LEVEL_LABEL, LINK_LEVELS as LEVELS, STORED_SECRET_PREFIX, effectiveNotify, isAutomatic, repoScoped, storedSecretName, type AdapterMeta, type EventsMode, type LinkLevel } from "../../../shared/integrations";
@@ -58,7 +58,7 @@ async function act(label: string, path: string, body: Record<string, unknown>, d
 }
 
 /** A destructive click asks first, in shadcn's AlertDialog: `ask(title, body, run)` and render `node`. */
-function useConfirm(): [(title: string, body: string, run: () => void) => void, ReactNode] {
+function useConfirm(action = "Remove"): [(title: string, body: string, run: () => void) => void, ReactNode] {
   const [q, setQ] = useState<{ title: string; body: string; run: () => void } | null>(null);
   const node = (
     <AlertDialog open={!!q} onOpenChange={(o) => { if (!o) setQ(null); }}>
@@ -69,7 +69,7 @@ function useConfirm(): [(title: string, body: string, run: () => void) => void, 
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction variant="destructive" onClick={() => { q?.run(); setQ(null); }}>Remove</AlertDialogAction>
+          <AlertDialogAction variant="destructive" onClick={() => { q?.run(); setQ(null); }}>{action}</AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
@@ -82,6 +82,7 @@ export function IntegrationsPage() {
   const [error, setError] = useState<string>();
   const load = () => api.integrations().then((d) => { setData(d); setError(undefined); }).catch((e) => setError(e instanceof Error ? e.message : String(e)));
   useEffect(() => poll(load, 15_000), []);
+  useEffect(() => oauthReturn(), []);
   const reload = () => void load();
   return (
     <div className="max-w-4xl space-y-6" data-slot="integrations-page">
@@ -103,6 +104,69 @@ export function IntegrationsPage() {
           <DeadCard data={data} onChange={reload} />
         </>
       )}
+    </div>
+  );
+}
+
+/** Back from Google (`/integrations?oauth=connected|failed&id=…&detail=…`): a failure is the one
+ *  action-failed notification; success shows on the card. The query is then taken off the URL. */
+function oauthReturn(): void {
+  const q = new URLSearchParams(window.location.search);
+  const result = q.get("oauth");
+  if (!result) return;
+  if (result === "failed") {
+    const error = q.get("detail") || "Google sign-in failed";
+    const label = `Connect ${q.get("id") ?? "Gmail"} with Google`;
+    notifyLocal({ kind: "action_failed", repo: "", title: "Integrations", label: `${label} failed`, body: error, copy: `Action: ${label}\nError:\n${error}`, ask: `Integrations: ${label} failed: ${error}. Please investigate and fix.` });
+  }
+  for (const k of ["oauth", "id", "detail"]) q.delete(k);
+  window.history.replaceState(window.history.state, "", `${window.location.pathname}${q.size ? `?${q}` : ""}${window.location.hash}`);
+}
+
+/** The scopes Google granted, in words (server/integrations/adapters/gmail.ts scopeWords for the browser). */
+const grantedWords = (scopes: string[] = []): string =>
+  !scopes.some((x) => x.endsWith("/gmail.readonly")) ? "no Gmail scope" : scopes.some((x) => x.endsWith("/gmail.send")) ? "read + send" : "read only";
+
+/** The Connect button's text: a missing send scope (access switched to read-write) asks to allow sending. */
+export function oauthButtonLabel(label: string, o: IntegrationCard["oauth"]): string {
+  if (!o?.account) return label;
+  if (o.missing?.some((x) => x.endsWith("/gmail.send"))) return "Reconnect to allow sending";
+  return label.replace(/^Connect/, "Reconnect");
+}
+
+/** An OAuth kind's row on the card: the account it connected, or why it needs you, and its Connect /
+ *  Reconnect / Disconnect. Connect asks the bridge for Google's consent URL and goes there. */
+function OAuthRow({ card: c, label, onChange }: { card: IntegrationCard; label: string; onChange: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [ask, confirmNode] = useConfirm("Disconnect");
+  const o = c.oauth;
+  const connected = !!o?.account;
+  // Google redirects only to an https domain: from a plain-http or localhost page, say where to go.
+  const originProblem = typeof c.config.redirectOrigin === "string" && c.config.redirectOrigin ? undefined : connectOriginProblem(window.location.origin);
+  const go = async () => {
+    setBusy(true);
+    const r = await act(`${label} (${c.name})`, "oauth/google/start", { id: c.id, origin: window.location.origin }, () => {});
+    if (r && typeof r.url === "string") window.location.assign(r.url);
+    else setBusy(false);
+  };
+  return (
+    <div data-slot="integration-oauth" className="flex flex-col gap-2 px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+      <div className="min-w-0">
+        <div className="break-words">
+          {connected
+            ? <>Signed in as <span className="font-medium">{o!.account}</span> · {grantedWords(o!.scopes)}</>
+            : "Not connected. Save the client id and secret, then sign in with Google."}
+        </div>
+        {originProblem && <div data-slot="oauth-origin" className="text-geist-amber mt-0.5 break-words text-xs">{originProblem}</div>}
+        {o?.reconnect && <div data-slot="oauth-reconnect" className="text-geist-red mt-0.5 break-words text-xs">{o.reconnect}</div>}
+      </div>
+      <div className="flex items-center gap-2 sm:shrink-0">
+        {connected && <Button variant="ghost" size="sm" className="max-sm:h-10" onClick={() => ask(`Disconnect ${c.name}?`, "Orca revokes its access at Google and deletes the stored refresh token. The integration, its links and its events stay.", () => void act(`Disconnect ${c.name}`, "oauth/google/disconnect", { id: c.id }, onChange))}>Disconnect</Button>}
+        <Button size="sm" variant={connected && !o?.reconnect && !o?.missing?.length ? "secondary" : "default"} disabled={busy || !!originProblem} onClick={() => void go()} data-slot="oauth-connect" className="max-sm:h-10 max-sm:flex-1">
+          {oauthButtonLabel(label, o)}
+        </Button>
+      </div>
+      {confirmNode}
     </div>
   );
 }
@@ -167,6 +231,7 @@ function IntegrationCardView({ card: c, data, onChange }: { card: IntegrationCar
         </div>
       </div>
       <PolicyRow card={c} onChange={onChange} />
+      {meta?.oauth && <OAuthRow card={c} label={meta.oauth.label} onChange={onChange} />}
       {links.length === 0
         ? <div className="text-muted-foreground flex items-center justify-between gap-2 px-4 py-3 text-xs">No {meta?.place ?? "link"}s linked. Orca listens only where a link says so.
             <Button variant="ghost" size="sm" onClick={() => setLinkOpen("new")}><Plus />Add</Button></div>
@@ -292,6 +357,9 @@ function FormDialog({ title, description, problem, busy, onSubmit, onClose, chil
   );
 }
 
+/** A switch's value: the stored "true" / "false", else the adapter's default for the key. */
+const switchOn = (v: string | undefined, dflt: boolean): boolean => (v === undefined || v === "" ? dflt : v === "true");
+
 function ConnectButton({ kinds, options, onSaved }: { kinds: AdapterMeta[]; options: InstanceOption[]; onSaved: () => void }) {
   const [open, setOpen] = useState(false);
   return (
@@ -360,11 +428,18 @@ function IntegrationDialog({ kinds, options, existing, onClose, onSaved }: { kin
       <Field label="Stored secret" htmlFor="int-stored-secret">
         <StoredSecretSelect id="int-stored-secret" value={storedSecretName(secretRef) ?? ""} onChange={(v) => setSecretRef(v ? `${STORED_SECRET_PREFIX}${v}` : storedSecretName(secretRef) !== undefined ? "" : secretRef)} />
       </Field>
-      {meta?.config?.map((f) => (
-        <Field key={f.key} label={f.label} htmlFor={`int-cfg-${f.key}`}>
-          <Input id={`int-cfg-${f.key}`} value={config[f.key] ?? ""} placeholder={f.placeholder} onChange={(e) => setConfig({ ...config, [f.key]: e.target.value })} />
-        </Field>
-      ))}
+      {meta?.config?.map((f) => meta.switches && f.key in meta.switches
+        ? (
+          <div key={f.key} className="flex items-center justify-between gap-3">
+            <Label htmlFor={`int-cfg-${f.key}`}>{f.label}</Label>
+            <Switch id={`int-cfg-${f.key}`} data-slot={`int-cfg-${f.key}`} checked={switchOn(config[f.key], meta.switches[f.key]!)} onCheckedChange={(on) => setConfig({ ...config, [f.key]: on ? "true" : "false" })} />
+          </div>
+        )
+        : (
+          <Field key={f.key} label={f.label} htmlFor={`int-cfg-${f.key}`}>
+            <Input id={`int-cfg-${f.key}`} value={config[f.key] ?? ""} placeholder={f.placeholder} onChange={(e) => setConfig({ ...config, [f.key]: e.target.value })} />
+          </Field>
+        ))}
     </FormDialog>
   );
 }
@@ -392,7 +467,7 @@ function StoredSecretSelect({ id, value, onChange }: { id: string; value: string
         <SelectItem value={NO_STORED_SECRET}><span className="font-sans">None: use a secret variable</span></SelectItem>
         {choices.length > 0 && <SelectSeparator />}
         {choices.map((n) => <SelectItem key={n} value={n}>{n}</SelectItem>)}
-        {names !== undefined && !names.length && <SelectLabel className="font-sans">No stored secrets yet. Save one with /secret in the chat.</SelectLabel>}
+        {names !== undefined && !names.length && <SelectGroup><SelectLabel className="font-sans">No stored secrets yet. Save one with /secret in the chat.</SelectLabel></SelectGroup>}
       </SelectContent>
     </Select>
   );

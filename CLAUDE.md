@@ -188,7 +188,7 @@ adapter: `docs/integrations/ADAPTERS.md`). Every event is a keyed envelope in `e
 writes one beside each NEW notification, same key). `subscription` rows plan `delivery` rows in the
 same transaction; the dispatcher (primary only) claims them `FOR UPDATE SKIP LOCKED`, backs off 5 s →
 1 h and marks a row dead after 6 attempts (`orca.integration.failed`, an `integration_failed`
-notification). Adapters (`web`, `webhook`, `slack`, `discord`, `email`, `linear`) start only on a primary bridge:
+notification). Adapters (`web`, `webhook`, `slack`, `discord`, `email`, `gmail`, `linear`) start only on a primary bridge:
 the one of `integration.instance`, or for Automatic (`*`, the default) the primary with the secret
 that holds the row's lease (`status.auto`, 150 s, renewed each sync — the failover when it lapses). Secrets stay in env vars named `ORCA_SECRET_*` (stripped from agents) or in
 Orca's secret store; a row holds only the name. **Any secret ref** — `secret_ref` and every config key
@@ -244,6 +244,34 @@ mention or another person's comment on your issue is `ext.linear.message` in the
 has no `actor` (the link's level is the grant, no pairing); `Envelope.display` gives the activity row
 its sender and the issue as the place. `orca post --reply` comments as you under that comment
 (`parentId`); a thread-linked issue gets PR state. The card shows `last poll` (`lastPollAt`).
+**Gmail** (`adapters/gmail.ts`, `adapters/gmail/{google,oauth}.ts`, `docs/integrations/gmail.md`) is the
+user's own mailboxes, READ ONLY, by **Connect with Google** (OAuth code + PKCE; the card's button from
+`meta.oauth`). Each account is its own named row (`personal`, `smfstudio`). Scopes follow the row's
+access (`gmailAccess`, the access policy's `access`; no field = read): read = `openid`, `userinfo.email`,
+`gmail.readonly`; read-write adds `gmail.send`, and a switch to read-write shows "Reconnect to allow
+sending", which asks Google ONLY for the missing scope (`consentScopes`, `include_granted_scopes=true`).
+Never `gmail.modify`; nothing is marked read. The send verb is NOT built (`caps.outbound` false, `send`
+refuses), so no reply path yet (Finn's call). `POST /api/integrations/oauth/google/start` answers the consent
+URL for the page's `Origin`; Google sends the browser to `<origin>/api/integrations/oauth/google/callback`
+(answered here, never forwarded, so a tailnet HTTPS name works). The origin is `config.redirectOrigin` (a
+configured public base) else the page's Origin, and must be https on a domain name
+(`connectOriginProblem`, shared with the card): never 127.0.0.1:8787, localhost, an IP or plain http,
+which get "open the https address" (ORCA_SERVER_URL when set) and a disabled Connect button. The PKCE state is encrypted in cursor
+row `<id>:oauth`; the refresh token is the stored secret `integrations/gmail.<id>.refresh_token`; access
+tokens stay in memory. The client secret is the row's secret_ref through the core's shared secret
+refs (`secretRefs`: `secret:<scope>/<name>`, e.g. one saved with /secret, or a variable; default
+`ORCA_SECRET_GOOGLE_OAUTH` via `meta.secretDefault`). The client id is box config (the Connect
+form), never in the repo.
+Events are the core's account policy (`docs/integrations/POLICY.md`; a new Gmail row is `read` + `off`
+via `meta.policyDefaults`, verbs via `meta.verbs`): with events `off` the loop makes no Gmail call (it
+rereads the row each tick, so the card's change applies at once); `trigger` / `record` poll the History
+API from a `{ historyId, account }` cursor every `pollSeconds` (30, at least 10: `GMAIL_POLL_DEFAULT_S` /
+`GMAIL_POLL_MIN_S`; a quiet tick is ONE users.history.list call; push by Gmail watch + a Pub/Sub pull
+subscription is a documented later step). Gmail decides the `query` match (default `label:Orca OR to:<you>+orca@…`, plus `rfc822msgid:` of
+each new mail), so other mail is read only as labels + Message-ID. Topic `ext.gmail.message`, channel =
+sender address, thread = Gmail thread id. A refused refresh token is `reconnect needed` on the card and
+is not tried again. `orca gmail search|read [--account <id or name>]` (`server/gmailTool.ts`; both READ
+verbs, `GMAIL_VERBS`; the account by `policy.useAccount`) is your own chat only.
 **Slack** (`adapters/slack.ts`, `docs/integrations/slack.md`) is two-way AS YOU: the row's token is your
 user token (`SLACK_TOKEN`, xoxp) — the ONLY token (Finn's call: no app-level token, no Socket Mode
 setup). Inbound POLLS every `pollSeconds` (60): DMs and group DMs by `conversations.history` (hot ones

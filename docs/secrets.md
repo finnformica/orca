@@ -66,6 +66,10 @@ Every integration can use a stored secret as its token or password: set its secr
 decrypts the value with `secrets.reveal` when the adapter starts, and keeps it in memory only. No
 agent, log or `.env` file gets it. Each read writes one audit row with action `integration`.
 
+Orca also stores one integration secret itself: the Gmail adapter keeps each account's refresh
+token as `integrations/gmail.<integration id>.refresh_token` ([gmail.md](integrations/gmail.md)).
+Disconnect and Remove delete it.
+
 ## The paste guard
 
 The chat composer holds text that looks like a key before it is sent. It knows the shape of each of

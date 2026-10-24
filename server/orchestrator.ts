@@ -38,6 +38,7 @@ import { machineReport } from "./liveMetrics";
 import { CLOUDFLARE_ACCOUNT_ENV, CLOUDFLARE_TOKEN_ENV, cloudflareTool, cloudflareVerb } from "./cloudflare";
 import { recordOwnWrite as recordCloudflareWrite } from "./integrations/adapters/cloudflare";
 import { slackTool } from "./slackTool";
+import { gmailTool } from "./gmailTool";
 import * as policy from "./integrations/policy";
 import { featuresOf, runLimits, runsHere, type OrcaConfig, type RepoConfig } from "./config";
 import {
@@ -1027,6 +1028,9 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       const c = await policy.useAccount("slack", sub, args.account);
       return slackTool(args, { by, env: policy.accountEnv(c, "SLACK_TOKEN") });
     }
+    // `orca gmail search|read` (server/gmailTool.ts): both READ verbs (GMAIL_VERBS); `--account` picks
+    // the account through the access policy (policy.useAccount), your own chat only (the grant check).
+    case "gmail": return gmailTool(args);
     case "notes": {
       if (words[0] !== "set") return (await blob()).notes || "(empty)";
       const text = words.slice(1).join(" ").trim();
@@ -1034,7 +1038,7 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       await patch({ notes: text });
       return "Notes saved.";
     }
-    default: throw new Error(`unknown command "${verb}". Commands: board, machine, spawn, send, address, archive, stop [--drop-queue], sweep [--confirm], merge --when-green, preview [--status | --push-to-template [--confirm]], status, chats, read, notes, handoff, cloudflare, slack`);
+    default: throw new Error(`unknown command "${verb}". Commands: board, machine, spawn, send, address, archive, stop [--drop-queue], sweep [--confirm], merge --when-green, preview [--status | --push-to-template [--confirm]], status, chats, read, notes, handoff, cloudflare, slack, gmail`);
   }
 }
 

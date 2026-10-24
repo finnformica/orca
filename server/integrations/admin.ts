@@ -16,9 +16,10 @@ import * as store from "./store";
 import * as dispatcher from "./dispatcher";
 import * as secretRefs from "./secretRefs";
 import type { Connection } from "./adapter";
+import * as gmailOauth from "./adapters/gmail/oauth";
 
 const user = () => db.currentUser();
-type Status = { ok?: boolean; detail?: string; at?: number; startedAt?: number; error?: string | null; lastEventAt?: number; lastPollAt?: number; secretSet?: boolean; secretMissing?: Record<string, number> };
+type Status = { oauth?: IntegrationCard["oauth"] | null; ok?: boolean; detail?: string; at?: number; startedAt?: number; error?: string | null; lastEventAt?: number; lastPollAt?: number; secretSet?: boolean; secretMissing?: Record<string, number> };
 
 async function statuses(): Promise<Map<string, Status>> {
   return db.withRetry(async (sql) => {
@@ -85,6 +86,7 @@ export async function overview(here = db.instanceName(), now = Date.now()): Prom
       ...(c.secretRef ? { secretRef: c.secretRef } : {}), ...(secretSet !== undefined ? { secretSet } : {}),
       ...(auto && runsOn ? { runsOn } : {}), ...(secretMissingOn.length ? { secretMissingOn } : {}),
       running, ...(h ? { health: h } : {}), ...(lastEventAt ? { lastEventAt } : {}), ...(lastPollAt ? { lastPollAt } : {}),
+      ...(s.oauth ? { oauth: c.kind === "gmail" ? gmailOauth.cardOAuth(c, s.oauth) : s.oauth } : {}),
     };
   });
   const deadRows: DeadRow[] = dead.map((d) => ({
@@ -113,6 +115,9 @@ export async function saveIntegration(b: Record<string, unknown>): Promise<void>
   const problem = integrationProblem(c, registry.kinds().map((k) => k.kind), ORCA_SECRETS);
   if (problem) fail(problem);
   const isNew = !(await store.integration(c.id));
+  // A new row of a kind with its own defaults (Gmail: read, off) gets them where the body names none.
+  const defaults = registry.meta(c.kind)?.policyDefaults;
+  if (isNew && defaults) Object.assign(c, { ...defaults, ...policyOf(b) });
   await store.addIntegration(c);
   if (isNew) await registry.onConnect(c);
   await registry.sync().catch(() => {});
@@ -142,12 +147,14 @@ export async function setEnabled(id: string, on: boolean): Promise<void> {
 
 /** Remove the row, its links and the subscriptions that post to them. Events and deliveries stay. */
 export async function removeIntegration(id: string): Promise<void> {
+  // An OAuth kind: revoke the grant at Google and delete the stored refresh token first.
+  if ((await store.integration(id))?.kind === "gmail") await gmailOauth.disconnect(id, "integration removed").catch(() => {});
   await db.withRetry(async (sql) => {
     await sql.begin(async (tx: Bun.SQL) => {
       const ls = await tx`DELETE FROM channel_link WHERE user_id = ${user()} AND integration_id = ${id} RETURNING id`;
       const ids = (ls as { id: string }[]).map((l) => l.id);
       if (ids.length) await tx`DELETE FROM subscription WHERE user_id = ${user()} AND target_kind = 'link' AND target_id IN ${tx(ids)}`;
-      await tx`DELETE FROM integration_cursor WHERE user_id = ${user()} AND integration_id = ${id}`;
+      await tx`DELETE FROM integration_cursor WHERE user_id = ${user()} AND integration_id IN (${id}, ${`${id}:oauth`})`;
       await tx`DELETE FROM integration WHERE user_id = ${user()} AND id = ${id}`;
     });
   });

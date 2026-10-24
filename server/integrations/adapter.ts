@@ -27,7 +27,8 @@ export type Connection = {
 /** What the core hands an adapter at start. */
 export type AdapterContext = {
   connection: Connection;
-  /** The token, from the environment; undefined when unset. Never pass it to an agent or a log. */
+  /** The token the row's `secretRef` names: a variable, or `secret:<name>` from Orca's secret store
+   *  (secretRefs.ts); undefined when unset. Never pass it to an agent or a log. */
   secret(): string | undefined;
   /** Hand one inbound event to the core: dedupe on `key`, gate the sender, record, route.
    *  "duplicate" = seen before (a retry or a reconnect); "rejected" = the gate dropped it. */
