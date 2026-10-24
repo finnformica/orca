@@ -2,7 +2,7 @@
 // Through db.withRetry like every other query, so a dropped connection is retried and an outage is
 // db.DbUnavailable. Every row carries user_id (db.currentUser()).
 import * as db from "../db";
-import { AUTO_INSTANCE, digestWindow, PAIRING_TTL_MS, type AutoLease, type DeliveryState, type DeliveryTarget, type Envelope, type Level, type PlannedDelivery, type Subscription, type TargetKind } from "../../shared/integrations";
+import { AUTO_INSTANCE, DEFAULT_ACCESS, DEFAULT_EVENTS, digestWindow, PAIRING_TTL_MS, type Access, type AutoLease, type DeliveryState, type EventsMode, type DeliveryTarget, type Envelope, type Level, type PlannedDelivery, type Subscription, type TargetKind } from "../../shared/integrations";
 import type { Connection } from "./adapter";
 import type { Notification } from "../../shared/notifications";
 import { muteKey, OWN_EVENT, type Conversation, type OutboundRecord, type ThreadLinkRecord } from "../../shared/inbox";
@@ -11,20 +11,25 @@ const user = () => db.currentUser();
 
 // ── integration (credentials: a variable NAME only) ─────────────────────────────────────────────
 
-type IntegrationRow = { id: string; kind: string; name: string; instance: string; config: Record<string, unknown> | null; secret_ref: string | null; enabled: boolean; auto: AutoLease | null };
+type IntegrationRow = { id: string; kind: string; name: string; instance: string; config: Record<string, unknown> | null; secret_ref: string | null; enabled: boolean; auto: AutoLease | null; access: Access | null; events: EventsMode | null };
 const toConnection = (r: IntegrationRow): Connection => ({
   id: r.id, kind: r.kind, name: r.name, instance: r.instance, config: r.config ?? {},
   ...(r.secret_ref ? { secretRef: r.secret_ref } : {}), enabled: r.enabled,
+  access: r.access ?? DEFAULT_ACCESS, events: r.events ?? DEFAULT_EVENTS,
   ...(r.auto && typeof r.auto.holder === "string" ? { auto: { holder: r.auto.holder, until: Number(r.auto.until) } } : {}),
 });
 
 export async function addIntegration(c: Connection): Promise<void> {
   return db.withRetry(async (sql) => {
     await sql`
-      INSERT INTO integration (id, user_id, kind, name, instance, config, secret_ref, enabled, created_at)
-      VALUES (${c.id}, ${user()}, ${c.kind}, ${c.name}, ${c.instance}, ${c.config}, ${c.secretRef ?? null}, ${c.enabled}, ${Date.now()})
+      INSERT INTO integration (id, user_id, kind, name, instance, config, secret_ref, enabled, created_at, access, events)
+      VALUES (${c.id}, ${user()}, ${c.kind}, ${c.name}, ${c.instance}, ${c.config}, ${c.secretRef ?? null}, ${c.enabled}, ${Date.now()},
+        ${c.access ?? DEFAULT_ACCESS}, ${c.events ?? DEFAULT_EVENTS})
       ON CONFLICT (user_id, id) DO UPDATE SET kind = EXCLUDED.kind, name = EXCLUDED.name, instance = EXCLUDED.instance,
-        config = EXCLUDED.config, secret_ref = EXCLUDED.secret_ref, enabled = EXCLUDED.enabled`;
+        config = EXCLUDED.config, secret_ref = EXCLUDED.secret_ref, enabled = EXCLUDED.enabled,
+        -- An edit that does not name the policy keeps the stored one (docs/integrations/POLICY.md).
+        access = CASE WHEN ${c.access ?? null}::text IS NULL THEN integration.access ELSE EXCLUDED.access END,
+        events = CASE WHEN ${c.events ?? null}::text IS NULL THEN integration.events ELSE EXCLUDED.events END`;
   });
 }
 
@@ -32,17 +37,26 @@ export async function addIntegration(c: Connection): Promise<void> {
 export async function integrations(instance?: string): Promise<Connection[]> {
   return db.withRetry(async (sql) => {
     const rows = instance === undefined
-      ? await sql`SELECT id, kind, name, instance, config, secret_ref, enabled, status->'auto' AS auto FROM integration WHERE user_id = ${user()} ORDER BY id`
-      : await sql`SELECT id, kind, name, instance, config, secret_ref, enabled, status->'auto' AS auto FROM integration WHERE user_id = ${user()} AND instance IN (${instance}, ${AUTO_INSTANCE}) ORDER BY id`;
+      ? await sql`SELECT id, kind, name, instance, config, secret_ref, enabled, access, events, status->'auto' AS auto FROM integration WHERE user_id = ${user()} ORDER BY id`
+      : await sql`SELECT id, kind, name, instance, config, secret_ref, enabled, access, events, status->'auto' AS auto FROM integration WHERE user_id = ${user()} AND instance IN (${instance}, ${AUTO_INSTANCE}) ORDER BY id`;
     return (rows as IntegrationRow[]).map(toConnection);
   });
 }
 
 export async function integration(id: string): Promise<Connection | undefined> {
   return db.withRetry(async (sql) => {
-    const rows = await sql`SELECT id, kind, name, instance, config, secret_ref, enabled, status->'auto' AS auto FROM integration WHERE user_id = ${user()} AND id = ${id}`;
+    const rows = await sql`SELECT id, kind, name, instance, config, secret_ref, enabled, access, events, status->'auto' AS auto FROM integration WHERE user_id = ${user()} AND id = ${id}`;
     const r = (rows as IntegrationRow[])[0];
     return r ? toConnection(r) : undefined;
+  });
+}
+
+/** Set an account's policy: one or both of access and events (docs/integrations/POLICY.md). */
+export async function setPolicy(id: string, p: { access?: Access; events?: EventsMode }): Promise<boolean> {
+  return db.withRetry(async (sql) => {
+    const rows = await sql`UPDATE integration SET access = COALESCE(${p.access ?? null}::text, access), events = COALESCE(${p.events ?? null}::text, events)
+      WHERE user_id = ${user()} AND id = ${id} RETURNING id`;
+    return rows.length > 0;
   });
 }
 

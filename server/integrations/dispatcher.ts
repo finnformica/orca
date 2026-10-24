@@ -3,7 +3,7 @@
 // orchestrator's inbox, a workstream follow-up, or the web. A failure backs off (5 s, 30 s, 2 min,
 // 10 min, 1 h, respecting retryAfterMs); after the sixth attempt the row is dead and
 // `orca.integration.failed` is published (the web hears it as an `integration_failed` notification).
-import { afterAttempt, attachmentRefusal, CATCH_ALL_SEND_ERROR, clip, deleteRefusal, sendsToCatchAll, digestEnvelope, paceWait, type DeliveryTarget, type Envelope, type OutboundMessage, type SendResult, type TargetKind } from "../../shared/integrations";
+import { afterAttempt, attachmentRefusal, CATCH_ALL_SEND_ERROR, clip, deleteRefusal, integrationAccessRefusal, sendsToCatchAll, digestEnvelope, paceWait, type DeliveryTarget, type Envelope, type OutboundMessage, type SendResult, type TargetKind } from "../../shared/integrations";
 import type { Adapter } from "./adapter";
 import * as router from "./router";
 import * as store from "./store";
@@ -57,6 +57,11 @@ async function sendOne(d: store.Delivery, now: number): Promise<SendResult | { d
       if (sendsToCatchAll(t)) return { ok: false, retryable: false, error: CATCH_ALL_SEND_ERROR };
       const a = sinks.adapter(t.integrationId);
       if (!a) return { ok: false, retryable: true, error: `integration ${t.integrationId} is not running on this bridge` };
+      // The account policy, read fresh (a Settings change applies with no restart): a row planned
+      // before the account went read-only ends here, never at the adapter.
+      const conn = await store.integration(t.integrationId);
+      const denied = conn && integrationAccessRefusal(conn, d.envelope.deleteMessage ? "delete" : "send");
+      if (denied) return { ok: false, retryable: false, error: denied };
       // Files an adapter cannot send end the delivery with a clear error: never a post without them.
       // The count only here (no bytes read); an adapter with size limits checks the bytes it reads.
       const noFiles = attachmentRefusal(a.kind, { attachments: a.caps.attachments, maxAttachments: a.caps.maxAttachments }, (d.envelope.attachments ?? []).map((name) => ({ name })));

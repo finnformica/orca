@@ -2,7 +2,7 @@
 // gate the sender against its link (§3.7), then `publish`. `publish` is everyone's: record the event
 // once by its key and plan its deliveries in the same transaction, then kick the dispatcher.
 import { randomUUID } from "crypto";
-import { CATCH_ALL, CATCH_ALL_SEND_ERROR, effectiveGrant, sendsToCatchAll, INBOUND_LIMIT, paceWait, planDeliveries, replyToOf, type ConversationRef, type Envelope, type Grant, type InboundEnvelope, type PlannedDelivery, type ReplyTo } from "../../shared/integrations";
+import { CATCH_ALL, CATCH_ALL_SEND_ERROR, effectiveGrant, effectiveNotify, integrationAccessRefusal, sendsToCatchAll, INBOUND_LIMIT, paceWait, planDeliveries, replyToOf, type ConversationRef, type Envelope, type Grant, type InboundEnvelope, type PlannedDelivery, type ReplyTo } from "../../shared/integrations";
 import { replyRefusal } from "../../shared/inbox";
 import * as store from "./store";
 import type { IngestVerdict } from "./adapter";
@@ -30,7 +30,13 @@ export async function publish(input: InboundEnvelope & { grant?: Grant }, now = 
     e.thread ? store.threadLink(e.thread.adapter, e.thread.externalId) : Promise.resolve(undefined),
   ]);
   const kinds = new Map(conns.map((c) => [c.id, c.kind]));
-  const links = new Map(allLinks.map((l) => [l.id, { integrationId: l.integrationId, adapter: kinds.get(l.integrationId) ?? "?", externalId: l.externalId }]));
+  // The account policy (docs/integrations/POLICY.md): a post is a write. An explicit post to a read
+  // account is refused; a subscription to one plans nothing (no dead rows, no failure notice).
+  const verb = e.deleteMessage ? "delete" : "send";
+  const writeRefusal = new Map(conns.map((c) => [c.id, integrationAccessRefusal(c, verb)]));
+  for (const d of extra) if (d.target.kind === "link") { const r = writeRefusal.get(d.target.integrationId); if (r) throw new Error(r); }
+  const links = new Map(allLinks.filter((l) => !writeRefusal.get(l.integrationId))
+    .map((l) => [l.id, { integrationId: l.integrationId, adapter: kinds.get(l.integrationId) ?? "?", externalId: l.externalId }]));
   const plan = planDeliveries(e, subs, links, threads, inbound);
   // The web shows an event once: an explicit web target beside a subscription's is the same row.
   const planned = [...plan, ...extra.filter((d) => d.target.kind !== "web" || !plan.some((p) => p.target.kind === "web"))];
@@ -112,8 +118,10 @@ export async function ingest(integrationId: string, e: InboundEnvelope, now = Da
   if (paceWait(times, now, INBOUND_LIMIT.count, INBOUND_LIMIT.windowMs) > 0) return "rejected";
   recent.set(who, [...times.filter((t) => now - t < INBOUND_LIMIT.windowMs), now]);
   // A link's switches (both on by default): Notify me shows the message to you, Notify agent lets
-  // it wake an agent. Both off: nothing is recorded.
-  const notify = { me: link.notifyMe !== false, agent: link.notifyAgent !== false };
+  // it wake an agent. The account's events mode narrows them (`record`: no agent; `off`: neither),
+  // never widens them (docs/integrations/POLICY.md). Both off: nothing is recorded.
+  const conn = await store.integration(integrationId);
+  const notify = effectiveNotify({ me: link.notifyMe !== false, agent: link.notifyAgent !== false }, conn?.events);
   if (!notify.me && !notify.agent) return "rejected";
   // A person keeps the grant of who they are; an unknown sender (no principal) gets `notify`: a
   // READ-ONLY wake (no verb, no reply) and a notification. No pairing code: People is the manual way.
@@ -124,7 +132,7 @@ export async function ingest(integrationId: string, e: InboundEnvelope, now = Da
   // A notify link takes no machine event in — except, when its integration says so
   // (`config.machineEventsOnNotify`): recorded and fanned out to its subscriptions with the grant
   // "notify", so no agent acts on it (shared/integrations.ts agentMay).
-  if (grant.level === "notify" && !e.actor && !(await machineEventsOnNotify(integrationId))) return "rejected";
+  if (grant.level === "notify" && !e.actor && conn?.config.machineEventsOnNotify !== true) return "rejected";
   const principalId = grant.principalId;
   const r = await publish({
     ...e, source: { ...e.source, integrationId, linkId: link.id },
@@ -133,11 +141,6 @@ export async function ingest(integrationId: string, e: InboundEnvelope, now = Da
   }, now, notify.me ? [{ subscriptionId: null, target: { kind: "web" } }] : []);
   // No agent will answer it (read-only, or Notify agent off): the adapter opens no thread for it.
   return r.status === "new" && (grant.level === "notify" || !notify.agent) ? "noted" : r.status;
-}
-
-/** The integration's switch for machine events on a notify link. Off unless set to exactly `true`. */
-async function machineEventsOnNotify(integrationId: string): Promise<boolean> {
-  return (await store.integration(integrationId))?.config.machineEventsOnNotify === true;
 }
 
 async function firstLink(integrationId: string, places: string[]): Promise<store.Link | undefined> {

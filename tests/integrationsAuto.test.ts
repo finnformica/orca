@@ -73,7 +73,7 @@ describe("decisions (pure)", () => {
 
   test("health: an Automatic row nobody runs names the variable and the instances without it", () => {
     const opts = instanceOptions(["cloud", "local"], { cloud: "orca-flow-box", local: "finns-mbp" }, "Flow", "cloud");
-    const card = (over: Partial<IntegrationCard> = {}): IntegrationCard => ({ id: "d", kind: "discord", name: "Discord", instance: AUTO_INSTANCE, enabled: true, config: {}, secretRef: "ORCA_SECRET_DISCORD_BOT", running: false, ...over });
+    const card = (over: Partial<IntegrationCard> = {}): IntegrationCard => ({ id: "d", kind: "discord", name: "Discord", instance: AUTO_INSTANCE, enabled: true, config: {}, access: "read-write", events: "trigger", secretRef: "ORCA_SECRET_DISCORD_BOT", running: false, ...over });
     const missing = card({ secretMissingOn: ["cloud", "local"] });
     expect(healthLine(missing, 0, opts)).toBe("ORCA_SECRET_DISCORD_BOT is not set on Flow / orca-flow-box, finns-mbp. Set it there and restart Orca.");
     expect(healthTone(missing)).toBe("error");
