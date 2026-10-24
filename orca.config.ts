@@ -138,7 +138,8 @@ const config: OrcaConfig = {
   ],
   portRange: [10_000, 65_000], // previews pick a random free port in here (TCP max is 65535)
   staleHours: 24,
-  agentTimeoutMinutes: 45,
+  agentIdleMinutes: 20, // stop a run after this long with no progress
+  agentMaxRunMinutes: 240, // the hard ceiling for one run
 };
 
 export default config;

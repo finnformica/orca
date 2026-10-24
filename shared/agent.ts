@@ -85,6 +85,19 @@ export function withoutFinalEcho(steps: AgentStep[], response: string): AgentSte
  *  run's cost cap; `interrupted` is you stopping it (kept distinct because the session stays
  *  resumable); `error` is everything else. */
 export type StopReason = "end_turn" | "requires_action" | "budget_reached" | "interrupted" | "error";
+/** Why Orca itself stopped a run: no progress for `agentIdleMinutes` (`idle`), or the hard ceiling
+ *  `agentMaxRunMinutes` (`ceiling`). Either ends the process with SIGTERM (exit 143). Neither is a
+ *  model failure: the model ladder does not count it. */
+export type RunStop = { kind: "idle" | "ceiling"; minutes: number };
+const minutesText = (m: number): string => `${Number(m.toPrecision(3))} min`;
+/** The label a stopped run carries instead of a bare "exit 143". Pure. */
+export const runStopLabel = (stop: RunStop): string =>
+  stop.kind === "idle" ? `stopped: no progress for ${minutesText(stop.minutes)}` : `stopped: hard limit of ${minutesText(stop.minutes)} reached`;
+/** Has a run gone `idleMs` with no progress? `busy` (a heavy-queue job of the run is queued or
+ *  running, or the CLI waits on its own background task) is progress: that time never counts. Pure. */
+export function idleExpired(input: { now: number; lastProgressAt: number; idleMs: number; busy: boolean }): boolean {
+  return !input.busy && input.now - input.lastProgressAt >= input.idleMs;
+}
 /** Who a turn answers. `human`: you spoke — typed, the quick-ask box, the palette, a toast's Ask, the
  *  New-draft box. `agents`: an automated wake, woken by worker reports alone. Recorded on the
  *  orchestrator's turns (the chat's Chat / Agents channels); a worker's turns leave it unset. */

@@ -915,6 +915,12 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   run and queues ONE resume of the same session (`BACKGROUND_MARKER`, each task's command and output
   tail); a resumed run that ends the same way is an error. The worker report says `N commits not
   pushed` (`git.unpushedHere`).
+  (4) **A run stops on no progress, not on wall-clock time** (2026-10-24, Finn: runs died in the
+  heavy queue or a long pre-push gate). `agentIdleMinutes` (20): no stream event and no heavy-queue
+  job of the run (queued or running) for that long stops it (`idleExpired`, `agent.idleWatch`).
+  `agentMaxRunMinutes` (240) is the hard ceiling; `agentTimeoutMinutes` is its deprecated alias
+  (`config.runLimits`). Both stops are labelled (`runStopLabel`: `stopped: no progress for 20 min`,
+  never a bare exit 143) on the turn and the worker report, and the model ladder does not count them.
 - **One primary bridge per instance** (`server/primary.ts`; incident 2026-10-14: four hand-started
   bridges from reaped worktrees kept running stale code on the shared database, and one woke the
   orchestrator with a deleted `bin/` on PATH). Background duties — orchestrator wakes/recovery, the

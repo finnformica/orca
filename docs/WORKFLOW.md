@@ -392,8 +392,9 @@ browser notifications in **Settings**.
 These rules come from the operation of Orca on one 16 GB box. To make Orca apply a rule, put it in
 the orchestrator's notes or in a repo's `CLAUDE.md`.
 
-- **Commit and push early.** Orca stops a run after `agentTimeoutMinutes` (45 in the seed config). A
-  SIGTERM shows as exit 143. Work that is not pushed at that time can be lost.
+- **Commit and push early.** Orca stops a run after `agentIdleMinutes` (20) with no progress, or at
+  `agentMaxRunMinutes` (240). The turn then says `stopped: no progress for 20 min` or names the hard
+  limit. Work that is not pushed at that time stays in the worktree, but other instances cannot see it.
 - **Do not wait for background jobs.** The run ends when the agent stops.
 - **Do not use headless browsers in workers.** Use `orca-shot <url> [--viewport 390x844] [--dark] …`.
   It goes into the queue for the bridge's one browser, which has a memory limit. It prints

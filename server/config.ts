@@ -181,7 +181,12 @@ export type OrcaConfig = {
   portRange: [number, number];
   /** Hours a PR's Slack message may sit before a bump is allowed. */
   staleHours: number;
-  /** Hard ceiling for one headless agent run, preventing abandoned sessions consuming quota. */
+  /** Stop a headless agent run after this many minutes with no progress (default 20). Progress is
+   *  any new event on the CLI's stream, or a heavy-queue job of the run that is queued or running. */
+  agentIdleMinutes?: number;
+  /** The hard ceiling for one headless agent run, a safety net above the idle limit (default 240). */
+  agentMaxRunMinutes?: number;
+  /** Deprecated alias of `agentMaxRunMinutes`, read only when that key is unset. */
   agentTimeoutMinutes?: number;
   /** Default model for every repo's headless Claude runs (`--model`), e.g. `claude-fable-5-1`. A
    *  repo's own `agentModel` overrides it. Unset → the `claude` CLI's own default. Claude only. */
@@ -227,6 +232,16 @@ export type OrcaConfig = {
 };
 
 /** The model a repo's Claude runs use: its own pin, else the global default, else the CLI's. Pure. */
+/** Defaults of the run limits (minutes). */
+export const DEFAULT_AGENT_IDLE_MINUTES = 20;
+export const DEFAULT_AGENT_MAX_RUN_MINUTES = 240;
+/** The limits every headless run gets, as launch options: no progress for `agentIdleMinutes`, and
+ *  the hard ceiling `agentMaxRunMinutes` (else the deprecated `agentTimeoutMinutes`). Pure. */
+export const runLimits = (cfg: Pick<OrcaConfig, "agentIdleMinutes" | "agentMaxRunMinutes" | "agentTimeoutMinutes">): { idleMs: number; timeoutMs: number } => ({
+  idleMs: (cfg.agentIdleMinutes ?? DEFAULT_AGENT_IDLE_MINUTES) * 60_000,
+  timeoutMs: (cfg.agentMaxRunMinutes ?? cfg.agentTimeoutMinutes ?? DEFAULT_AGENT_MAX_RUN_MINUTES) * 60_000,
+});
+
 export const modelFor = (cfg: Pick<OrcaConfig, "agentModel">, repo: Pick<RepoConfig, "agentModel">): string | undefined =>
   repo.agentModel ?? cfg.agentModel;
 
@@ -370,8 +385,8 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
   if (d.staleHours !== undefined && (typeof d.staleHours !== "number" || d.staleHours < 0)) {
     errors.push("staleHours must be a non-negative number");
   }
-  if (d.agentTimeoutMinutes !== undefined && (typeof d.agentTimeoutMinutes !== "number" || d.agentTimeoutMinutes <= 0)) {
-    errors.push("agentTimeoutMinutes must be a positive number");
+  for (const k of ["agentIdleMinutes", "agentMaxRunMinutes", "agentTimeoutMinutes"] as const) {
+    if (d[k] !== undefined && (typeof d[k] !== "number" || (d[k] as number) <= 0)) errors.push(`${k} must be a positive number`);
   }
   if (d.agentModel !== undefined && (typeof d.agentModel !== "string" || !d.agentModel.trim())) {
     errors.push("agentModel must be a model id such as claude-fable-5-1");
@@ -411,6 +426,8 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
       repos: repos as RepoConfig[],
       portRange: (portRange as [number, number]) ?? [30000, 40000],
       staleHours: (d.staleHours as number) ?? 24,
+      agentIdleMinutes: d.agentIdleMinutes as number | undefined,
+      agentMaxRunMinutes: d.agentMaxRunMinutes as number | undefined,
       agentTimeoutMinutes: d.agentTimeoutMinutes as number | undefined,
       agentModel: d.agentModel as string | undefined,
       instances: d.instances as Record<string, string> | undefined,
@@ -482,6 +499,8 @@ async function seedFromFile(file: OrcaConfig): Promise<void> {
     app: {
       portRange: file.portRange,
       staleHours: file.staleHours,
+      ...(file.agentIdleMinutes === undefined ? {} : { agentIdleMinutes: file.agentIdleMinutes }),
+      ...(file.agentMaxRunMinutes === undefined ? {} : { agentMaxRunMinutes: file.agentMaxRunMinutes }),
       ...(file.agentTimeoutMinutes === undefined ? {} : { agentTimeoutMinutes: file.agentTimeoutMinutes }),
       ...(file.agentModel === undefined ? {} : { agentModel: file.agentModel }),
       ...(file.orchestratorShell === undefined ? {} : { orchestratorShell: file.orchestratorShell }),
@@ -550,6 +569,8 @@ async function loadFromDb(): Promise<OrcaConfig> {
     }),
     portRange: (app.portRange as [number, number]) ?? [30000, 40000],
     staleHours: (app.staleHours as number) ?? 24,
+    agentIdleMinutes: app.agentIdleMinutes as number | undefined,
+    agentMaxRunMinutes: app.agentMaxRunMinutes as number | undefined,
     agentTimeoutMinutes: app.agentTimeoutMinutes as number | undefined,
     agentModel: app.agentModel as string | undefined,
     instances: app.instances as Record<string, string> | undefined,
@@ -592,6 +613,8 @@ export async function saveConfigDocument(config: OrcaConfig): Promise<void> {
     app: {
       portRange: config.portRange,
       staleHours: config.staleHours,
+      ...(config.agentIdleMinutes === undefined ? {} : { agentIdleMinutes: config.agentIdleMinutes }),
+      ...(config.agentMaxRunMinutes === undefined ? {} : { agentMaxRunMinutes: config.agentMaxRunMinutes }),
       ...(config.agentTimeoutMinutes === undefined ? {} : { agentTimeoutMinutes: config.agentTimeoutMinutes }),
       ...(config.agentModel === undefined ? {} : { agentModel: config.agentModel }),
       ...(config.instances === undefined ? {} : { instances: config.instances }),
