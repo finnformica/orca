@@ -9,7 +9,7 @@
 //   orca gmail search "<gmail query>" [--limit 10] [--account <name>]
 //   orca gmail read <message id> [--account <name>]
 import { clip } from "../shared/integrations";
-import { parseMail } from "./integrations/adapters/email/mime";
+import { parseMail } from "./integrations/adapters/gmail/mime";
 import { fromBase64Url, header, type Gmail } from "./integrations/adapters/gmail/google";
 import * as oauth from "./integrations/adapters/gmail/oauth";
 import * as policy from "./integrations/policy";
@@ -72,7 +72,7 @@ export async function gmailTool(args: Args): Promise<string> {
   // The core's account policy picks the row and checks its access (both verbs are reads: GMAIL_VERBS).
   const c = await policy.useAccount("gmail", sub, args.account);
   if (!c) throw new GmailToolError("no Gmail account is connected: the user connects one in Integrations > Connect > Gmail (docs/integrations/gmail.md)");
-  const g = oauth.gmailFor(c);
+  const g = await oauth.gmailFor(c);
   const out = sub === "search" ? await search(g, words, args) : await read(g, words);
   return `Gmail account ${c.name && c.name !== c.id ? `${c.name} (${c.id})` : c.id}\n${out}`;
 }

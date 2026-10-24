@@ -188,11 +188,11 @@ adapter: `docs/integrations/ADAPTERS.md`). Every event is a keyed envelope in `e
 writes one beside each NEW notification, same key). `subscription` rows plan `delivery` rows in the
 same transaction; the dispatcher (primary only) claims them `FOR UPDATE SKIP LOCKED`, backs off 5 s →
 1 h and marks a row dead after 6 attempts (`orca.integration.failed`, an `integration_failed`
-notification). Adapters (`web`, `webhook`, `slack`, `discord`, `email`, `gmail`, `linear`) start only on a primary bridge:
+notification). Adapters (`web`, `webhook`, `slack`, `discord`, `gmail`, `linear`, `cloudflare`) start only on a primary bridge:
 the one of `integration.instance`, or for Automatic (`*`, the default) the primary with the secret
 that holds the row's lease (`status.auto`, 150 s, renewed each sync — the failover when it lapses). Secrets stay in env vars named `ORCA_SECRET_*` (stripped from agents) or in
 Orca's secret store; a row holds only the name. **Any secret ref** — `secret_ref` and every config key
-ending in `Ref` (email's `smtpSecretRef` / `resendSecretRef`, Slack's `appTokenRef`) — may be
+ending in `Ref` (Slack's `appTokenRef`) — may be
 `secret:<name>`: the registry decrypts it into memory before `start` (`secretRefs.load`, one audit row
 each), adapters read through `secretValue(ref)` (never `process.env`), a changed or deleted stored
 secret restarts the adapter on the next sync (`stale`), and an Automatic row goes only to a primary
@@ -244,24 +244,32 @@ mention or another person's comment on your issue is `ext.linear.message` in the
 has no `actor` (the link's level is the grant, no pairing); `Envelope.display` gives the activity row
 its sender and the issue as the place. `orca post --reply` comments as you under that comment
 (`parentId`); a thread-linked issue gets PR state. The card shows `last poll` (`lastPollAt`).
-**Gmail** (`adapters/gmail.ts`, `adapters/gmail/{google,oauth}.ts`, `docs/integrations/gmail.md`) is the
-user's own mailboxes, READ ONLY, by **Connect with Google** (OAuth code + PKCE; the card's button from
-`meta.oauth`). Each account is its own named row (`personal`, `smfstudio`). Scopes follow the row's
+**Gmail** (`adapters/gmail.ts`, `adapters/gmail/{google,oauth,mime}.ts`, `docs/integrations/gmail.md`) is the
+user's own mailboxes, READ ONLY, by ONE button: **Integrations > Connect > Gmail > Sign in with Google**
+(OAuth code + PKCE; `meta.oauth`; no name, client or secret box — Finn's call). `start` with no id is a
+NEW account: the pending state is cursor row `+new-<hex>:oauth`, and `finish` makes the row, named by
+the address (id `finn-example.com`, `accountId`; `read` + `off`, `GMAIL_POLICY_DEFAULTS`; Automatic), or
+reconnects the row already signed in to that address. Rename is the pencil on the card. The OAuth client is
+SERVER config, set once by the operator in Settings > Google sign-in (`googleOAuth` in the app config,
+`POST /api/config/google-oauth`): `clientId` (else `ORCA_GOOGLE_OAUTH_CLIENT_ID`), `secretRef`
+(`secret:<scope>/<name>`, else the `ORCA_SECRET_GOOGLE_OAUTH` variable), `redirectOrigin`
+(`oauth.resolveClient`; an older row's own `clientId` / `secret_ref` / `redirectOrigin` still win).
+Unset on the answering bridge, the Connect dialog shows one line + the setup doc (`meta.oauth.setup`,
+filled per overview by `oauth.serverSetup`, which reads names only). The old IMAP/SMTP `email` adapter
+is gone (its MIME parse moved to `gmail/mime.ts`). Scopes follow the row's
 access (`gmailAccess`, the access policy's `access`; no field = read): read = `openid`, `userinfo.email`,
 `gmail.readonly`; read-write adds `gmail.send`, and a switch to read-write shows "Reconnect to allow
 sending", which asks Google ONLY for the missing scope (`consentScopes`, `include_granted_scopes=true`).
 Never `gmail.modify`; nothing is marked read. The send verb is NOT built (`caps.outbound` false, `send`
 refuses), so no reply path yet (Finn's call). `POST /api/integrations/oauth/google/start` answers the consent
 URL for the page's `Origin`; Google sends the browser to `<origin>/api/integrations/oauth/google/callback`
-(answered here, never forwarded, so a tailnet HTTPS name works). The origin is `config.redirectOrigin` (a
+(answered here, never forwarded, so a tailnet HTTPS name works). The origin is `redirectOrigin` (a
 configured public base) else the page's Origin, and must be https on a domain name
 (`connectOriginProblem`, shared with the card): never 127.0.0.1:8787, localhost, an IP or plain http,
-which get "open the https address" (ORCA_SERVER_URL when set) and a disabled Connect button. The PKCE state is encrypted in cursor
+which get "open the https address" (ORCA_SERVER_URL when set) and no sign-in button. The PKCE state is encrypted in cursor
 row `<id>:oauth`; the refresh token is the stored secret `integrations/gmail.<id>.refresh_token`; access
-tokens stay in memory. The client secret is the row's secret_ref through the core's shared secret
-refs (`secretRefs`: `secret:<scope>/<name>`, e.g. one saved with /secret, or a variable; default
-`ORCA_SECRET_GOOGLE_OAUTH` via `meta.secretDefault`). The client id is box config (the Connect
-form), never in the repo.
+tokens stay in memory. The client secret goes through the core's shared secret refs (`secretRefs`).
+The client id is box config, never in the repo.
 Events are the core's account policy (`docs/integrations/POLICY.md`; a new Gmail row is `read` + `off`
 via `meta.policyDefaults`, verbs via `meta.verbs`): with events `off` the loop makes no Gmail call (it
 rereads the row each tick, so the card's change applies at once); `trigger` / `record` poll the History

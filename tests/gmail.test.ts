@@ -1,5 +1,6 @@
-// The Gmail adapter (server/integrations/adapters/gmail.ts, docs/integrations/gmail.md): "Connect with
-// Google" (code + PKCE, the refresh token in the secret store), the History API poll from a cursor
+// The Gmail adapter (server/integrations/adapters/gmail.ts, docs/integrations/gmail.md): "Sign in with
+// Google" (code + PKCE, the server's OAuth client, one account row per sign-in, the refresh token in
+// the secret store), the History API poll from a cursor
 // with Gmail's own query match, the mail gate, a reply in the Gmail thread, a revoked grant ("reconnect
 // needed") and `orca gmail search|read`. Real Postgres, the real registry, router, dispatcher and
 // secret store; Google is a fake OAuth + Gmail API on loopback (Bun.serve). No real Google call.
@@ -18,11 +19,12 @@ import * as admin from "../server/integrations/admin";
 import { agentEnv } from "../server/env";
 import * as secretRefs from "../server/integrations/secretRefs";
 import type { Connection } from "../server/integrations/adapter";
-import { parseMail } from "../server/integrations/adapters/email/mime";
+import { parseMail } from "../server/integrations/adapters/gmail/mime";
 import { defaultQuery, GMAIL_CAPS, GMAIL_VERBS, gmailConfig, gmailGate, matchQuery, scopeWords } from "../server/integrations/adapters/gmail";
 import { authorizeUrl, CALLBACK_PATH, endpoints, fromBase64Url, GOOGLE, pkce, SCOPE, consentScopes, missingScopes, scopesFor, tokenError } from "../server/integrations/adapters/gmail/google";
 import * as oauth from "../server/integrations/adapters/gmail/oauth";
 import { gmailTool } from "../server/gmailTool";
+import { invalidateConfig, parseConfigDocument, saveConfigDocument, setGoogleOAuth } from "../server/config";
 import * as orchestrator from "../server/orchestrator";
 import { grantRefusal, integrationAccessRefusal } from "../shared/integrations";
 import { connectOriginProblem } from "../shared/integrationSettings";
@@ -70,6 +72,8 @@ function fakeGoogle() {
     sent: [] as { raw: string; threadId?: string }[],
     log: [] as string[],
     nextRefresh: "1//rt-one-refresh-token",
+    account: ACCOUNT, // the account the user picks at Google
+
     expireHistory: false,
     n: 0,
   };
@@ -104,7 +108,7 @@ function fakeGoogle() {
       if (!st.access.has(auth)) return Response.json({ error: { code: 401, message: "Invalid Credentials" } }, { status: 401 });
       const path = u.pathname.replace("/gmail/v1/users/me/", "");
       st.log.push(`${req.method} ${path}${u.searchParams.get("format") ? ` ${u.searchParams.get("format")}` : ""}`);
-      if (path === "profile") return Response.json({ emailAddress: ACCOUNT, historyId: String(st.historyId) });
+      if (path === "profile") return Response.json({ emailAddress: st.account, historyId: String(st.historyId) });
       if (path === "history") {
         if (st.expireHistory) return Response.json({ error: { code: 404, message: "Requested entity was not found." } }, { status: 404 });
         expect(u.searchParams.getAll("historyTypes")).toEqual(["messageAdded", "labelAdded"]);
@@ -176,9 +180,9 @@ function fakeGoogle() {
 }
 
 describe("decisions (pure)", () => {
-  test("the config: client id required, auth checked by default, form strings parsed", () => {
-    expect(gmailConfig({})).toEqual({ error: expect.stringContaining("clientId") });
-    expect(gmailConfig({ clientId: "cid" })).toEqual({ config: { clientId: "cid", pollSeconds: 30, allowedSenders: [], checkAuth: true, keepQuoted: false } });
+  test("the config: no client on the row (it is server config), auth checked by default, form strings parsed", () => {
+    expect(gmailConfig({})).toEqual({ config: { pollSeconds: 30, allowedSenders: [], checkAuth: true, keepQuoted: false } });
+    expect(gmailConfig({ clientId: "cid" })).toEqual({ config: { pollSeconds: 30, allowedSenders: [], checkAuth: true, keepQuoted: false } });
     expect(gmailConfig({ clientId: "cid", checkAuth: "false", pollSeconds: "30", allowedSenders: "Ana@Example.com, @acme.test", query: "label:work" }))
       .toMatchObject({ config: { checkAuth: false, pollSeconds: 30, allowedSenders: ["ana@example.com", "@acme.test"], query: "label:work" } });
     // The poll interval: 30 s by default, never below 10 s (only the tests' fake Gmail may go faster).
@@ -217,7 +221,7 @@ describe("decisions (pure)", () => {
   test("the redirect origin: https on a domain name only; plain http, localhost and IPs are refused with where to go", () => {
     expect(connectOriginProblem("https://orca.example.ts.net")).toBeUndefined();
     expect(connectOriginProblem("https://orca.example.ts.net:8443")).toBeUndefined();
-    expect(connectOriginProblem("http://orca.example.ts.net", "https://orca.example.ts.net")).toBe("Connect with Google works only from Orca's https address: Google refuses a redirect to http://orca.example.ts.net (plain http). Open https://orca.example.ts.net/integrations and connect there.");
+    expect(connectOriginProblem("http://orca.example.ts.net", "https://orca.example.ts.net")).toBe("Sign in with Google works only from Orca's https address: Google refuses a redirect to http://orca.example.ts.net (plain http). Open https://orca.example.ts.net/integrations and connect there.");
     expect(connectOriginProblem("http://127.0.0.1:8787")).toContain("(plain http)");
     expect(connectOriginProblem("https://localhost:8787")).toContain("(localhost)");
     expect(connectOriginProblem("https://100.64.0.1")).toContain("(an IP address)");
@@ -297,6 +301,7 @@ describe("against a fake Google", () => {
     dispatcher.resetPace();
     oauth.resetTokens();
     secretRefs.clear();
+    invalidateConfig();
     g = fakeGoogle();
   });
   afterEach(async () => {
@@ -304,6 +309,7 @@ describe("against a fake Google", () => {
     dispatcher.configure({ adapter: () => undefined });
     dispatcher.setRunning(() => []);
     g.stop();
+    invalidateConfig();
     await db.close();
     await pg.drop();
     await rm(stateDir, { recursive: true, force: true });
@@ -330,7 +336,7 @@ describe("against a fake Google", () => {
   };
   const cursor = async () => JSON.parse((await store.cursor("gm")) ?? "{}") as { historyId?: string; account?: string };
 
-  test("Connect with Google: PKCE, a one-use state, the refresh token encrypted in the secret store and nowhere else", async () => {
+  test("Reconnect a row with Google: PKCE, a one-use state, the refresh token encrypted in the secret store and nowhere else", async () => {
     await setup();
     const { url } = await oauth.begin("gm", "https://orca.example.ts.net");
     const q = new URL(url).searchParams;
@@ -365,7 +371,7 @@ describe("against a fake Google", () => {
     // Settings shows the account and the scopes on the card.
     const card = (await admin.overview()).integrations.find((c) => c.id === "gm")!;
     expect(card.oauth).toMatchObject({ account: ACCOUNT, scopes: scopesFor("read"), reconnect: null, missing: [] });
-    expect((await admin.overview()).kinds.find((k) => k.kind === "gmail")).toMatchObject({ oauth: { provider: "google", label: "Connect with Google" }, switches: { checkAuth: true }, policyDefaults: { access: "read", events: "off" } });
+    expect((await admin.overview()).kinds.find((k) => k.kind === "gmail")).toMatchObject({ oauth: { provider: "google", label: "Sign in with Google", docs: expect.stringContaining("docs/integrations/gmail.md") }, switches: { checkAuth: true }, policyDefaults: { access: "read", events: "off" } });
   });
 
   test("the client secret by the core's shared secret refs: secret_ref secret:<scope>/<name> (a /secret value) wins over the env var", async () => {
@@ -390,7 +396,7 @@ describe("against a fake Google", () => {
     const denied = new URLSearchParams({ error: "access_denied", state: new URL(url).searchParams.get("state")! });
     await expect(oauth.finish(denied)).rejects.toThrow("you did not allow access");
     await store.addIntegration({ ...conn({ clientId: "" }), id: "gm2" });
-    await expect(oauth.begin("gm2", "https://x.ts.net")).rejects.toThrow("clientId");
+    await expect(oauth.begin("gm2", "https://x.ts.net")).rejects.toThrow("set the Google OAuth client ID in Settings > Google sign-in");
     await expect(oauth.begin("gm", "not an origin")).rejects.toThrow("is not one");
     // Never the bridge's own loopback or plain http; the message names the https address to open.
     process.env.ORCA_SERVER_URL = "https://orca.example.ts.net";
@@ -402,7 +408,7 @@ describe("against a fake Google", () => {
     await store.addIntegration({ ...conn({ redirectOrigin: "https://orca.example.ts.net/" }), id: "gm4" });
     expect((await oauth.begin("gm4", "http://127.0.0.1:8787")).redirectUri).toBe(`https://orca.example.ts.net${CALLBACK_PATH}`);
     await store.addIntegration({ ...conn({ redirectOrigin: "http://orca.example.ts.net" }), id: "gm5" });
-    await expect(oauth.begin("gm5", "https://orca.example.ts.net")).rejects.toThrow("config.redirectOrigin: ");
+    await expect(oauth.begin("gm5", "https://orca.example.ts.net")).rejects.toThrow("redirectOrigin: ");
   });
 
   test("the poll: starts at now, reads only mail the query matches, gates it, and hands it to the core as ext.gmail.message", async () => {
@@ -410,7 +416,7 @@ describe("against a fake Google", () => {
     g.deliver({ gid: "old", id: "<old@example.com>", text: "from before Orca listened" });
     expect(await registry.startOne(c)).toBe(true);
     // Not connected yet: a state on the card, not a failed start.
-    await until(async () => (await registry.health()).gm?.detail?.includes("Connect with Google"));
+    await until(async () => (await registry.health()).gm?.detail?.includes("Sign in with Google"));
     await connect();
     await until(async () => (await cursor()).historyId === "101");
 
@@ -520,6 +526,76 @@ describe("against a fake Google", () => {
     expect((await admin.overview()).integrations.find((x) => x.id === "gm")!.oauth).toMatchObject({ account: ACCOUNT, reconnect: null });
   });
 
+  test("Sign in with Google: the server's client, no row first; each sign-in adds one account named by its address", async () => {
+    const google = { authUrl: `${g.base}/auth`, tokenUrl: `${g.base}/token`, apiUrl: g.base, revokeUrl: `${g.base}/revoke` };
+    const doc = { repos: [{ name: "app", repoPath: "/tmp/app", worktreeRoot: "/tmp/app/.worktrees", baseBranch: "main" }], portRange: [30000, 40000], staleHours: 24 };
+    // Not set up: Connect says so in one line (the overview's kind meta), and Start refuses.
+    await saveConfigDocument(parseConfigDocument({ ...doc, googleOAuth: google }).config!);
+    invalidateConfig();
+    const gmailKind = async () => (await admin.overview()).kinds.find((k) => k.kind === "gmail")!;
+    expect((await gmailKind()).oauth!.setup).toBe("Gmail sign-in is not set up: the server has no Google OAuth client ID.");
+    await expect(oauth.begin(undefined, "https://orca.example.ts.net")).rejects.toThrow("set the Google OAuth client ID in Settings > Google sign-in");
+    // The operator sets the client once (Settings > Google sign-in): the id, and the secret as a stored secret.
+    await secrets.store({ scope: "chat", name: "google-oauth-secret", value: "client-secret", who: "test" });
+    delete process.env.ORCA_SECRET_GOOGLE_OAUTH;
+    await setGoogleOAuth({ ...google, clientId: "cid" });
+    expect((await gmailKind()).oauth!.setup).toBe("Gmail sign-in is not set up: the client secret ORCA_SECRET_GOOGLE_OAUTH is not on this server.");
+    await setGoogleOAuth({ ...google, clientId: "cid", secretRef: "secret:chat/google-oauth-secret" });
+    expect((await gmailKind()).oauth!.setup).toBeUndefined();
+    await expect(setGoogleOAuth({ clientId: "cid", secretRef: "MY_SECRET" })).rejects.toThrow("must start with ORCA_SECRET_");
+
+    // One click: no row, no name, no client fields. Google lets the user pick the account.
+    const signIn = async (account: string, refresh: string) => {
+      g.st.account = account;
+      g.st.nextRefresh = refresh;
+      const { url } = await oauth.begin(undefined, "https://orca.example.ts.net");
+      expect(new URL(url).searchParams.get("client_id")).toBe("cid");
+      expect(new URL(url).searchParams.get("scope")).toBe(scopesFor("read").join(" ")); // gmail.readonly, never send
+      const state = new URL(url).searchParams.get("state")!;
+      expect(state).toMatch(/^\+new-[0-9a-f]{16}~[0-9a-f]{32}$/);
+      const r = await oauth.finish(g.consent(url));
+      expect(await store.cursor(`${state.split("~")[0]}:oauth`)).toBeUndefined(); // one use: the pending row is gone
+      return r;
+    };
+    const first = await signIn(ACCOUNT, "1//rt-finn-refresh-token");
+    expect(first).toMatchObject({ id: "finn-example.com", account: ACCOUNT, added: true });
+    expect(await store.integration("finn-example.com")).toMatchObject({ kind: "gmail", name: ACCOUNT, instance: "*", access: "read", events: "off", enabled: true, config: {} });
+    expect((await store.integration("finn-example.com"))!.secretRef).toBeUndefined();
+    expect(await secrets.valueOf("integrations/gmail.finn-example.com.refresh_token")).toBe("1//rt-finn-refresh-token");
+    // The row's access token works with the server's client.
+    oauth.resetTokens();
+    expect(await oauth.accessToken((await store.integration("finn-example.com"))!)).toMatch(/^at-/);
+
+    // A second account: one more row. The same account again: that row, reconnected, no duplicate.
+    const second = await signIn("ana@studio.test", "1//rt-ana-refresh-token");
+    expect(second).toMatchObject({ id: "ana-studio.test", account: "ana@studio.test", added: true });
+    const again = await signIn(ACCOUNT, "1//rt-finn-again-refresh-token");
+    expect(again).toMatchObject({ id: "finn-example.com", added: false });
+    expect((await store.integrations()).filter((c) => c.kind === "gmail").map((c) => c.id)).toEqual(["ana-studio.test", "finn-example.com"]);
+    expect(await secrets.valueOf("integrations/gmail.finn-example.com.refresh_token")).toBe("1//rt-finn-again-refresh-token");
+    // Rename on the card: only the name changes, the account stays connected.
+    const card = (await admin.overview()).integrations.find((c) => c.id === "ana-studio.test")!;
+    await admin.saveIntegration({ id: card.id, kind: card.kind, name: "Studio", instance: card.instance, secretRef: card.secretRef ?? "", config: card.config, enabled: card.enabled });
+    expect(await store.integration("ana-studio.test")).toMatchObject({ name: "Studio", access: "read", events: "off" });
+    expect((await admin.overview()).integrations.find((c) => c.id === "ana-studio.test")!.oauth).toMatchObject({ account: "ana@studio.test" });
+    // orca gmail still reads with the server's client.
+    expect(await gmailTool({ _: ["search", "anything"], account: "Studio" } as never)).toContain("Gmail account Studio (ana-studio.test)");
+  });
+
+  test("the account id: the address with @ as -, made unique; the client: a row's own wins over the server's, then the env", () => {
+    expect(oauth.accountId("Finn@Example.com", new Set())).toBe("finn-example.com");
+    expect(oauth.accountId("finn@example.com", new Set(["finn-example.com", "finn-example.com-2"]))).toBe("finn-example.com-3");
+    expect(oauth.accountId("+tag@x.test", new Set())).toBe("tag-x.test");
+    expect(oauth.resolveClient({ clientId: "srv", secretRef: "secret:chat/g" }, undefined, {})).toMatchObject({ clientId: "srv", secretRef: "secret:chat/g" });
+    expect(oauth.resolveClient({}, { config: { clientId: "row" }, secretRef: "ORCA_SECRET_ROW" }, { ORCA_GOOGLE_OAUTH_CLIENT_ID: "env" })).toMatchObject({ clientId: "row", secretRef: "ORCA_SECRET_ROW" });
+    expect(oauth.resolveClient({}, { config: {} }, { ORCA_GOOGLE_OAUTH_CLIENT_ID: "env" })).toMatchObject({ clientId: "env", secretRef: "ORCA_SECRET_GOOGLE_OAUTH" });
+    expect(oauth.setupProblem({ clientId: "c", secretRef: "ORCA_SECRET_G" }, new Set(), { ORCA_SECRET_G: "x" })).toBeUndefined();
+    expect(oauth.setupProblem({ clientId: "c", secretRef: "secret:chat/g" }, new Set(["chat/g"]), {})).toBeUndefined();
+    expect(oauth.setupProblem({ clientId: "c", secretRef: "secret:chat/g" }, new Set(), {})).toContain("secret:chat/g is not on this server");
+    expect(parseConfigDocument({ repos: [{ name: "a", repoPath: "/a", worktreeRoot: "/a/w", baseBranch: "main" }], googleOAuth: { clientId: 1, other: "x" } }).errors)
+      .toEqual(["googleOAuth.other is not a known key (clientId, secretRef, redirectOrigin, authUrl, tokenUrl, apiUrl, revokeUrl)", "googleOAuth.clientId must be a string"]);
+  });
+
   test("a new Gmail row is read + events off unless the form says otherwise; an edit keeps the stored policy", async () => {
     await admin.saveIntegration({ id: "personal", kind: "gmail", name: "personal", instance: "local", config: { clientId: "cid" } });
     expect(await store.integration("personal")).toMatchObject({ access: "read", events: "off" });
@@ -576,7 +652,7 @@ describe("against a fake Google", () => {
   test("orca gmail search and read: the orchestrator reads the connected mailbox, read only", async () => {
     await setup();
     g.deliver({ gid: "m1", id: "<m1@example.com>", threadId: "t-a", subject: "Fix the login" });
-    await expect(gmailTool({ _: ["search", "from:ana"] })).rejects.toThrow("Connect with Google");
+    await expect(gmailTool({ _: ["search", "from:ana"] })).rejects.toThrow("Sign in with Google");
     await connect();
     const found = await gmailTool({ _: ["search", "from:ana", "newer_than:7d"], limit: "5" });
     expect(found).toContain("1 message for \"from:ana newer_than:7d\":");

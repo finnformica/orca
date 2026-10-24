@@ -10,9 +10,13 @@ import type { NotificationInput } from "../../../shared/notifications";
 export const WEB_CAPS: Capabilities = { inbound: "none", outbound: true, threads: false, edits: false, reactions: false, attachments: false, maxTextLength: 10_000 };
 
 /** The notification an event shows as in the web. */
-export function webNotification(e: Pick<Envelope, "key" | "topic" | "scope" | "title" | "text" | "actor" | "link" | "source" | "display">): NotificationInput {
+export function webNotification(e: Pick<Envelope, "key" | "topic" | "scope" | "title" | "text" | "actor" | "link" | "source" | "display">, integration?: string): NotificationInput {
   const sender = e.actor?.external.name ?? e.actor?.external.id;
   const place = e.display?.place;
+  // The integration it is about, for its logo: the event's own adapter, else (a dead delivery) the
+  // target's. Orca's own and the web's events have none.
+  const source = integration ?? (e.source.adapter !== "orca" && e.source.adapter !== "web" ? e.source.adapter : undefined);
+  const link = { ...(e.link ?? (e.topic === "orca.question" ? { orchestrator: true } : {})), ...(source ? { source } : {}) };
   return {
     key: e.key,
     kind: e.topic === "orca.integration.failed" ? "integration_failed"
@@ -22,7 +26,7 @@ export function webNotification(e: Pick<Envelope, "key" | "topic" | "scope" | "t
     repo: e.scope?.repo ?? "", ...(e.scope?.branch ? { branch: e.scope.branch } : {}),
     title: e.title ?? (sender ? `${sender} via ${e.source.adapter}${place ? ` · ${place}` : ""}` : e.source.adapter),
     body: e.text.replace(/\s+/g, " ").trim().slice(0, 140),
-    ...(e.link ? { link: e.link } : e.topic === "orca.question" ? { link: { orchestrator: true } } : {}),
+    ...(Object.keys(link).length ? { link } : {}),
   };
 }
 
@@ -50,5 +54,5 @@ export function deadNotification(d: { id: number; attempts: number; target: Deli
     key: `delivery-dead:${d.id}`, topic: "orca.integration.failed", source: { adapter: "orca" },
     ...(d.envelope.scope ? { scope: d.envelope.scope } : {}),
     title: `Delivery to ${where} failed`, text: `${d.envelope.topic}: ${error || "failed"} (after ${d.attempts} attempts)`,
-  });
+  }, d.target.kind === "link" ? d.target.adapter : undefined);
 }

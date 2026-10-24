@@ -147,13 +147,56 @@ describe("the Integrations page", () => {
     expect(apiFake.integrationPosts[0]!.body.notifyAgent).toBeUndefined(); // only the switch you flipped
   });
 
-  const gmailKind = { kind: "gmail", label: "Gmail", caps: {}, place: "sender address", oauth: { provider: "google", label: "Connect with Google" }, switches: { checkAuth: true },
-    config: [{ key: "clientId", label: "OAuth client id" }, { key: "checkAuth", label: "Require auth" }] };
-  const gmailCard = (oauth?: Record<string, unknown>) => ({ id: "gm", kind: "gmail", name: "My Gmail", instance: "*", enabled: true, access: "read", events: "off", config: { clientId: "cid" }, running: true, health: { ok: !oauth?.reconnect }, ...(oauth ? { oauth } : {}) });
+  const GMAIL_DOCS = "https://github.com/finnformica/orca/blob/main/docs/integrations/gmail.md";
+  const gmailKind = { kind: "gmail", label: "Gmail", caps: {}, place: "sender address", oauth: { provider: "google", label: "Sign in with Google", docs: GMAIL_DOCS }, switches: { checkAuth: true },
+    config: [{ key: "query", label: "Gmail query" }, { key: "checkAuth", label: "Require auth" }], help: "Your Gmail, read only." };
+  const gmailCard = (oauth?: Record<string, unknown>) => ({ id: "gm", kind: "gmail", name: "My Gmail", instance: "*", enabled: true, access: "read", events: "off", config: {}, running: true, health: { ok: !oauth?.reconnect }, ...(oauth ? { oauth } : {}) });
+  // This test page is plain http (http://orca.test): a server with a fixed https redirect origin lets sign-in run.
+  const fixedKind = { ...gmailKind, oauth: { ...gmailKind.oauth, fixedOrigin: true } };
 
-  test("a Gmail card: Connect with Google asks the bridge for Google's consent URL and goes there", async () => {
-    // This test page is plain http (http://orca.test): a configured https redirect origin lets Connect run.
-    apiFake.integrationsData = { ...overview(), kinds: [...kinds, gmailKind], integrations: [{ ...gmailCard(), config: { clientId: "cid", redirectOrigin: "https://orca.example.ts.net" } }], links: [], pairings: [] };
+  test("Connect > Gmail: ONE Sign in with Google button, no name, id or secret; a click adds an account by Google's consent URL", async () => {
+    apiFake.integrationsData = { ...overview(), kinds: [fixedKind, ...kinds], integrations: [], links: [], pairings: [] }; // Gmail first: the dialog opens on it
+    apiFake.integrationPostAnswers["oauth/google/start"] = { url: "https://accounts.google.com/o/oauth2/v2/auth?client_id=cid", redirectUri: "x" };
+    const assign = spyOn(window.location, "assign").mockImplementation(() => {});
+    try {
+      await open("/integrations");
+      await click(all("integration-connect")[0]!);
+      const d = dialog()!;
+      expect(d.querySelector("#int-kind")!.textContent).toContain("Gmail"); // the kind Select stays, to pick another kind
+      expect(d.querySelectorAll("input")).toHaveLength(0); // nothing to type
+      expect(d.querySelector("#int-name, #int-id, #int-secret, #int-stored-secret")).toBeNull();
+      expect(d.textContent).not.toContain("Save");
+      const buttons = all("oauth-sign-in", d);
+      expect(buttons).toHaveLength(1);
+      expect(buttons[0]!.textContent).toBe("Sign in with Google");
+      expect(buttons[0]!.querySelector('[data-slot="brand-icon"][data-kind="gmail"]')).not.toBeNull();
+      await click(buttons[0]!);
+      expect(apiFake.integrationPosts).toEqual([{ path: "oauth/google/start", body: { origin: window.location.origin } }]); // no id: a new account
+      expect(assign).toHaveBeenCalledWith("https://accounts.google.com/o/oauth2/v2/auth?client_id=cid");
+    } finally { assign.mockRestore(); }
+  });
+
+  test("Connect > Gmail when the server has no OAuth client: one line with the setup guide, no button", async () => {
+    const setup = "Gmail sign-in is not set up: the server has no Google OAuth client ID.";
+    apiFake.integrationsData = { ...overview(), kinds: [{ ...fixedKind, oauth: { ...fixedKind.oauth, setup } }], integrations: [], links: [], pairings: [] };
+    await open("/integrations");
+    await click(all("integration-connect")[0]!);
+    const line = all("oauth-setup", dialog()!)[0]!;
+    expect(line.textContent).toContain(setup);
+    expect(line.querySelector("a")!.getAttribute("href")).toBe(GMAIL_DOCS);
+    expect(all("oauth-sign-in", dialog()!)).toHaveLength(0);
+  });
+
+  test("Connect > Gmail from a plain-http page: one line says to open the https address, no button", async () => {
+    apiFake.integrationsData = { ...overview(), kinds: [gmailKind], integrations: [], links: [], pairings: [] };
+    await open("/integrations");
+    await click(all("integration-connect")[0]!);
+    expect(all("oauth-origin", dialog()!)[0]!.textContent).toContain("(plain http)");
+    expect(all("oauth-sign-in", dialog()!)).toHaveLength(0);
+  });
+
+  test("a Gmail card not connected: Sign in with Google reconnects that row", async () => {
+    apiFake.integrationsData = { ...overview(), kinds: [...kinds, fixedKind], integrations: [gmailCard()], links: [], pairings: [] };
     apiFake.integrationPostAnswers["oauth/google/start"] = { url: "https://accounts.google.com/o/oauth2/v2/auth?client_id=cid", redirectUri: "x" };
     const assign = spyOn(window.location, "assign").mockImplementation(() => {});
     try {
@@ -161,14 +204,14 @@ describe("the Integrations page", () => {
       const row = all("integration-oauth")[0]!;
       expect(row.textContent).toContain("Not connected");
       const button = all("oauth-connect", row)[0]!;
-      expect(button.textContent).toBe("Connect with Google");
+      expect(button.textContent).toBe("Sign in with Google");
       await click(button);
       expect(apiFake.integrationPosts).toEqual([{ path: "oauth/google/start", body: { id: "gm", origin: window.location.origin } }]);
       expect(assign).toHaveBeenCalledWith("https://accounts.google.com/o/oauth2/v2/auth?client_id=cid");
     } finally { assign.mockRestore(); }
   });
 
-  test("from a plain-http page with no https redirect origin, Connect is off and the card says to open the https address", async () => {
+  test("from a plain-http page with no https redirect origin, the card's sign-in is off and says to open the https address", async () => {
     apiFake.integrationsData = { ...overview(), kinds: [...kinds, gmailKind], integrations: [gmailCard()], links: [], pairings: [] };
     await open("/integrations");
     const row = all("integration-oauth")[0]!;
@@ -178,6 +221,48 @@ describe("the Integrations page", () => {
     expect(button.disabled).toBe(true);
     await click(button);
     expect(apiFake.integrationPosts).toEqual([]);
+  });
+
+  test("Rename on the card: the account keeps everything but its name", async () => {
+    apiFake.integrationsData = { ...overview(), kinds: [fixedKind], integrations: [{ ...gmailCard({ account: "finn@example.com", scopes: [] }), name: "finn@example.com" }], links: [], pairings: [] };
+    await open("/integrations");
+    await click(container!.querySelector<HTMLElement>('[aria-label="Rename finn@example.com"]')!);
+    const input = dialog()!.querySelector<HTMLInputElement>('[data-slot="integration-rename"]')!;
+    expect(input.value).toBe("finn@example.com");
+    await type(input, "Personal");
+    await act(async () => { dialog()!.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); await flush(); await flush(); });
+    expect(apiFake.integrationPosts).toEqual([{ path: "save", body: { id: "gm", kind: "gmail", name: "Personal", instance: "*", secretRef: "", config: {}, enabled: true } }]);
+  });
+
+  test("the Gmail logo is Google's multicolour M", async () => {
+    apiFake.integrationsData = { ...overview(), kinds: [fixedKind], integrations: [gmailCard()], links: [], pairings: [] };
+    await open("/integrations");
+    const icon = all("integration-card")[0]!.querySelector<SVGElement>('[data-slot="brand-icon"][data-kind="gmail"]')!;
+    expect(icon.tagName.toLowerCase()).toBe("svg");
+    expect([...icon.querySelectorAll("path")].map((p) => p.getAttribute("fill"))).toEqual(["#4285F4", "#34A853", "#FBBC04", "#EA4335", "#C5221F"]);
+  });
+
+  test("the Cloudflare logo is its own two-tone orange cloud", async () => {
+    apiFake.integrationsData = { ...overview(), kinds: [{ kind: "cloudflare", label: "Cloudflare", caps: {}, place: "place" }],
+      integrations: [{ id: "cf", kind: "cloudflare", name: "Cloudflare", instance: "*", enabled: true, config: {}, access: "read", events: "trigger", running: true, health: { ok: true } }], links: [], pairings: [] };
+    await open("/integrations");
+    const icon = all("integration-card")[0]!.querySelector<SVGElement>('[data-slot="brand-icon"][data-kind="cloudflare"]')!;
+    expect(icon.tagName.toLowerCase()).toBe("svg");
+    expect([...icon.querySelectorAll("path")].map((p) => p.getAttribute("fill"))).toEqual(["#F38020", "#FBAE40"]);
+  });
+
+  test("Settings > Google sign-in: the operator sets the client id and points the secret at a stored secret", async () => {
+    apiFake.googleOAuthData = { clientId: "", secretRef: "", redirectOrigin: "", envClientId: false, defaultSecretRef: "ORCA_SECRET_GOOGLE_OAUTH" };
+    apiFake.holdConfig = false; // another file may leave config held (reset() keeps it)
+    await open("/settings");
+    // The card reads /api/config on mount: wait for it (bounded).
+    for (let i = 0; i < 50 && !all("settings-google-oauth").length; i++) await act(async () => { await flush(); });
+    const card = all("settings-google-oauth")[0]!;
+    expect(card.textContent).toContain("/api/integrations/oauth/google/callback");
+    expect(card.textContent).toContain("None: use ORCA_SECRET_GOOGLE_OAUTH in .env");
+    await type(card.querySelector<HTMLInputElement>('[data-slot="google-client-id"]')!, "cid.apps.googleusercontent.com");
+    await click(all("google-oauth-save", card)[0]!);
+    expect(apiFake.setGoogleOAuthCalls).toEqual([{ clientId: "cid.apps.googleusercontent.com", secretRef: "", redirectOrigin: "" }]);
   });
 
   test("a connected Gmail card names the account and scopes; a refused grant says reconnect needed and offers Reconnect", async () => {
@@ -203,19 +288,7 @@ describe("the Integrations page", () => {
     expect(all("oauth-connect", row)[0]!.textContent).toBe("Reconnect to allow sending");
   });
 
-  test("the Gmail Connect form shows the auth check as a switch, with the adapter's default (on)", async () => {
-    apiFake.integrationsData = { ...overview(), kinds: [gmailKind], integrations: [], links: [], pairings: [] };
-    await open("/integrations");
-    await click(all("integration-connect")[0]!);
-    expect(dialog()!.querySelector('[data-slot="int-cfg-watch"]')).toBeNull(); // events are the core policy, on the card
-    const auth = dialog()!.querySelector<HTMLElement>('[data-slot="int-cfg-checkAuth"]')!;
-    expect(auth.getAttribute("role")).toBe("switch");
-    expect(auth.getAttribute("aria-checked")).toBe("true");
-    await click(auth);
-    expect(auth.getAttribute("aria-checked")).toBe("false");
-  });
-
-  test("a Gmail card carries the core policy row (Access, Events) beside Connect with Google", async () => {
+  test("a Gmail card carries the core policy row (Access, Events) beside Sign in with Google", async () => {
     apiFake.integrationsData = { ...overview(), kinds: [gmailKind], integrations: [gmailCard()], links: [], pairings: [] };
     await open("/integrations");
     const card = all("integration-card")[0]!;

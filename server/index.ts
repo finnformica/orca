@@ -1,5 +1,5 @@
 import {
-  API_PORT, configDocument, featuresOf, invalidateConfig, loadConfig, setInstanceTerminal, setServerIdentity, setUiOptions, modelFor, parseConfigDocument,
+  API_PORT, configDocument, featuresOf, invalidateConfig, loadConfig, setInstanceTerminal, setServerIdentity, setUiOptions, setGoogleOAuth, modelFor, parseConfigDocument,
   providerAllowed, providersFor, repoOf, runsHere, saveConfigDocument, type OrcaConfig, type RepoConfig,
 } from "./config";
 import * as git from "./git";
@@ -425,7 +425,7 @@ const DATABASE_ONLY = new Set([
   // what that merge fetches from a PEER — always this host's own, unmerged, never forwarded (a repo's
   // placement must not send it chasing a worktree that has nothing to do with hydra).
   "/api/usage", "/api/usage/local", "/api/diagnostics", "/api/turns/steps", "/api/queued", "/api/queued/cancel", "/api/health",
-  "/api/health/history", "/api/health/live", "/api/machine", "/api/config/instance-rate", "/api/config/terminal", "/api/config/identity", "/api/config/ui",
+  "/api/health/history", "/api/health/live", "/api/machine", "/api/config/instance-rate", "/api/config/terminal", "/api/config/identity", "/api/config/ui", "/api/config/google-oauth",
   // A workstream's reported screenshots, read off its turns (the files are served per shot).
   "/api/shots",
   // Answered by EVERY instance: its own worktrees (if the repo is checked out here) plus what the
@@ -610,15 +610,16 @@ async function api(req: Request, url: URL): Promise<Response> {
   // before the JSON parse. Answered by the instance that runs the integration, never forwarded.
   const inbound = req.method === "POST" && p.match(/^\/api\/integrations\/([A-Za-z0-9_.-]+)\/inbound$/);
   if (inbound) return integrations.handle(inbound[1]!, req, await req.text());
-  // "Connect with Google" for a Gmail integration (server/integrations/adapters/gmail/oauth.ts). Start
-  // answers Google's consent URL for the page's own origin; the callback is the browser coming back
-  // from Google. Both are answered HERE, never forwarded: the redirect URI names this origin, and the
+  // "Sign in with Google" for Gmail (server/integrations/adapters/gmail/oauth.ts). Start answers
+  // Google's consent URL for the page's own origin: with no id for a NEW account, with a row's id for
+  // its Reconnect. The callback is the browser coming back from Google. Both are answered HERE, never forwarded: the redirect URI names this origin, and the
   // pending state, the client secret and the refresh token are in the shared database (or this env).
   if (req.method === "POST" && (p === "/api/integrations/oauth/google/start" || p === "/api/integrations/oauth/google/disconnect")) {
     const b = await req.json().catch(() => ({})) as { id?: unknown; origin?: unknown };
-    const id = String(b.id ?? "");
+    const id = typeof b.id === "string" && b.id.trim() ? b.id.trim() : undefined;
     try {
       if (p.endsWith("/disconnect")) {
+        if (!id) return json({ error: "id is required" }, 400);
         const r = await gmailOauth.disconnect(id);
         await integrations.stopOne(id);
         await integrations.sync().catch(() => {});
@@ -636,10 +637,11 @@ async function api(req: Request, url: URL): Promise<Response> {
       const r = await gmailOauth.finish(url.searchParams);
       await integrations.stopOne(r.id); // its loop reads the new token at once, not at the next poll
       await integrations.sync().catch(() => {});
-      return back({ oauth: "connected", id: r.id });
+      return back({ oauth: r.added ? "added" : "connected", id: r.id, account: r.account });
     } catch (e) {
-      const id = e instanceof gmailOauth.OAuthError ? e.integrationId : gmailOauth.stateIntegration(url.searchParams.get("state"));
-      console.error(`orca: Connect with Google${id ? ` (${id})` : ""} failed: ${e instanceof Error ? e.message : String(e)}`);
+      const named = e instanceof gmailOauth.OAuthError ? e.integrationId : gmailOauth.stateIntegration(url.searchParams.get("state"));
+      const id = named?.startsWith("+") ? undefined : named; // a new account's pending sign-in names no row
+      console.error(`orca: Sign in with Google${id ? ` (${id})` : ""} failed: ${e instanceof Error ? e.message : String(e)}`);
       return back({ oauth: "failed", ...(id ? { id } : {}), detail: (e instanceof Error ? e.message : String(e)).slice(0, 300) });
     }
   }
@@ -1187,6 +1189,13 @@ async function api(req: Request, url: URL): Promise<Response> {
     await setServerIdentity(identityUpdate(body.name, body.color));
     return json({ ok: true });
   }
+  if (req.method === "POST" && p === "/api/config/google-oauth") {
+    // Settings' Google sign-in card: the OAuth client for Gmail's "Sign in with Google". Empty clears.
+    const str = (v: unknown) => (typeof v === "string" ? v : undefined);
+    try { await setGoogleOAuth({ clientId: str(body.clientId), secretRef: str(body.secretRef), redirectOrigin: str(body.redirectOrigin) }); }
+    catch (e) { return json({ error: e instanceof Error ? e.message : String(e) }, 400); }
+    return json({ ok: true });
+  }
   if (req.method === "POST" && p === "/api/config/ui") {
     // Settings' Board view row: show or hide the Board view for every browser.
     if (typeof body.showBoard !== "boolean") return json({ error: "showBoard (true or false) is required" }, 400);
@@ -1233,6 +1242,9 @@ async function api(req: Request, url: URL): Promise<Response> {
       voice: voice.voiceAvailable(),
       // Console options for every browser: the Board view is on unless the document says false.
       ui: { showBoard: cfg.ui?.showBoard !== false },
+      // Settings' Google sign-in card: the OAuth client's id and the secret's ref (a name, never a value).
+      googleOAuth: { clientId: cfg.googleOAuth?.clientId ?? "", secretRef: cfg.googleOAuth?.secretRef ?? "", redirectOrigin: cfg.googleOAuth?.redirectOrigin ?? "",
+        envClientId: !!process.env[gmailOauth.CLIENT_ID_ENV]?.trim(), defaultSecretRef: gmailOauth.CLIENT_SECRET_DEFAULT },
       // Each machine's address: the terminal panel connects to a machine's own bridge directly (a
       // bridge never relays another machine's shell). Tailnet addresses, no secret.
       instanceUrls: cfg.instances ?? {},

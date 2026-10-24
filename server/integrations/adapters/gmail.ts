@@ -1,6 +1,6 @@
 // The Gmail adapter (setup: docs/integrations/gmail.md). The user connects their own Gmail with
-// "Connect with Google" (OAuth 2.0, code + PKCE: ./gmail/oauth.ts); Orca never sees a password. Each
-// account is its own integration row (for example "personal" and "work"), with its own refresh token.
+// "Sign in with Google" (OAuth 2.0, code + PKCE: ./gmail/oauth.ts); Orca never sees a password. Each
+// sign-in adds one account: its own integration row, named by its address, with its own refresh token.
 //
 // Scopes follow the account's access (./gmail/google.ts scopesFor): read = openid, userinfo.email and
 // gmail.readonly; read-write adds gmail.send (asked for alone on a later reconnect, incremental). The
@@ -19,18 +19,17 @@
 // aligned DKIM/SPF/DMARC pass from mx.google.com unless the account sent it itself), then
 // `ctx.ingest` as `ext.gmail.message`, so the core's gate, links, people and subscriptions apply.
 // The channel is the sender's address (one link per correspondent, or the catch-all `*`); the
-// thread is Gmail's own thread id. The MIME parse is the email adapter's (./email/mime.ts).
+// thread is Gmail's own thread id. The MIME parse is ./gmail/mime.ts.
 import * as attachments from "../../attachments";
 import { clip, inboundEnvelope, type Capabilities, type SendResult } from "../../../shared/integrations";
 import type { Adapter, AdapterContext, Connection } from "../adapter";
-import { authVerdict, isAutomated, parseMail, senderAllowed, type ParsedMail } from "./email/mime";
-import { inboundText } from "./email";
+import { authVerdict, inboundText, isAutomated, parseMail, senderAllowed, type ParsedMail } from "./gmail/mime";
 import { fromBase64Url, GoogleError, header, SCOPE, type Gmail } from "./gmail/google";
 import * as oauth from "./gmail/oauth";
 import * as store from "../store";
 
+// The OAuth client (client id and secret) is server config, not the row's (./gmail/oauth.ts resolveClient).
 export type GmailConfig = {
-  clientId: string;
   /** A Gmail search. Empty = `label:Orca OR to:<local>+orca@<domain>` of the connected account. */
   query?: string;
   pollSeconds: number;
@@ -56,13 +55,11 @@ const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : unde
 const num = (v: unknown, d: number) => (typeof v === "number" ? v : typeof v === "string" && v.trim() && Number.isFinite(Number(v)) ? Number(v) : d);
 const bool = (v: unknown, d: boolean) => (typeof v === "boolean" ? v : typeof v === "string" && /^(true|false)$/i.test(v.trim()) ? v.trim().toLowerCase() === "true" : d);
 
-/** The config with defaults (every value may be a string, as the Settings form saves it), or why it is unusable. */
+/** The config with defaults (every value may be a string, as the Settings form saves it). */
 export function gmailConfig(raw: Record<string, unknown>): { config: GmailConfig } | { error: string } {
-  const clientId = str(raw.clientId);
-  if (!clientId) return { error: "config.clientId is required: the OAuth client id from Google Cloud" };
   const senders = Array.isArray(raw.allowedSenders) ? raw.allowedSenders.map(String) : String(raw.allowedSenders ?? "").split(/[\s,;]+/);
   return { config: {
-    clientId, ...(str(raw.query) ? { query: str(raw.query) } : {}),
+    ...(str(raw.query) ? { query: str(raw.query) } : {}),
     pollSeconds: Math.max(typeof raw.apiUrl === "string" && raw.apiUrl ? 0.05 : GMAIL_POLL_MIN_S, num(raw.pollSeconds, GMAIL_POLL_DEFAULT_S)),
     allowedSenders: senders.map((s) => s.trim().toLowerCase()).filter(Boolean),
     checkAuth: bool(raw.checkAuth, true),
@@ -129,7 +126,7 @@ export function gmailAdapter(connection: Connection): Adapter {
   let lastEventAt: number | undefined;
   let lastPollAt: number | undefined;
   let state: { ok: boolean; detail: string } = { ok: false, detail: "not started" };
-  const gmail = (): Gmail => oauth.gmailFor(connection);
+  const gmail = (): Promise<Gmail> => oauth.gmailFor(connection);
 
   const report = async (ok: boolean, detail: string) => {
     state = { ok, detail };
@@ -196,7 +193,7 @@ export function gmailAdapter(connection: Connection): Adapter {
 
   /** One poll: the history since the cursor, the matching messages in, the cursor on. */
   async function poll(): Promise<string> {
-    const g = gmail();
+    const g = await gmail();
     const cur = readCursor(await ctx!.cursor.get());
     if (!account || !cur || cur.account !== account) {
       const p = await me(g);

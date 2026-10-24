@@ -336,7 +336,7 @@ function InboxRowView({ row, selected, onOpen, onMarkRead, onChanged }: {
       onClick={onOpen} onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); onOpen(); } }}
       className={cn("flex cursor-pointer gap-3 px-4 py-3 text-sm outline-none", selected ? "bg-selected text-selected-foreground" : "hover:bg-accent/40 focus-visible:bg-accent/40")}>
       <div className="relative mt-0.5 shrink-0">
-        <SourceChip adapter={row.adapter} iconOnly className="size-6 justify-center rounded-full p-0 [&>svg]:size-3.5" />
+        <SourceChip adapter={row.adapter} icon={row.icon} iconOnly className="size-6 justify-center rounded-full p-0 [&>svg]:size-3.5" />
         {!row.read && <span data-slot="unread-dot" className="bg-geist-blue ring-card absolute -top-0.5 -left-0.5 size-2 rounded-full ring-2" />}
       </div>
       <div className="min-w-0 flex-1 space-y-1">

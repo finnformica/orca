@@ -63,9 +63,9 @@ const readableFor = async (rows: Connection[]): Promise<Set<string>> =>
   rows.some((c) => secretRefs.storedNames(c).length) ? secretRefs.readable().catch(() => new Set<string>()) : new Set<string>();
 
 export async function overview(here = db.instanceName(), now = Date.now()): Promise<IntegrationsOverview> {
-  const [rows, st, last, links, persons, pairs, subs, dead, live] = await Promise.all([
+  const [rows, st, last, links, persons, pairs, subs, dead, live, googleSetup] = await Promise.all([
     store.integrations(), statuses(), lastEvents(), store.links(), people(), store.pendingPairings(), allSubscriptions(),
-    store.deliveries({ state: "dead", limit: 100 }), registry.health(),
+    store.deliveries({ state: "dead", limit: 100 }), registry.health(), gmailOauth.serverSetup().catch((e) => ({ problem: String(e instanceof Error ? e.message : e), fixedOrigin: false })),
   ]);
   const readable = await readableFor(rows);
   const cards: IntegrationCard[] = rows.map((c) => {
@@ -93,7 +93,9 @@ export async function overview(here = db.instanceName(), now = Date.now()): Prom
     id: d.id, eventId: d.eventId, target: d.target, attempts: d.attempts, ...(d.lastError ? { lastError: d.lastError } : {}),
     topic: d.envelope.topic, key: d.envelope.key, ...(d.envelope.title ? { title: d.envelope.title } : {}), at: d.envelope.at,
   }));
-  return { instance: here, kinds: registry.kinds(), integrations: cards, links, people: persons, pairings: pairs, subscriptions: subs, dead: deadRows };
+  // Sign in with Google: whether THIS bridge has the server's OAuth client (it answers the sign-in).
+  const kinds = registry.kinds().map((k) => (k.oauth?.provider === "google" ? { ...k, oauth: { ...k.oauth, ...(googleSetup.problem ? { setup: googleSetup.problem } : {}), ...(googleSetup.fixedOrigin ? { fixedOrigin: true } : {}) } } : k));
+  return { instance: here, kinds, integrations: cards, links, people: persons, pairings: pairs, subscriptions: subs, dead: deadRows };
 }
 
 // ── writes ───────────────────────────────────────────────────────────────────────────────────────

@@ -73,6 +73,9 @@ export type InboxRow = {
    *  (a push, an issue change, a webhook's own topic). */
   kind: "message" | "question" | "event";
   adapter: string; integrationId?: string; linkId?: string;
+  /** The integration whose logo the row shows when `adapter` is Orca's own (a notification about a
+   *  Slack delivery): `link.source`. Mute and the source filter still use `adapter`. */
+  icon?: string;
   sender?: Sender;
   /** Where it was said, for a person: DM, Group DM, #channel (the adapter's `display.place`). */
   place?: string;
@@ -236,6 +239,7 @@ export function notificationRows(list: readonly Pick<Notification, "id" | "repo"
       : n.link?.url ? { url: n.link.url } : {};
     return {
       id: notificationRowId(n.id), at: n.createdAt, topic: `orca.notification.${n.kind}`, kind: "event" as const, adapter: "orca",
+      ...(n.link?.source ? { icon: n.link.source } : {}),
       sender: { name: meta.label, externalId: notificationSender(n.kind) },
       title: n.title, text: clip(n.body, INBOX_TEXT_MAX),
       ...(n.link?.url ? { url: n.link.url } : {}),

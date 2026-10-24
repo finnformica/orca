@@ -20,7 +20,7 @@ export type Topic =
   | `ext.${string}.${string}`; // any other external event: ext.github.push, ext.linear.issue
 
 /** The kinds the core knows. Open: a later adapter adds its own kind without a core change. */
-export type AdapterKind = "web" | "webhook" | "slack" | "discord" | "email" | "github" | "linear" | (string & {});
+export type AdapterKind = "web" | "webhook" | "slack" | "discord" | "github" | "linear" | (string & {});
 
 /** A person or bot on a platform. `principalId` is Orca's own person, once the sender is paired. */
 export type Actor = { principalId?: string; external: { adapter: string; id: string; name?: string } };
@@ -116,9 +116,12 @@ export type AdapterMeta = {
   /** Config keys the form shows as a Switch, stored as "true" / "false", each with the value the
    *  adapter takes while it is unset (Gmail: watch off, checkAuth on). */
   switches?: Record<string, boolean>;
-  /** The kind connects by OAuth in the browser: the card shows this provider's Connect button
-   *  (Gmail: Google), and the row's `status.oauth` says which account it connected. */
-  oauth?: { provider: "google"; label: string };
+  /** The kind connects by OAuth in the browser: Connect shows ONE sign-in button (each sign-in adds
+   *  one account row), the card shows its Reconnect, and the row's `status.oauth` says which account
+   *  it connected. The OAuth client is server config: `setup` is why it cannot sign in on the
+   *  answering bridge yet, `fixedOrigin` that the server names its redirect origin (both filled by
+   *  the overview), and `docs` is the operator's setup guide. */
+  oauth?: { provider: "google"; label: string; docs?: string; setup?: string; fixedOrigin?: boolean };
   /** A new row's access and events when the Connect form names neither (Gmail: read, off). An
    *  edit keeps the stored values. Absent: the core's defaults (read-write, trigger). */
   policyDefaults?: { access?: Access; events?: EventsMode };
@@ -614,13 +617,14 @@ export const NOTIFICATION_TOPICS: Record<string, Topic | undefined> = {
 
 /** The envelope `notify.emit` writes beside a notification row: the same key, so one event is one
  *  row in each table however often it is emitted. */
-export function notificationEnvelope(n: { key: string; kind: string; repo: string; branch?: string; title: string; body: string; link?: { url?: string; pr?: number; orchestrator?: boolean } }, at = Date.now()): InboundEnvelope | undefined {
+export function notificationEnvelope(n: { key: string; kind: string; repo: string; branch?: string; title: string; body: string; link?: { url?: string; pr?: number; orchestrator?: boolean; source?: string } }, at = Date.now()): InboundEnvelope | undefined {
   const topic = NOTIFICATION_TOPICS[n.kind];
   if (!topic) return undefined;
+  const { source: _logo, ...link } = n.link ?? {}; // the logo hint is the bell's, not the event's
   return {
     key: n.key, topic, at, source: { adapter: "orca" },
     scope: { repo: n.repo, ...(n.branch ? { branch: n.branch } : {}) },
-    title: n.title, text: n.body, ...(n.link ? { link: n.link } : {}),
+    title: n.title, text: n.body, ...(Object.keys(link).length ? { link } : {}),
   };
 }
 

@@ -1,7 +1,6 @@
-// The email adapter's pure half (docs/integrations/email.md): parse a raw RFC 5322 message into what
-// the core needs (sender, thread, plain text, attachments), decide whether it may reach Orca at all
-// (the DKIM/SPF gate and the allow list), and build an outbound message. No I/O, so the tests drive
-// it directly; the IMAP/SMTP clients and the adapter do the sockets.
+// The Gmail adapter's pure mail half (docs/integrations/gmail.md): parse a raw RFC 5322 message into
+// what the core needs (sender, plain text, attachments), and decide whether it may reach Orca at all
+// (the DKIM/SPF check and the allow list). No I/O, so the tests drive it directly.
 
 // ── Parse ─────────────────────────────────────────────────────────────────────────────────────────
 
@@ -199,7 +198,7 @@ export function htmlToText(html: string): string {
 }
 
 /** The new part of a reply: cut at the client's "On … wrote:" line or an "Original Message" rule,
- *  and drop the trailing `>` quote. The full mail stays on the IMAP server. */
+ *  and drop the trailing `>` quote. The full mail stays in Gmail. */
 export function stripQuotedReply(text: string): string {
   const lines = text.split("\n");
   let end = lines.length;
@@ -212,28 +211,6 @@ export function stripQuotedReply(text: string): string {
   while (kept.length && (/^\s*>/.test(kept[kept.length - 1]!) || !kept[kept.length - 1]!.trim())) kept.pop();
   const out = kept.join("\n").trim();
   return out || text.trim(); // a mail that is all quote keeps its text
-}
-
-// ── Threading ─────────────────────────────────────────────────────────────────────────────────────
-
-/** The conversation a mail belongs to: the root of its References chain, else what it answers, else
- *  itself. Orca's first message about a workstream is that root, so a reply finds its thread link. */
-export function threadOf(m: Pick<ParsedMail, "messageId" | "inReplyTo" | "references">): { root?: string; messageId?: string } {
-  return { root: m.references[0] ?? m.inReplyTo ?? m.messageId, messageId: m.messageId };
-}
-
-/** The Message-ID of one delivery: the delivery id in it, so a retry of the same delivery is the same
- *  message (mail clients drop the copy). */
-export const outboundMessageId = (key: string, fromAddress: string): string =>
-  `<orca.${key.replace(/[^\w.-]/g, "-") || "x"}@${fromAddress.split("@")[1] ?? "orca.local"}>`;
-
-/** In-Reply-To and References for a send into `threadId` (the root), answering `replyTo` when the core
- *  knows the exact message, else the root. */
-export function replyHeaders(threadId: string | undefined, replyTo: string | undefined, references: string[] = []): { inReplyTo?: string; references: string[] } {
-  const parent = replyTo ?? threadId;
-  if (!parent) return { references: [] };
-  const chain = [...(threadId ? [threadId] : []), ...references, parent];
-  return { inReplyTo: parent, references: [...new Set(chain)] };
 }
 
 // ── The gate ──────────────────────────────────────────────────────────────────────────────────────
@@ -300,85 +277,13 @@ export function isAutomated(h: Headers): boolean {
   return /^(mailer-daemon|postmaster)@/i.test(parseAddress(first(h, "from"))?.address ?? "");
 }
 
-/** Everything a mail must pass before `ctx.ingest`, in order. */
-export function gate(m: ParsedMail, opts: { self: string; allowedSenders: readonly string[]; authservId?: string; requireDkim?: boolean }): { ok: true } | { ok: false; reason: string } {
-  if (!m.from) return { ok: false, reason: "no From address" };
-  if (m.from.address === opts.self.toLowerCase()) return { ok: false, reason: "from Orca's own address" };
-  if (isAutomated(m.headers)) return { ok: false, reason: "automated mail (auto-reply, bounce or list)" };
-  if (!senderAllowed(m.from.address, opts.allowedSenders)) return { ok: false, reason: `${m.from.address} is not in allowedSenders` };
-  const auth = authVerdict(m.headers, m.from.address, opts);
-  return auth.ok ? { ok: true } : { ok: false, reason: auth.reason };
+/** The text an agent reads for one mail: the subject, the new part of the body, and a note per
+ *  attachment that could not be kept. */
+export function inboundText(m: ParsedMail, opts: { keepQuoted?: boolean; skipped?: string[] } = {}): string {
+  const body = opts.keepQuoted ? m.text : stripQuotedReply(m.text);
+  return [
+    m.subject ? `Subject: ${m.subject}` : "",
+    body,
+    ...(opts.skipped ?? []).map((s) => `[attachment not kept: ${s}]`),
+  ].filter(Boolean).join("\n\n");
 }
-
-// ── Build ─────────────────────────────────────────────────────────────────────────────────────────
-
-const ascii = (s: string) => /^[\x20-\x7e]*$/.test(s);
-/** A header value; non-ASCII as one RFC 2047 base64 word. */
-export const encodeHeader = (s: string): string => (ascii(s) ? s : `=?UTF-8?B?${Buffer.from(s, "utf8").toString("base64")}?=`);
-
-/** Quoted-printable (RFC 2045) for a UTF-8 text body, lines at most 76 chars, CRLF. */
-export function qpEncode(text: string): string {
-  return text.replace(/\r?\n/g, "\n").split("\n").map((line) => {
-    let enc = "";
-    for (const b of Buffer.from(line, "utf8")) {
-      enc += (b >= 33 && b <= 126 && b !== 61) || b === 32 ? String.fromCharCode(b) : `=${b.toString(16).toUpperCase().padStart(2, "0")}`;
-    }
-    enc = enc.replace(/ $/, "=20");
-    const out: string[] = [];
-    while (enc.length > 75) {
-      let cut = 75;
-      const eq = enc.lastIndexOf("=", cut - 1);
-      if (eq >= cut - 2) cut = eq; // never split an =XX
-      out.push(`${enc.slice(0, cut)}=`);
-      enc = enc.slice(cut);
-    }
-    out.push(enc);
-    return out.join("\r\n");
-  }).join("\r\n");
-}
-
-export type BuildInput = {
-  from: { address: string; name?: string };
-  to: string;
-  subject: string;
-  text: string;
-  messageId: string;
-  inReplyTo?: string;
-  references?: string[];
-  date?: Date;
-  attachments?: { filename: string; mimeType: string; bytes: Uint8Array }[];
-};
-
-const wrap64 = (b: Uint8Array) => Buffer.from(b).toString("base64").replace(/.{76}/g, "$&\r\n");
-
-/** One RFC 5322 message, CRLF line ends. `Auto-Submitted` keeps vacation responders from answering. */
-export function buildMail(m: BuildInput): string {
-  const name = m.from.name?.replace(/["\\\r\n]/g, "");
-  const head = [
-    `From: ${name ? `${ascii(name) ? `"${name}"` : encodeHeader(name)} <${m.from.address}>` : m.from.address}`,
-    `To: ${m.to}`,
-    `Subject: ${encodeHeader(m.subject.replace(/[\r\n]+/g, " "))}`,
-    `Date: ${(m.date ?? new Date()).toUTCString().replace("GMT", "+0000")}`,
-    `Message-ID: ${m.messageId}`,
-    ...(m.inReplyTo ? [`In-Reply-To: ${m.inReplyTo}`] : []),
-    ...(m.references?.length ? [`References: ${m.references.join(" ")}`] : []),
-    "MIME-Version: 1.0",
-    "Auto-Submitted: auto-generated",
-  ];
-  const textPart = ["Content-Type: text/plain; charset=utf-8", "Content-Transfer-Encoding: quoted-printable", "", qpEncode(m.text)];
-  if (!m.attachments?.length) return [...head, ...textPart].join("\r\n");
-  const boundary = `orca-${m.messageId.replace(/[^\w]/g, "").slice(0, 40)}`;
-  const parts = [
-    [`--${boundary}`, ...textPart].join("\r\n"),
-    ...m.attachments.map((a) => [
-      `--${boundary}`,
-      `Content-Type: ${a.mimeType}; name="${a.filename.replace(/["\\\r\n]/g, "")}"`,
-      `Content-Disposition: attachment; filename="${a.filename.replace(/["\\\r\n]/g, "")}"`,
-      "Content-Transfer-Encoding: base64", "", wrap64(a.bytes),
-    ].join("\r\n")),
-  ];
-  return [...head, `Content-Type: multipart/mixed; boundary="${boundary}"`, "", ...parts, `--${boundary}--`, ""].join("\r\n");
-}
-
-/** SMTP DATA: CRLF line ends and dot-stuffing (RFC 5321 §4.5.2). */
-export const dotStuff = (msg: string): string => msg.replace(/\r?\n/g, "\r\n").replace(/^\./gm, "..");

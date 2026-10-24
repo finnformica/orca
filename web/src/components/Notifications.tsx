@@ -44,6 +44,7 @@ import { Tip } from "@/components/ui/tip";
 import { useOrchestrator } from "@/components/Terminal";
 import type { ShortcutId } from "@/lib/shortcuts";
 import { copyText } from "@/lib/dialogs";
+import { BrandIcon, isIntegrationKind } from "@/components/BrandIcon";
 
 const ICON: Record<NotificationKind, typeof Bell> = {
   needs_input: MessageCircleQuestion, finished: Check, failed: CircleX, stopped: OctagonPause, check_failed: ShieldX,
@@ -53,7 +54,10 @@ const ICON: Record<NotificationKind, typeof Bell> = {
 };
 const TONE_TEXT = { ready: "text-geist-green", error: "text-geist-red", warning: "text-geist-warning-fg", queued: "text-geist-blue", neutral: "text-muted-foreground" } as const;
 
-const KindIcon = ({ kind, className }: { kind: NotificationKind; className?: string }) => {
+/** A notification's icon: the integration's own logo when it came from one (`link.source`: a
+ *  Cloudflare event, a Slack message), else its kind's icon in its tone. */
+const KindIcon = ({ kind, source, className }: { kind: NotificationKind; source?: string; className?: string }) => {
+  if (isIntegrationKind(source)) return <BrandIcon kind={source} className={cn("size-4", className)} />;
   const Icon = ICON[kind];
   return <Icon className={cn("size-4 shrink-0", TONE_TEXT[KIND_META[kind].tone], className)} aria-hidden="true" />;
 };
@@ -391,7 +395,7 @@ function Toast({ n, place, expanded, count, removed = false, onHeight, onOpen }:
       )}
       style={style}>
       <div className="flex items-start gap-2">
-        <KindIcon kind={n.kind} className="mt-0.5" />
+        <KindIcon kind={n.kind} source={n.link?.source} className="mt-0.5" />
         <div className="min-w-0 flex-1">
           <div className="flex items-baseline gap-1.5 text-sm leading-5">
             <RepoLabel repo={n.repo} />
@@ -535,7 +539,7 @@ function CentreRow({ n, onOpen }: { n: Notification; onOpen: () => void }) {
     <li className="group hover:bg-accent/40 relative" onMouseEnter={() => setHover(true)} onMouseMove={() => setHover(true)} onMouseLeave={() => setHover(false)}>
       <button type="button" data-slot="notification-row" data-kind={n.kind} data-unread={n.readAt ? undefined : ""} onClick={onOpen}
         className={cn("flex w-full items-start gap-2.5 px-3 pt-2.5 pb-10 text-left", n.readAt && "opacity-70")}>
-        <KindIcon kind={n.kind} className="mt-0.5" />
+        <KindIcon kind={n.kind} source={n.link?.source} className="mt-0.5" />
         <span className="min-w-0 flex-1">
           <span className="flex items-baseline gap-1.5 text-sm leading-5">
             <RepoLabel repo={n.repo} />

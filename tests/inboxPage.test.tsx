@@ -121,6 +121,23 @@ describe("the Inbox page", () => {
     expect(all("inbox-row")[2]!.getAttribute("aria-current")).toBe("true");
   });
 
+  test("each integration row shows its real logo; a notification about one shows that logo; Orca's own rows keep the bot", async () => {
+    const list: InboxRow[] = [
+      { id: "c1", at: now - 30_000, topic: "ext.cloudflare.deploy", kind: "event", adapter: "cloudflare", sender: { name: "Cloudflare" }, title: "Deploy of site-worker failed", text: "Worker site-worker: deploy failed", conversation: "cloudflare|zone:example.com", read: false, muted: false, canReply: false, canLink: false },
+      { id: "n:5", at: now - 40_000, topic: "orca.notification.integration_failed", kind: "event", adapter: "orca", icon: "discord", sender: { name: "Delivery failed", externalId: "kind:integration_failed" }, title: "Delivery to discord C1 failed", text: "after 6 attempts", conversation: "", read: false, muted: false, canReply: false, canLink: false },
+      ...rows,
+    ];
+    apiFake.inboxData = { rows: list, facets: inboxFacets(list), older: null };
+    await open("/inbox");
+    const chip = (source: string) => all("source-chip").filter((c) => c.getAttribute("data-source") === source);
+    const cfLogo = chip("cloudflare")[0]!.querySelector('[data-slot="brand-icon"]')!;
+    expect(cfLogo.getAttribute("data-kind")).toBe("cloudflare");
+    expect([...cfLogo.querySelectorAll("path")].map((p) => p.getAttribute("fill"))).toEqual(["#F38020", "#FBAE40"]);
+    expect(chip("slack")[0]!.querySelector('[data-slot="brand-icon"]')!.getAttribute("data-kind")).toBe("slack");
+    const orca = chip("orca");
+    expect(orca.map((c) => c.querySelector('[data-slot="brand-icon"]')?.getAttribute("data-kind") ?? "bot")).toEqual(["discord", "bot"]);
+  });
+
   test("a workstream with a Slack thread shows the Slack chip on its Agents row", async () => {
     seed();
     await open("/agents");

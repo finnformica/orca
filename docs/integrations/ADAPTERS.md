@@ -39,7 +39,7 @@ An adapter does only these tasks:
 | `server/integrations/dispatcher.ts` | The delivery loop. |
 | `server/integrations/inbox.ts` | The orchestrator and workstream targets. |
 | `server/integrations/store.ts` | All SQL. |
-| `server/integrations/adapters/` | `web.ts`, `webhook.ts`, `slack.ts` (setup: [slack.md](slack.md)), `email.ts` (setup: [email.md](email.md)), `gmail.ts` (setup: [gmail.md](gmail.md)). Put a new adapter here. |
+| `server/integrations/adapters/` | `web.ts`, `webhook.ts`, `slack.ts` (setup: [slack.md](slack.md)), `gmail.ts` (setup: [gmail.md](gmail.md)). Put a new adapter here. |
 
 ## 3. The interface
 
@@ -48,7 +48,7 @@ This is the exact contract (`server/integrations/adapter.ts`):
 ```ts
 export type Connection = {
   id: string;
-  kind: AdapterKind;            // "slack" | "discord" | "email" | "github" | "linear" | "cloudflare" | "webhook" | "web" | string
+  kind: AdapterKind;            // "slack" | "discord" | "gmail" | "github" | "linear" | "cloudflare" | "webhook" | "web" | string
   name: string;
   instance: string;             // the ONE instance that runs it, or "*" (Automatic)
   auto?: AutoLease;             // Automatic only: the lease holder and its end time
@@ -344,8 +344,7 @@ no public address, because the browser makes both redirects.
 |---|---|---|
 | Slack two-way (done: [slack.md](slack.md)) | `ingest`, `inboundEnvelope`, `thread`, `source.parents`, thread links, `caps.edits`. | A poll in `start` (`inbound: "poll"`, a JSON cursor) with your user token `SLACK_TOKEN` alone; Socket Mode only when `SLACK_APP_TOKEN` is set, so Orca posts as you and never posts by itself (`postsAsUser`). `postAsUser` keeps "post as me". |
 | Discord | The same as Slack. | Gateway in `start`. Automatic or pinned: only one bridge runs it (section 6.1). |
-| Email | `OutboundMessage.replyToExternalMsgId` and `references`, `idempotencyKey` as the Message-ID, `ConversationRef.messageId`, `cursor` for an IMAP UID. | IMAP IDLE in `start`. A DKIM check before `ingest`. |
-| Gmail (done: [gmail.md](gmail.md)) | The email adapter's MIME parse, `cursor` (a History API `historyId`), Gmail thread ids as `thread`, shared secret refs (`secretRefs.ts`; the client secret as `secret:<name>`), a stored secret it writes itself (the refresh token). | Connect with Google (OAuth code + PKCE, `meta.oauth`), one named row per account, read only (`caps.outbound: false`), the core's policy (`meta.verbs`, `meta.policyDefaults`: read, off; no poll with events `off`), the query match by Gmail itself. |
+| Gmail (done: [gmail.md](gmail.md)) | Its own MIME parse (`gmail/mime.ts`), `cursor` (a History API `historyId`), Gmail thread ids as `thread`, shared secret refs (`secretRefs.ts`; the client secret as `secret:<name>`), a stored secret it writes itself (the refresh token). | Sign in with Google (OAuth code + PKCE, `meta.oauth`; the client is server config, `googleOAuth`), one row per sign-in named by its address, read only (`caps.outbound: false`), the core's policy (`meta.verbs`, `meta.policyDefaults`: read, off; no poll with events `off`), the query match by Gmail itself. |
 | Settings UI | `store.ts` (every table), `registry.health()`, `store.retryDead()`, `GET /api/integrations`, the pairing routes (section 10). | Routes to write rows. A Test button that calls `publish` with a test key. An Approve / Deny list over `GET /api/integrations/pairing`. |
 | GitHub poller | `cursor` (an ETag or a timestamp), `ingest` without `actor`, topics `orca.pr.*` or `ext.github.*`. | A poll loop in `start` (`inbound: "poll"`). |
 | Linear | The same as the GitHub poller, plus thread links for issues. | GraphQL polls. |
@@ -491,12 +490,11 @@ Every secret ref of an integration has one of two forms:
 
 | Form | Example | Where the value is |
 |---|---|---|
-| A variable name | `ORCA_SECRET_EMAIL_IMAP` | The bridge's environment (`.env`). It must start with `ORCA_SECRET_` or be in `ORCA_SECRETS`. |
+| A variable name | `ORCA_SECRET_LINEAR` | The bridge's environment (`.env`). It must start with `ORCA_SECRET_` or be in `ORCA_SECRETS`. |
 | `secret:<name>` or `secret:<scope>/<name>` | `secret:gmail-app` | Orca's encrypted secret store ([docs/secrets.md](../secrets.md)): `/secret` in the chat, or an `ask-form` secret field. |
 
 A secret ref is the row's `secret_ref`, and each config key that ends in `Ref`, nested keys too:
-email's `smtpSecretRef` (`smtp.secretRef`) and `resendSecretRef` (`resend.secretRef`), Slack's
-`appTokenRef`. `secretRefRefusal` checks both forms. A plain value is refused.
+for example Slack's `appTokenRef`. `secretRefRefusal` checks both forms. A plain value is refused.
 
 How a stored secret reaches an adapter (`server/integrations/secretRefs.ts`):
 
@@ -515,9 +513,9 @@ Rules:
 - No value goes to a file, a log, the environment or an agent's spawn. `secrets.scrub` masks a
   stored value in tool output and posts.
 - A `secret:` ref never falls back to a variable, and a variable never falls back to the store.
-- The Connect form has a **Stored secret** Select for every kind. It lists the store's names, never
-  a value, and writes `secret:<name>` as the secret_ref. For a config ref (email's SMTP and Resend
-  boxes), type `secret:<name>`.
+- The Connect form has a **Stored secret** Select for every kind with a secret (not an OAuth kind:
+  Gmail's client secret is server config, Settings > Google sign-in). It lists the store's names,
+  never a value, and writes `secret:<name>` as the secret_ref. For a config ref, type `secret:<name>`.
 - An `orca <kind>` verb gets the account's stored secrets from `policy.useAccount` (section 13): it
   loads any that this bridge has not loaded yet, or that changed (`secretRefs.ensureLoaded`), and
   `policy.accountEnv` reads them through `secretValue`.
