@@ -17,6 +17,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { Tip } from "@/components/ui/tip";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
@@ -238,10 +239,14 @@ function LinkRowView({ link: l, events, onEdit, onChange }: { link: LinkRow; eve
       <div className="flex items-center gap-1">
         <div data-slot="link-switches" className="mr-2 flex items-center gap-4 max-md:flex-1">
           {NOTIFY_SWITCHES.map(({ key, label, slot }) => (
-            <div key={key} data-slot={slot} className="flex items-center gap-2" title={allowed[key === "notifyMe" ? "me" : "agent"] ? undefined : `Off for every link: the account's Events is "${EVENTS_LABEL[events]}"`}>
+            <div key={key} data-slot={slot} className="flex items-center gap-2">
               <Label htmlFor={`${slot}-${l.id}`} className="text-muted-foreground text-xs font-normal">{label}</Label>
-              <Switch id={`${slot}-${l.id}`} checked={l[key] !== false && allowed[key === "notifyMe" ? "me" : "agent"]} disabled={!allowed[key === "notifyMe" ? "me" : "agent"]}
-                onCheckedChange={(on) => setSwitch(key, on)} aria-label={`${label} for ${name}`} />
+              {(() => {
+                const on = allowed[key === "notifyMe" ? "me" : "agent"];
+                const sw = <Switch id={`${slot}-${l.id}`} checked={l[key] !== false && on} disabled={!on}
+                  onCheckedChange={(v) => setSwitch(key, v)} aria-label={`${label} for ${name}`} />;
+                return on ? sw : <Tip label={`Off for every link: the account's Events is "${EVENTS_LABEL[events]}"`}>{sw}</Tip>;
+              })()}
             </div>
           ))}
         </div>
