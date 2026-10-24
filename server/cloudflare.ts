@@ -9,6 +9,8 @@
 // the result): roll a Worker back to a version, delete a Worker, add or remove a Worker route.
 // A 401/403 names the token permission that call needs, so the fix is one edit in the dashboard.
 
+import { cloudflareWriteName, type VerbClasses } from "../shared/integrations";
+
 export const CLOUDFLARE_TOKEN_ENV = "ORCA_SECRET_CLOUDFLARE";
 export const CLOUDFLARE_ACCOUNT_ENV = "ORCA_CLOUDFLARE_ACCOUNT_ID";
 export const CLOUDFLARE_API = "https://api.cloudflare.com/client/v4";
@@ -401,6 +403,15 @@ export const CLOUDFLARE_USAGE = [
   "  | rollback <worker> --version <id> [--message m] [--confirm] | delete <worker> [--confirm]",
   "  | route add --zone z --pattern p --worker w [--confirm] | route remove --zone z (--id i | --pattern p) [--confirm]",
 ].join("\n");
+
+/** The class of each `orca cloudflare` verb, for the account policy (docs/integrations/POLICY.md).
+ *  `cloudflareVerb` names the verb: a write's own name (`route add`), else the subcommand. */
+export const CLOUDFLARE_VERBS: VerbClasses = {
+  help: "read", account: "read", workers: "read", deployments: "read", versions: "read", routes: "read", route: "read", domains: "read",
+  pages: "read", r2: "read", d1: "read", zones: "read", dns: "read", analytics: "read", audit: "read",
+  rollback: "write", delete: "write", "route add": "write", "route remove": "write",
+};
+export const cloudflareVerb = (words: unknown): string => cloudflareWriteName(words) ?? (Array.isArray(words) && words[0] !== undefined ? String(words[0]) : "help");
 
 /** `orca cloudflare <sub> …` → the text it prints. `by` names who asked, for the write log. */
 export async function cloudflareTool(args: Args, opts: CloudflareOpts & { by?: string } = {}): Promise<string> {

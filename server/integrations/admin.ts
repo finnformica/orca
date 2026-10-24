@@ -5,7 +5,7 @@
 // the /api/integrations/pairing/approve|deny routes the page posts to).
 import * as db from "../db";
 import { ORCA_SECRETS } from "../env";
-import { CATCH_ALL, CATCH_ALL_SEND_ERROR, isAutomatic, leaseHolder, secretRefRefusal, LINK_LEVELS, type Level, type LinkLevel, type Subscription, type TargetKind } from "../../shared/integrations";
+import { ACCESS_VALUES, CATCH_ALL, CATCH_ALL_SEND_ERROR, EVENTS_VALUES, integrationAccessRefusal, isAutomatic, leaseHolder, secretRefRefusal, LINK_LEVELS, type Access, type EventsMode, type Level, type LinkLevel, type Subscription, type TargetKind } from "../../shared/integrations";
 import {
   identityProblem, integrationProblem, linkProblem,
   type DeadRow, type IntegrationCard, type IntegrationsOverview, type PersonRow,
@@ -75,6 +75,7 @@ export async function overview(here = db.instanceName(), now = Date.now()): Prom
     const lastPollAt = Math.max(live[c.id]?.lastPollAt ?? 0, s.lastPollAt ?? 0) || undefined;
     return {
       id: c.id, kind: c.kind, name: c.name, instance: c.instance, enabled: c.enabled, config: c.config,
+      access: c.access ?? "read-write", events: c.events ?? "trigger",
       ...(c.secretRef ? { secretRef: c.secretRef } : {}), ...(secretSet !== undefined ? { secretSet } : {}),
       ...(auto && runsOn ? { runsOn } : {}), ...(secretMissingOn.length ? { secretMissingOn } : {}),
       running, ...(h ? { health: h } : {}), ...(lastEventAt ? { lastEventAt } : {}), ...(lastPollAt ? { lastPollAt } : {}),
@@ -99,11 +100,28 @@ export async function saveIntegration(b: Record<string, unknown>): Promise<void>
     secretRef: typeof b.secretRef === "string" && b.secretRef.trim() ? b.secretRef.trim() : undefined,
     config: b.config && typeof b.config === "object" ? Object.fromEntries(Object.entries(b.config as Record<string, unknown>).filter(([, v]) => v !== "" && v != null)) : {},
     enabled: b.enabled !== false,
+    // Absent keeps the stored policy (a new row gets the defaults: read-write, trigger).
+    ...policyOf(b),
   };
   const problem = integrationProblem(c, registry.kinds().map((k) => k.kind), ORCA_SECRETS);
   if (problem) fail(problem);
   await store.addIntegration(c);
   await registry.sync().catch(() => {});
+}
+
+/** An account's access and events from a body (docs/integrations/POLICY.md): each one only when set. */
+function policyOf(b: Record<string, unknown>): { access?: Access; events?: EventsMode } {
+  if (b.access !== undefined && !(ACCESS_VALUES as readonly unknown[]).includes(b.access)) fail(`access: ${ACCESS_VALUES.join(" or ")}`);
+  if (b.events !== undefined && !(EVENTS_VALUES as readonly unknown[]).includes(b.events)) fail(`events: ${EVENTS_VALUES.join(", ")}`);
+  return { ...(b.access !== undefined ? { access: b.access as Access } : {}), ...(b.events !== undefined ? { events: b.events as EventsMode } : {}) };
+}
+
+/** The card's Access and Events selects: set one or both. The core reads them per call, so the
+ *  change applies at once (no adapter restart). */
+export async function setPolicy(b: Record<string, unknown>): Promise<void> {
+  const p = policyOf(b);
+  if (!p.access && !p.events) fail("name access or events");
+  if (!(await store.setPolicy(String(b.id ?? ""), p))) fail(`no integration ${String(b.id ?? "")}`);
 }
 
 /** Disconnect = the switch off: the row stays, its links and people stay, the adapter stops. */
@@ -246,6 +264,8 @@ export async function testLink(linkId: string, opts: { waitMs?: number; now?: nu
   const l = (await store.link(linkId)) ?? fail(`no link ${linkId}`);
   if (l.externalId === CATCH_ALL) fail(CATCH_ALL_SEND_ERROR);
   const c = (await store.integration(l.integrationId)) ?? fail(`no integration ${l.integrationId}`);
+  const denied = integrationAccessRefusal(c, "send");
+  if (denied) fail(denied);
   const now = opts.now ?? Date.now();
   const e = {
     id: router.newEventId(now), key: `test:${linkId}:${now}`, topic: "orca.integration.test" as const, at: now,
@@ -268,6 +288,7 @@ export async function testLink(linkId: string, opts: { waitMs?: number; now?: nu
 export async function route(p: string, b: Record<string, unknown>): Promise<unknown | undefined> {
   switch (p) {
     case "/api/integrations/save": await saveIntegration(b); return { ok: true };
+    case "/api/integrations/policy": await setPolicy(b); return { ok: true };
     case "/api/integrations/enabled": await setEnabled(String(b.id), b.on === true); return { ok: true };
     case "/api/integrations/remove": await removeIntegration(String(b.id)); return { ok: true };
     case "/api/integrations/links/save": await saveLink(b); return { ok: true };

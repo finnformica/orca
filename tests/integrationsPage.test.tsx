@@ -39,7 +39,7 @@ const kinds = [
 ];
 const overview = () => ({
   instance: "local", kinds,
-  integrations: [{ id: "discord", kind: "discord", name: "Discord", instance: "*", enabled: true, config: {}, running: true, health: { ok: true } }],
+  integrations: [{ id: "discord", kind: "discord", name: "Discord", instance: "*", enabled: true, config: {}, access: "read-write", events: "trigger", running: true, health: { ok: true } }],
   links: [
     { id: "discord-chan", integrationId: "discord", externalId: "C1", label: "#chan", level: "ask", repos: [], requireMention: true },
     { id: "discord-all", integrationId: "discord", externalId: "*", label: "All channels and DMs", level: "admin", repos: ["r"], requireMention: true },
@@ -104,6 +104,29 @@ describe("the Integrations page", () => {
     expect(first!.textContent).not.toContain("only receives");
     expect(second!.textContent).toContain("#chan");
     expect(all("link-level", second)[0]!.textContent).toBe("Viewer");
+  });
+
+  test("each account shows its Access and Events; an account's events turn a link's switch off, never on", async () => {
+    const data = overview();
+    apiFake.integrationsData = data;
+    await open("/integrations");
+    const card = all("integration-card")[0]!;
+    expect(card.querySelector('[aria-label="Discord access"]')!.textContent).toBe("Read and write");
+    expect(card.querySelector('[aria-label="Discord events"]')!.textContent).toBe("Wake an agent");
+    const agentSwitch = () => all("integration-link")[0]!.querySelector<HTMLElement>('[data-slot="link-notify-agent"] [role="switch"]')!;
+    expect(agentSwitch().getAttribute("aria-checked")).toBe("true");
+    expect(agentSwitch().hasAttribute("disabled")).toBe(false);
+    act(() => root?.unmount());
+    container?.remove();
+
+    apiFake.integrationsData = { ...data, integrations: [{ ...data.integrations[0]!, access: "read", events: "record" }] };
+    await open("/integrations");
+    const ro = all("integration-card")[0]!;
+    expect(ro.querySelector('[aria-label="Discord access"]')!.textContent).toBe("Read");
+    expect(ro.querySelector('[aria-label="Discord events"]')!.textContent).toBe("Inbox only");
+    expect(agentSwitch().getAttribute("aria-checked")).toBe("false"); // the link says on; the account says no agent
+    expect(agentSwitch().hasAttribute("disabled")).toBe(true);
+    expect(all("integration-link")[0]!.querySelector<HTMLElement>('[data-slot="link-notify-me"] [role="switch"]')!.getAttribute("aria-checked")).toBe("true");
   });
 
   test("each link has two switches, Notify me and Notify agent, on unless the link says off; a click saves that one switch", async () => {
