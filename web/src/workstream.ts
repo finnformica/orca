@@ -2060,14 +2060,14 @@ export function insertPrRef(text: string, start: number, caret: number, label: s
 
 // ---- the composer's `/` command menu ----
 
-/** The `/query` at the caret, when the `/` opens its line (only whitespace before it) and the query
- *  is a command name being typed (letters and `-`). A `/` mid-sentence, in a path (`/usr/bin`,
- *  `src/a`) or after a space in the query does nothing. */
+/** The `/query` at the caret, when the `/` starts the text, starts a line or follows whitespace,
+ *  and the query is a command name being typed (letters and `-`). So `fix /com` opens the menu, but
+ *  a `/` inside a word, path or URL (`a/b`, `./run.sh`, `src/a`, `https://x/y`, `/usr/bin`) or after
+ *  a space in the query does nothing. */
 export function slashTrigger(text: string, caret: number): { start: number; query: string } | null {
-  const line = text.slice(0, caret).split("\n").pop()!;
-  const m = /^(\s*)\/([a-z-]*)$/i.exec(line);
+  const m = /(^|\s)\/([a-z-]*)$/i.exec(text.slice(0, caret));
   if (!m) return null;
-  return { start: caret - line.length + m[1]!.length, query: m[2]!.toLowerCase() };
+  return { start: caret - m[2]!.length - 1, query: m[2]!.toLowerCase() };
 }
 
 export type SlashCommandId = "compact" | "secret" | "stop" | "model" | "attach" | "clear-queue" | "preview" | "merge" | "rename";
@@ -2083,22 +2083,42 @@ export type SlashContext = {
   pr: boolean; // the workstream has an open PR
   mergeQueued: boolean; // already marked merge-when-green (or GitHub auto-merge on)
 };
-/** The registry's pure half: each command's name, one-line description and where it applies. The
- *  icon and the action are the UI's (components/SlashCommands). A new command is one entry here and
- *  one there. Order is the menu's order with an empty query. */
-export const SLASH_COMMANDS: { id: SlashCommandId; description: string; applies: (c: SlashContext) => boolean }[] = [
-  { id: "compact", description: "Summarise the session to free context", applies: (c) => c.compactable && !c.running },
-  { id: "stop", description: "Stop the running agent", applies: (c) => c.running && c.stoppable },
-  { id: "clear-queue", description: "Drop the queued messages", applies: (c) => c.queued > 0 },
-  { id: "model", description: "Choose the model for the next message", applies: () => true },
-  { id: "attach", description: "Attach files", applies: (c) => c.attach },
-  { id: "secret", description: "Save a secret (the value never enters the chat)", applies: () => true },
-  { id: "preview", description: "Start or open the preview", applies: (c) => !c.orchestrator && c.previews },
-  { id: "merge", description: "Merge the PR when CI is green", applies: (c) => !c.orchestrator && c.pr && !c.mergeQueued },
-  { id: "rename", description: "Rename the workstream", applies: (c) => !c.orchestrator },
+/** The registry's pure half: each command's name, one-line description, the chats it exists in
+ *  (`shows`) and, when it does not apply right now, the short reason (`unavailable`, null when it
+ *  does). The menu shows every command of the chat's kind and greys out an unavailable one with its
+ *  reason. The worker-only commands never show in the orchestrator's chat: they can never apply
+ *  there. The icon and the action are the UI's (components/SlashCommands). A new command is one entry
+ *  here and one there. Order is the menu's order with an empty query. */
+export const SLASH_COMMANDS: { id: SlashCommandId; description: string; shows: (c: SlashContext) => boolean; unavailable: (c: SlashContext) => string | null }[] = [
+  { id: "compact", description: "Summarise the session to free context", shows: () => true,
+    unavailable: (c) => c.running ? "wait for the run to end" : !c.compactable ? "only after a reply" : null },
+  { id: "stop", description: "Stop the running agent", shows: () => true,
+    unavailable: (c) => !c.running ? "nothing is running" : !c.stoppable ? "this run cannot be stopped here" : null },
+  { id: "clear-queue", description: "Drop the queued messages", shows: () => true, unavailable: (c) => c.queued > 0 ? null : "queue is empty" },
+  { id: "model", description: "Choose the model for the next message", shows: () => true, unavailable: () => null },
+  { id: "attach", description: "Attach files", shows: () => true, unavailable: (c) => c.attach ? null : "no attachments here" },
+  { id: "secret", description: "Save a secret (the value never enters the chat)", shows: () => true, unavailable: () => null },
+  { id: "preview", description: "Start or open the preview", shows: (c) => !c.orchestrator, unavailable: (c) => c.previews ? null : "no preview for this repo" },
+  { id: "merge", description: "Merge the PR when CI is green", shows: (c) => !c.orchestrator,
+    unavailable: (c) => !c.pr ? "no PR yet" : c.mergeQueued ? "already queued to merge" : null },
+  { id: "rename", description: "Rename the workstream", shows: (c) => !c.orchestrator, unavailable: () => null },
 ];
 
-/** The commands that apply here, filtered by the typed query: a name that starts with it first, then
+/** The row the `/` menu marks: `active` when it is enabled, else the next enabled row after it
+ *  (wrapping). -1 when every row is disabled. */
+export function slashActive(disabled: boolean[], active: number): number {
+  const n = disabled.length;
+  for (let k = 0; k < n; k++) { const i = (Math.max(0, active) + k) % n; if (!disabled[i]) return i; }
+  return -1;
+}
+/** ↑/↓ in the `/` menu: the next enabled row in that direction (wrapping); a disabled row is skipped. */
+export function slashStep(disabled: boolean[], from: number, dir: 1 | -1): number {
+  const n = disabled.length;
+  for (let k = 1; k <= n; k++) { const i = (((from + dir * k) % n) + n) % n; if (!disabled[i]) return i; }
+  return -1;
+}
+
+/** The chat's commands, filtered by the typed query: a name that starts with it first, then
  *  a name that contains it, then a description word that starts with it. Registry order inside each. */
 export function filterSlashCommands<T extends { name: string; description: string }>(cmds: T[], query: string): T[] {
   const q = query.toLowerCase();
@@ -2108,7 +2128,8 @@ export function filterSlashCommands<T extends { name: string; description: strin
   return cmds.map((c, i) => ({ c, i, r: rank(c) })).filter((x) => x.r < 3).sort((a, b) => a.r - b.r || a.i - b.i).map((x) => x.c);
 }
 
-/** The text once a command is picked: the `/query` is taken out, the rest of the line kept. */
+/** The text once a command is picked: only the `/query` token is taken out, the rest of the text
+ *  kept as it was, and the caret goes where the token was. */
 export function removeSlashQuery(text: string, start: number, caret: number): { text: string; caret: number } {
   return { text: text.slice(0, start) + text.slice(caret), caret: start };
 }

@@ -1253,7 +1253,7 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
   const ctl = controls ?? {
     model: modelFor(row), onModel: (m: string) => setCardModel(row, m), ran: row.agentMeta?.model, contextPct: row.agentMeta?.contextPct,
   };
-  // The composer's `/` menu: only the commands that apply to this chat right now.
+  // The composer's `/` menu: every command of this chat's kind; one that does not apply now is greyed out.
   const [modelOpen, setModelOpen] = useState(false);
   const orchestrator = row.repo === ORCHESTRATOR_REPO;
   const slash = useSlashCommands({
@@ -1399,7 +1399,7 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
       <ChatComposer
         className="shadow-none"
         commands={slash.commands}
-        replace={slash.widget}
+        top={slash.widget}
         leading={<ChatControls {...ctl} picker={{ open: modelOpen, onOpenChange: setModelOpen }} compact={ctl.contextPct === undefined && compacting === null ? undefined
           : { onCompact, pending: compacting !== null, busy: running, error: compactError }} />}
         persistKey={`orca.chat.${row.repo}::${row.branch}`}

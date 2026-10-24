@@ -6,7 +6,7 @@ import { ExpandableImage } from "@/components/ExpandableImage";
 import { Shortcut } from "@/components/ui/kbd";
 import { Tip } from "@/components/ui/tip";
 import { usePrRefs, useVoiceInput, useWorkstreamRefs } from "@/store";
-import { NO_WALK, appendQuote, filterMentions, filterSlashCommands, historyKey, historyStep, insertPrRef, listContinuation, mentionLabel, prTrigger, removeSlashQuery, slashTrigger, type HistoryWalk, type MentionRef } from "@/workstream";
+import { NO_WALK, appendQuote, filterMentions, filterSlashCommands, historyKey, historyStep, insertPrRef, listContinuation, mentionLabel, prTrigger, removeSlashQuery, slashActive, slashStep, slashTrigger, type HistoryWalk, type MentionRef } from "@/workstream";
 import { lineVisualRow, scrollCaretIntoView } from "@/lib/caretRow";
 import { cn, PipContext } from "@/lib/utils";
 import { clearDraft, draftFiles, loadDraft, saveDraft } from "@/lib/composerDraft";
@@ -26,7 +26,9 @@ import { replaceFindings, secretFindings, type SecretFinding } from "../../../sh
 // line with a "\n" on the relevant side already decides the key without this, so it's skipped).
 /** One entry of the composer's `/` menu (components/SlashCommands builds them). `run` gets the box's
  *  own verbs; it never sends a message. */
-export type ComposerCommand = { name: string; description: string; icon: ReactNode; run: (box: { attach: () => void }) => void };
+// `disabled`: the reason it does not apply now. The menu greys it out with the reason, ↑/↓ skip it
+// and Enter or a click on it does nothing.
+export type ComposerCommand = { name: string; description: string; icon: ReactNode; disabled?: string; run: (box: { attach: () => void }) => void };
 
 function visualRowFlags(el: HTMLTextAreaElement, key: string): { firstVisualRow?: boolean; lastVisualRow?: boolean } {
   const { value, selectionStart, selectionEnd } = el;
@@ -57,11 +59,12 @@ function visualRowFlags(el: HTMLTextAreaElement, key: string): { firstVisualRow?
 // and a labelled Send with its keycap; its @ picker is portaled out of the host's overflow-hidden.
 export function ChatComposer({
   persistKey, onSubmit, placeholder, leading, footer, onCancel, autoFocus, optimistic, history, action, alt, className, repo, prefill, insert,
-  variant = "box", icon, inputLabel, commands, replace,
+  variant = "box", icon, inputLabel, commands, top,
 }: {
-  // Drawn in the box's place while set (the `/secret` widget). The box's text and files stay in
-  // this component's state, so closing it gives the draft back as it was, and focus returns to it.
-  replace?: ReactNode;
+  // A small card inside the box, above the text (the `/secret` card). It opens and closes with a
+  // height + fade (`Collapse`); the text, the toolbar and Send stay usable below it. Closing it puts
+  // the focus back in the text, where the caret was, unless the text has the focus already.
+  top?: ReactNode;
   // The `/` menu: a `/` that opens a line lists these, filtered as you type. Absent: no menu.
   commands?: ComposerCommand[];
   variant?: "box" | "quick";
@@ -151,14 +154,15 @@ export function ChatComposer({
   const activeIdx = Math.min(active, Math.max(0, matches.length - 1));
   const optionId = (i: number) => `${listId}-pr-${i}`;
   // `/` menu: the same rules as the @ picker (↑/↓, Enter/Tab, Escape, a blur dismisses that `/`).
-  // The two never both match: a slash trigger is a `/` and a name at the start of its line.
+  // The two never both match: a slash trigger is a `/` at a line start or after whitespace, then a name.
   const strig = commands ? slashTrigger(value, caret) : null;
   const cmdMatches = strig && strig.start !== dismissedAt ? filterSlashCommands(commands!, strig.query) : [];
   const commanding = cmdMatches.length > 0;
-  const cmdIdx = Math.min(active, Math.max(0, cmdMatches.length - 1));
+  const cmdOff = cmdMatches.map((c) => Boolean(c.disabled));
+  const cmdIdx = slashActive(cmdOff, Math.min(active, Math.max(0, cmdMatches.length - 1))); // -1: all disabled
   const cmdOptionId = (i: number) => `${listId}-cmd-${i}`;
-  const runCommand = (c: ComposerCommand) => {
-    if (!strig) return;
+  const runCommand = (c: ComposerCommand | undefined) => {
+    if (!strig || !c || c.disabled) return;
     const next = removeSlashQuery(value, strig.start, caret);
     pendingCaret.current = next.caret;
     pendingFocus.current = true;
@@ -187,13 +191,13 @@ export function ChatComposer({
       if (pendingScroll.current) { scrollCaretIntoView(el); pendingScroll.current = false; }
     }
   }, [value]);
-  const replaced = Boolean(replace);
-  const wasReplaced = useRef(false);
+  const topOpen = Boolean(top);
+  const wasTopOpen = useRef(false);
   useEffect(() => {
     const el = textRef.current;
-    if (wasReplaced.current && !replaced && el) { el.focus(); el.setSelectionRange(caret, caret); } // where the `/command` was
-    wasReplaced.current = replaced;
-  }, [replaced]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (wasTopOpen.current && !topOpen && el && el.ownerDocument.activeElement !== el) { el.focus(); el.setSelectionRange(caret, caret); }
+    wasTopOpen.current = topOpen;
+  }, [topOpen]); // eslint-disable-line react-hooks/exhaustive-deps
   const quick = variant === "quick";
   const rootRef = useRef<HTMLDivElement>(null);
   // Quick variant: grow with the text where `field-sizing: content` isn't supported (Safari, Firefox),
@@ -390,9 +394,8 @@ export function ChatComposer({
   );
   const onKey = (e: KeyboardEvent) => {
     if (commanding && !e.nativeEvent.isComposing) {
-      const n = cmdMatches.length;
-      if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); setActive((cmdIdx + (e.key === "ArrowDown" ? 1 : n - 1)) % n); return; }
-      if ((e.key === "Enter" || e.key === "Tab") && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); runCommand(cmdMatches[cmdIdx]!); return; }
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); if (cmdIdx >= 0) setActive(slashStep(cmdOff, cmdIdx, e.key === "ArrowDown" ? 1 : -1)); return; }
+      if ((e.key === "Enter" || e.key === "Tab") && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); runCommand(cmdMatches[cmdIdx]); return; }
       if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setDismissedAt(strig!.start); return; }
     }
     if (picking && !e.nativeEvent.isComposing) {
@@ -471,7 +474,7 @@ export function ChatComposer({
       aria-autocomplete="list"
       aria-expanded={picking || commanding}
       aria-controls={picking || commanding ? listId : undefined}
-      aria-activedescendant={commanding ? cmdOptionId(cmdIdx) : picking ? optionId(activeIdx) : undefined}
+      aria-activedescendant={commanding ? (cmdIdx >= 0 ? cmdOptionId(cmdIdx) : undefined) : picking ? optionId(activeIdx) : undefined}
       onChange={(e) => {
         const t = prTrigger(e.target.value, e.target.selectionStart) ?? (commands ? slashTrigger(e.target.value, e.target.selectionStart) : null);
         if (t?.start !== dismissedAt) setDismissedAt(null); // a new (or no) `@` re-arms the picker
@@ -499,15 +502,18 @@ export function ChatComposer({
             id={cmdOptionId(i)}
             role="option"
             aria-selected={i === cmdIdx}
+            aria-disabled={c.disabled ? true : undefined}
             data-command={c.name}
-            className={cn("flex cursor-default items-center gap-2 rounded-sm px-2 py-1.5 text-sm", i === cmdIdx && "bg-accent text-accent-foreground")}
+            data-disabled={c.disabled ? "" : undefined}
+            className={cn("flex cursor-default items-center gap-2 rounded-sm px-2 py-1.5 text-sm", c.disabled ? "opacity-50" : i === cmdIdx && "bg-accent text-accent-foreground")}
             onMouseDown={(e) => e.preventDefault()} // keep the textarea's focus + caret
-            onMouseEnter={() => setActive(i)}
+            onMouseEnter={() => { if (!c.disabled) setActive(i); }}
             onClick={() => runCommand(c)}
           >
             <span className="text-muted-foreground flex size-4 shrink-0 items-center justify-center [&_svg]:size-3.5" aria-hidden>{c.icon}</span>
             <span className="shrink-0 font-mono text-xs">/{c.name}</span>
             <span className="text-muted-foreground min-w-0 flex-1 truncate text-xs">{c.description}</span>
+            {c.disabled && <span data-slot="command-reason" className="text-muted-foreground shrink-0 text-xs">{c.disabled}</span>}
           </li>
         ))}
       </ul>
@@ -564,12 +570,14 @@ export function ChatComposer({
 
   return (
     <div ref={rootRef} className="relative">
-      {replaced ? <div data-slot="chat-composer-replaced">{replace}</div> : <div
+      <div
         className={cn(quick ? "cursor-text" : "bg-card focus-within:border-ring focus-within:ring-ring/40 cursor-text rounded-lg border transition-[color,box-shadow] focus-within:ring-2", className)}
         onMouseDown={focusText}
         onDrop={onDrop}
         onDragOver={(e) => e.preventDefault()}
       >
+        {/* The card's own clicks (a label, its padding) keep their focus: focusText would take it. */}
+        <Collapse open={topOpen}><div data-slot="chat-composer-top" onMouseDown={(e) => e.stopPropagation()}>{top}</div></Collapse>
         {images.length > 0 && (
           <div className="flex flex-wrap gap-2 p-2 pb-0">
             {images.map((f, i) => <Thumb key={i} file={f} onRemove={() => setImages((p) => p.filter((_, j) => j !== i))} />)}
@@ -617,12 +625,42 @@ export function ChatComposer({
             )}
           </div>
         </div>
-      </div>}
+      </div>
       {guardBar}
       {mentions && (quick && textRef.current ? createPortal(mentions, textRef.current.ownerDocument.body) : mentions)}
       {commandMenu && (quick && textRef.current ? createPortal(commandMenu, textRef.current.ownerDocument.body) : commandMenu)}
       {error && <p data-slot="chat-composer-error" className={cn("text-destructive text-xs break-words", quick ? "border-t px-3 py-1.5" : "mt-1 px-1")}>{error}</p>}
       {footer}
+    </div>
+  );
+}
+
+// Opens and closes its content with a height + fade and a slight slide (200ms, ease-out): grid rows
+// 0fr → 1fr animate the real height, so the chat log above moves smoothly, never in one jump. The
+// last content stays mounted (aria-hidden) through the close. Reduced motion: no transition.
+const COLLAPSE_MS = 200;
+function Collapse({ open, children }: { open: boolean; children: ReactNode }) {
+  const last = useRef(children);
+  if (open) last.current = children;
+  const [mounted, setMounted] = useState(open);
+  const [expanded, setExpanded] = useState(open);
+  useEffect(() => {
+    if (open) {
+      setMounted(true);
+      // One frame at 0fr first, so the open has a start to animate from.
+      const f = requestAnimationFrame(() => setExpanded(true));
+      return () => cancelAnimationFrame(f);
+    }
+    setExpanded(false);
+    const t = setTimeout(() => setMounted(false), COLLAPSE_MS);
+    return () => clearTimeout(t);
+  }, [open]);
+  if (!mounted) return null;
+  return (
+    <div data-slot="collapse" data-state={expanded ? "open" : "closed"} aria-hidden={!open || undefined}
+      className={cn("grid ease-out motion-safe:transition-[grid-template-rows,opacity,translate] motion-safe:duration-200",
+        expanded ? "grid-rows-[1fr] translate-y-0 opacity-100" : "grid-rows-[0fr] -translate-y-1 opacity-0")}>
+      <div className="min-h-0 overflow-hidden">{open ? children : last.current}</div>
     </div>
   );
 }
