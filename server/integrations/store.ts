@@ -270,6 +270,16 @@ export async function setCursor(integrationId: string, value: string): Promise<v
   });
 }
 
+/** Delete one cursor row (a used pending sign-in). */
+export async function dropCursor(integrationId: string): Promise<void> {
+  return db.withRetry(async (sql) => { await sql`DELETE FROM integration_cursor WHERE user_id = ${user()} AND integration_id = ${integrationId}`; });
+}
+
+/** Delete the cursor rows whose key matches `like` (SQL LIKE) and that are older than `before`. */
+export async function dropCursors(like: string, before: number): Promise<void> {
+  return db.withRetry(async (sql) => { await sql`DELETE FROM integration_cursor WHERE user_id = ${user()} AND integration_id LIKE ${like} AND updated_at < ${before}`; });
+}
+
 // ── event + delivery ─────────────────────────────────────────────────────────────────────────────
 
 export type { PlannedDelivery } from "../../shared/integrations";

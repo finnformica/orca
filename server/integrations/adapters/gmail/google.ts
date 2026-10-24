@@ -72,7 +72,7 @@ export function authorizeUrl(e: Pick<Endpoints, "auth">, o: { clientId: string; 
 }
 
 /** A Google error. `reconnect`: the grant is gone (revoked, expired, a Testing app's 7 days), so
- *  only a new Connect with Google helps. `retryable`: try again later (a 429, a 5xx, the network). */
+ *  only a new Sign in with Google helps. `retryable`: try again later (a 429, a 5xx, the network). */
 export class GoogleError extends Error {
   constructor(message: string, readonly status: number, readonly opts: { reconnect?: boolean; retryable?: boolean; scope?: boolean } = {}) { super(message); }
   get reconnect(): boolean { return !!this.opts.reconnect; }

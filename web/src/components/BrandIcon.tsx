@@ -1,11 +1,12 @@
 // The logo of each integration's service, for the Integrations page and the chat's activity rows.
 // Paths from simple-icons 13.21 (CC0, https://simpleicons.org), only the ones Orca's adapters use, so
-// the bundle carries five paths and not the set. A kind with no brand (email, webhook, web) or a kind
-// a later adapter adds gets a lucide icon.
-import { Cloud, Globe, Mail, Plug, Webhook } from "lucide-react";
+// the bundle carries a few paths and not the set. Gmail is Google's own multicolour "M" (the 2020
+// mark, in its own viewBox). A kind with no brand (webhook, web) or a kind a later adapter adds gets
+// a lucide icon.
+import { Cloud, Globe, Plug, Webhook } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-type Brand = { title: string; paths: { d: string; fill: string }[] };
+type Brand = { title: string; paths: { d: string; fill: string }[]; viewBox?: string };
 
 const SLACK = [
   "M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zM6.313 15.165a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313z",
@@ -20,11 +21,17 @@ export const BRANDS: Record<string, Brand> = {
   discord: { title: "Discord", paths: [{ fill: "#5865F2", d: "M20.317 4.3698a19.7913 19.7913 0 00-4.8851-1.5152.0741.0741 0 00-.0785.0371c-.211.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 00-.0785-.037 19.7363 19.7363 0 00-4.8852 1.515.0699.0699 0 00-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 00.0312.0561c2.0528 1.5076 4.0413 2.4228 5.9929 3.0294a.0777.0777 0 00.0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 00-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 01-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 01.0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 01.0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 01-.0066.1276 12.2986 12.2986 0 01-1.873.8914.0766.0766 0 00-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 00.0842.0286c1.961-.6067 3.9495-1.5219 6.0023-3.0294a.077.077 0 00.0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 00-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.157-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1569 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.946 2.4189-2.1568 2.4189Z" }] },
   slack: { title: "Slack", paths: SLACK.map((d, i) => ({ d, fill: ["#E01E5A", "#36C5F0", "#2EB67D", "#ECB22E"][i]! })) },
   github: { title: "GitHub", paths: [{ fill: "currentColor", d: "M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12" }] },
-  gmail: { title: "Gmail", paths: [{ fill: "#EA4335", d: "M24 5.457v13.909c0 .904-.732 1.636-1.636 1.636h-3.819V11.73L12 16.64l-6.545-4.91v9.273H1.636A1.636 1.636 0 0 1 0 19.366V5.457c0-2.023 2.309-3.178 3.927-1.964L5.455 4.64 12 9.548l6.545-4.91 1.528-1.145C21.69 2.28 24 3.434 24 5.457z" }] },
+  gmail: { title: "Gmail", viewBox: "52 42 88 66", paths: [
+    { fill: "#4285F4", d: "M58 108h14V74L52 59v43c0 3.32 2.69 6 6 6" },
+    { fill: "#34A853", d: "M120 108h14c3.32 0 6-2.69 6-6V59l-20 15" },
+    { fill: "#FBBC04", d: "M120 48v26l20-15v-8c0-7.42-8.47-11.65-14.4-7.2" },
+    { fill: "#EA4335", d: "M72 74V48l24 18 24-18v26L96 92" },
+    { fill: "#C5221F", d: "M52 51v8l20 15V48l-5.6-4.2c-5.94-4.45-14.4-.22-14.4 7.2" },
+  ] },
   linear: { title: "Linear", paths: [{ fill: "#5E6AD2", d: "M2.886 4.18A11.982 11.982 0 0 1 11.99 0C18.624 0 24 5.376 24 12.009c0 3.64-1.62 6.903-4.18 9.105L2.887 4.18ZM1.817 5.626l16.556 16.556c-.524.33-1.075.62-1.65.866L.951 7.277c.247-.575.537-1.126.866-1.65ZM.322 9.163l14.515 14.515c-.71.172-1.443.282-2.195.322L0 11.358a12 12 0 0 1 .322-2.195Zm-.17 4.862 9.823 9.824a12.02 12.02 0 0 1-9.824-9.824Z" }] },
 };
 
-const GENERIC: Record<string, typeof Plug> = { email: Mail, webhook: Webhook, web: Globe, cloudflare: Cloud };
+const GENERIC: Record<string, typeof Plug> = { webhook: Webhook, web: Globe, cloudflare: Cloud };
 
 /** The service name for a kind: the brand's title, else the kind itself. */
 export const brandTitle = (kind: string): string => BRANDS[kind]?.title ?? kind;
@@ -36,11 +43,11 @@ export function BrandIcon({ kind, className }: { kind: string; className?: strin
   // pushes a block box flush right (a closed Select trigger) — inline-level boxes ignore auto margins.
   const brand = BRANDS[kind];
   if (!brand) {
-    const I = GENERIC[kind] ?? (kind === "gmail" ? Mail : Plug); // Gmail: no brand path here, the mail icon
+    const I = GENERIC[kind] ?? Plug;
     return <I data-slot="brand-icon" data-kind={kind} className={cn("text-muted-foreground inline-flex size-4 shrink-0 align-middle", className)} aria-hidden="true" />;
   }
   return (
-    <svg data-slot="brand-icon" data-kind={kind} viewBox="0 0 24 24" role="img" aria-hidden="true" className={cn("inline-flex size-4 shrink-0 align-middle", className)}>
+    <svg data-slot="brand-icon" data-kind={kind} viewBox={brand.viewBox ?? "0 0 24 24"} role="img" aria-hidden="true" className={cn("inline-flex size-4 shrink-0 align-middle", className)}>
       {brand.paths.map((p, i) => <path key={i} d={p.d} fill={p.fill} />)}
     </svg>
   );

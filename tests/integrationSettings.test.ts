@@ -241,19 +241,19 @@ describe("with Postgres", () => {
     await admin.route("/api/integrations/people/save", { id: "ana", name: "Ana", maxLevel: "admin" });
     await admin.route("/api/integrations/identities/add", { principal: "ana", adapter: "fakechat", externalId: "U5", name: "@ana" });
     await admin.route("/api/integrations/identities/add", { principal: "ana", adapter: "slack", externalId: "US1", name: "ana.s" });
-    await admin.route("/api/integrations/identities/add", { principal: "ana", adapter: "email", externalId: "ana@example.com" });
+    await admin.route("/api/integrations/identities/add", { principal: "ana", adapter: "gmail", externalId: "ana@example.com" });
     await expect(admin.route("/api/integrations/identities/add", { principal: "nobody", adapter: "slack", externalId: "US2" })).rejects.toThrow("no person nobody");
     await expect(admin.route("/api/integrations/identities/add", { principal: "ana", adapter: "irc", externalId: "x" })).rejects.toThrow("adapter");
     const [ana] = (await admin.overview("local")).people;
     expect(ana).toEqual({ id: "ana", name: "Ana", maxLevel: "admin", identities: [
-      { adapter: "email", externalId: "ana@example.com" }, { adapter: "fakechat", externalId: "U5", name: "ana" }, { adapter: "slack", externalId: "US1", name: "ana.s" },
+      { adapter: "fakechat", externalId: "U5", name: "ana" }, { adapter: "gmail", externalId: "ana@example.com" }, { adapter: "slack", externalId: "US1", name: "ana.s" },
     ] });
     // The gate trusts the hand-added identity: min(work link, admin person) = work.
     expect(await router.ingest("chat", { key: "fakechat:a1", topic: "ext.fakechat.message", at: Date.now(), source: { adapter: "fakechat", channel: "R1" }, actor: { external: { adapter: "fakechat", id: "U5" } }, mentioned: true, text: "status?" })).toBe("new");
     expect((await store.event("fakechat:a1"))!.grant).toMatchObject({ level: "work", principalId: "ana" });
     // A pairing approval with no name keeps the name added by hand.
     await admin.route("/api/integrations/identities/add", { principal: "ana", adapter: "fakechat", externalId: "U5" });
-    expect((await admin.overview("local")).people[0]!.identities[1]).toEqual({ adapter: "fakechat", externalId: "U5", name: "ana" });
+    expect((await admin.overview("local")).people[0]!.identities[0]).toEqual({ adapter: "fakechat", externalId: "U5", name: "ana" });
   });
 
   test("subscriptions: add with a filter, route an event, remove; removing a link or integration takes its subscriptions", async () => {

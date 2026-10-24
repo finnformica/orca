@@ -2,20 +2,24 @@
 
 The Gmail adapter connects Orca to your own Gmail with **Sign in with Google** (OAuth 2.0). Orca reads
 and searches mail. It never changes a label or marks a mail read. Orca sends no mail yet: an account
-with read-write access gets the `gmail.send` scope ready for a later send verb. You can connect several accounts. Each account is its own integration with a name (for example
-`personal` and `work`). The code is
-`server/integrations/adapters/gmail.ts` and the files in `server/integrations/adapters/gmail/`. The
-adapter contract is [ADAPTERS.md](ADAPTERS.md).
+with read-write access gets the `gmail.send` scope ready for a later send verb. You can connect
+several accounts. Each sign-in adds one account: its own integration, named by its address. The
+code is `server/integrations/adapters/gmail.ts` and the files in `server/integrations/adapters/gmail/`.
+The adapter contract is [ADAPTERS.md](ADAPTERS.md).
 
-This adapter is not the [Email](email.md) adapter. The Email adapter reads one separate mailbox over
-IMAP with a password. The Gmail adapter reads your own mailbox through the Gmail API, with a grant
-that you can revoke at Google at any time.
+There are two roles:
+
+- **The operator** sets up the Google OAuth client one time for the server (sections 4 and 5).
+- **The user** clicks one button: **Integrations > Connect > Gmail > Sign in with Google** (section 6).
+
+The grant is yours. You can revoke it at Google at any time.
 
 ## 1. What it does
 
-- **Connect.** You press **Connect with Google** on the integration's card. Google asks you to allow
-  access. Google sends your browser back to Orca. Orca stores the refresh token encrypted in its
-  secret store. Orca never sees your Google password.
+- **Connect.** You press **Sign in with Google** in the Connect dialog. Google asks you to select an
+  account and allow access. Google sends your browser back to Orca. Orca adds the account, named by
+  its address, and stores the refresh token encrypted in its secret store. Orca never sees your
+  Google password.
 - **Access and Events.** Each account has the two settings of the core's account policy
   ([POLICY.md](POLICY.md)), on its card. A new Gmail account starts at Access **Read** and Events
   **Off**.
@@ -72,8 +76,8 @@ Orca uses Google's incremental authorization (`include_granted_scopes=true`).
 
 A first connect, or a grant that Google refused (**reconnect needed**), asks for every scope again.
 
-To go back to read only, set the access to **Read**. Then click **Disconnect** and **Connect with
-Google** again. Google keeps a scope that it granted until you revoke the grant.
+To go back to read only, set the access to **Read**. Then click **Disconnect** and **Sign in with
+Google** on the card again. Google keeps a scope that it granted until you revoke the grant.
 
 ## 3. What Orca reads, and what it does not read
 
@@ -125,11 +129,11 @@ For an **External** app, do these steps too:
 2. Under **Test users**, click **Add users**. Add your own Gmail address. Click **Save**.
 
 > **Important: a Testing app's refresh token expires after 7 days.** Google ends the grant 7 days
-> after each Connect. The card then says **reconnect needed**, and Orca reads no more mail. Press
+> after each sign-in. The card then says **reconnect needed**, and Orca reads no more mail. Press
 > **Reconnect with Google** to continue for 7 more days.
 >
 > To stop this, publish the app: open **Audience** and click **Publish app** (the status becomes
-> **In production**). Google does not verify the app for your own use. At Connect, Google shows
+> **In production**). Google does not verify the app for your own use. At sign-in, Google shows
 > "Google hasn't verified this app". Click **Advanced**, then **Go to Orca (unsafe)**. An unverified
 > app can have at most 100 users, and you are the only one. Do not publish the app for other people.
 
@@ -151,50 +155,62 @@ For an **External** app, do these steps too:
    it: your browser does the redirect, so a tailnet-only address is correct.
 
    Orca builds the redirect URI from the page's own origin, or from `redirectOrigin` when it is set.
-   It never uses the bridge's own `http://127.0.0.1:8787`. Orca refuses Connect from a plain `http://`
-   page, from `localhost` and from a raw IP address. The card then tells you to open the https
-   address (`ORCA_SERVER_URL`, when it is set) and connect there.
+   It never uses the bridge's own `http://127.0.0.1:8787`. Orca refuses a sign-in from a plain
+   `http://` page, from `localhost` and from a raw IP address. The dialog then tells you to open the
+   https address (`ORCA_SERVER_URL`, when it is set) and connect there.
 5. Leave **Authorized JavaScript origins** empty. Click **Create**.
 6. Copy the **Client ID** (`….apps.googleusercontent.com`) and the **Client secret** (`GOCSPX-…`).
 
-## 5. Give the client secret to Orca
+## 5. Give the OAuth client to Orca (the operator, one time)
 
-The client secret is the integration's **Secret** (its secret ref, [ADAPTERS.md](ADAPTERS.md)
-section 14). Use one of these:
+The OAuth client is server config. The user never types it. Set it one time for each Orca server:
 
-- Store it in Orca's secret store, for example with the composer's `/secret`. Then type
-  `secret:<scope>/<name>` (for example `secret:chat/google-oauth`) in the Connect form's **Secret**
-  box. The bridge decrypts it into its memory only.
-- Or put it in the `.env` of each bridge that can run the integration, then restart that bridge.
-  Leave the **Secret** box empty for the default name:
+1. Save the client secret in Orca's secret store. Use the composer's `/secret`, for example with
+   the name `google-oauth` in the scope `chat`.
+2. Open **Settings > Google sign-in**.
+3. Paste the **Client ID**.
+4. In **Client secret**, select the stored secret (here `chat/google-oauth`).
+5. Click **Save**.
 
-  ```bash
-  ORCA_SECRET_GOOGLE_OAUTH=GOCSPX-…
-  ```
+The card also shows the redirect URI to add to the client in Google Cloud (section 4.3).
 
-A variable name must start with `ORCA_SECRET_`, so agents never see it. A stored secret must be
-readable with this bridge's key: set the same `ORCA_SECRETS_KEY` on each instance, or pin the row.
+You can use the bridge's environment instead of Settings:
 
-## 6. Connect in Orca
+```bash
+ORCA_GOOGLE_OAUTH_CLIENT_ID=1234-abc.apps.googleusercontent.com
+ORCA_SECRET_GOOGLE_OAUTH=GOCSPX-…
+```
+
+- The Settings value wins over the variable.
+- With no stored secret selected, Orca reads the `ORCA_SECRET_GOOGLE_OAUTH` variable.
+- A variable name must start with `ORCA_SECRET_`, so agents never see it.
+- A stored secret must be readable with this bridge's key. Set the same `ORCA_SECRETS_KEY` on each
+  server.
+
+The values are `googleOAuth` in the app config (`clientId`, `secretRef`, `redirectOrigin`).
+`redirectOrigin` is a fixed `https://` origin for the redirect URI. Leave it empty to use the page's
+own origin.
+
+When the client is not set up on the server that answers the page, **Connect > Gmail** shows one line
+that says so, with a link to this guide. It shows no form.
+
+## 6. Connect in Orca (the user)
 
 1. Open **Integrations** and click **Connect**.
-2. Select the kind **Gmail**. Type a short name for the account, for example `work`.
-3. Paste the **OAuth client id**. It is not a secret, but keep it out of the repo: it is per box.
-4. In **Secret**, type `secret:<scope>/<name>` of the stored client secret. Leave it empty for the
-   `ORCA_SECRET_GOOGLE_OAUTH` variable.
-5. Change the **Gmail query** if you want. Empty means `label:Orca OR to:<you>+orca@<your domain>`.
-6. Click **Save**.
-7. On the new card, click **Connect with Google**.
-8. Select the Google account for this integration. Allow the access that Google shows.
-9. Google sends you back to the Integrations page. The card says
-   `Signed in as <your address> · read only`.
-10. Add a link. Use the catch-all link (external id `*`) for every sender, or one link for each
-    sender address.
-11. Add yourself as a person, with your Gmail address as an identity. Then your own notes to your
-    `+orca` address get your grant. A sender who is not a person gets a read-only grant (ADAPTERS.md
-    section 10).
+2. Select the kind **Gmail**.
+3. Click **Sign in with Google**.
+4. Select the Google account. Allow the access that Google shows.
+5. Google sends you back to the Integrations page. A new card shows the account, named by its
+   address. The card says `Signed in as <your address> · read only`.
+6. Add a link. Use the catch-all link (external id `*`) for every sender, or one link for each
+   sender address.
+7. Add yourself as a person, with your Gmail address as an identity. Then your own notes to your
+   `+orca` address get your grant. A sender who is not a person gets a read-only grant (ADAPTERS.md
+   section 10).
 
-On the card, set **Events** (Wake an agent, Inbox only or Off) and keep **Access** at Read.
+On the card, set **Events** (Wake an agent, Inbox only or Off) and keep **Access** at Read. A new
+account starts at Access **Read** and Events **Off**. Click the pencil beside the name to rename the
+account. Use **Edit** to change the Gmail query and the other settings.
 
 In Gmail, make a label named `Orca`. Put the label on a mail to give it to Orca. You can also make a
 Gmail filter that puts the label on some mail. A mail to `<you>+orca@<your domain>` goes to Orca with
@@ -204,20 +220,20 @@ At the first poll, Orca starts at the newest mail. It does not read old mail.
 
 ### More than one account
 
-Do the steps in this section one time for each account. All accounts can use the same OAuth client
-and the same client secret.
+Click **Sign in with Google** one time for each account. All accounts use the server's OAuth client.
 
-- Give each account its own name, for example `personal` and `work`.
-- Set Events to **Wake an agent** only for an account whose mail must wake Orca. For example, set
-  it for `work` and leave `personal` at **Off**. Orca then never polls `personal`.
-- In step 8, select the right Google account. Google shows an account chooser.
+- Each sign-in adds one account. Its id is the address with `@` as `-` (for example
+  `finn-example.com`).
+- A sign-in with an account that is connected already reconnects that card. It adds no second card.
+- Set Events to **Wake an agent** only for an account whose mail must wake Orca. Orca never polls an
+  account with Events **Off**.
 - Each account has its own refresh token, its own cursor and its own card.
 
 The two settings are the core's account policy ([POLICY.md](POLICY.md)): `access` (`read` |
 `read-write`) chooses the scopes (`gmailAccess`), and `events` (`trigger` | `record` | `off`) chooses
 whether Orca polls and whether an agent wakes. Both `orca gmail` verbs are reads (`GMAIL_VERBS`,
 `meta.verbs`), and `--account` uses the core's `policy.useAccount`. A new Gmail row starts at `read`
-and `off` (`meta.policyDefaults`).
+and `off` (`GMAIL_POLICY_DEFAULTS`, also `meta.policyDefaults`).
 
 ### More than one Orca server
 
@@ -230,21 +246,23 @@ server can use the token only with the same key. Do one of these:
 The pending sign-in is in the shared database, so a restart between Start and the callback is safe.
 The sign-in must end within 10 minutes.
 
-## 7. The config
+## 7. The account's config
 
 Each value can be a string, as the Settings form saves it.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `clientId` | (required) | The OAuth client id. |
 | `query` | `label:Orca OR to:<you>+orca@<domain>` | The Gmail search that selects Orca's mail. |
 | `pollSeconds` | 30 | The poll interval in seconds, at least 10. An account with Events **Off** does not poll. |
 | `allowedSenders` | none | Addresses, or `@domain` for a domain, separated by commas. Empty: every sender that the query finds. |
 | `checkAuth` | `true` | Require Google's DKIM, SPF or DMARC pass for the From domain. |
 | `keepQuoted` | `false` | Keep the quoted history of a reply in the text. |
-| `redirectOrigin` | the page's origin | A fixed `https://` origin for the redirect URI (the public base URL). It wins over the page's origin. Plain http, localhost and IP addresses are refused. |
 
-`authUrl`, `tokenUrl`, `revokeUrl` and `apiUrl` change Google's endpoints. Only the tests use them.
+An account made before the one-click sign-in can still hold `clientId`, `redirectOrigin` and its own
+secret ref. They win over the server's client for that account.
+
+`authUrl`, `tokenUrl`, `revokeUrl` and `apiUrl` (in `googleOAuth` or on an account) change Google's
+endpoints. Only the tests use them.
 
 ## 8. Threads
 
@@ -298,8 +316,8 @@ subscription, and a `users.watch` renewal at least each 7 days. Orca does not do
 ## 12. Test it
 
 `tests/gmail.test.ts` runs the adapter against a fake Google OAuth server and a fake Gmail API on
-loopback. It never calls Google.
+loopback. It never calls Google. `tests/gmailMime.test.ts` tests the mail parse.
 
 ```bash
-bun test tests/gmail.test.ts
+bun test tests/gmail.test.ts tests/gmailMime.test.ts
 ```

@@ -45,6 +45,10 @@ import { MERGED_WEEK_MS, asTurnPage } from "./workstream";
 import { trackedFetch as get } from "./lib/refresh";
 import { apiFetch, apiUrl } from "./lib/server";
 
+/** Settings' Google sign-in card (`googleOAuth` on /api/config): the OAuth client for Gmail's
+ *  "Sign in with Google". Names only, never the secret's value. */
+export type GoogleOAuthSettings = { clientId: string; secretRef: string; redirectOrigin: string; envClientId: boolean; defaultSecretRef: string };
+
 /** `dbUnavailable`: the bridge answered without the database — the turns are what it journaled
  *  locally (server/outbox.ts), to be synced when the database is back. */
 export type TurnPage = { turns: AgentTurn[]; older: string | null; dbUnavailable?: boolean };
@@ -112,11 +116,12 @@ export type RepoInfo = {
 const q = (repo: string, extra = "") => `?repo=${encodeURIComponent(repo)}${extra}`;
 
 export const api = {
-  config: (): Promise<{ repos: RepoInfo[]; staleHours: number; agentProviders: AgentProvider[]; apiPort: number; instance?: string; instances?: string[]; instanceHourlyUsd?: Record<string, number>; terminal?: Record<string, boolean>; voice?: boolean; ui?: { showBoard: boolean }; instanceUrls?: Record<string, string>; bridge?: BridgeInfo }> => get("/api/config").then(res),
+  config: (): Promise<{ repos: RepoInfo[]; staleHours: number; agentProviders: AgentProvider[]; apiPort: number; instance?: string; instances?: string[]; instanceHourlyUsd?: Record<string, number>; terminal?: Record<string, boolean>; voice?: boolean; ui?: { showBoard: boolean }; instanceUrls?: Record<string, string>; bridge?: BridgeInfo; googleOAuth?: GoogleOAuthSettings }> => get("/api/config").then(res),
   /** Settings' Machine cost: one instance's USD/hour; null clears it (back to the EC2 estimate / 0). */
   setInstanceRate: (instance: string, hourlyUsd: number | null): Promise<{ ok: true }> => post("/api/config/instance-rate", { instance, hourlyUsd }),
   setInstanceTerminal: (instance: string, on: boolean): Promise<{ ok: true }> => post("/api/config/terminal", { instance, on }),
   setShowBoard: (showBoard: boolean): Promise<{ ok: true }> => post("/api/config/ui", { showBoard }),
+  setGoogleOAuth: (g: { clientId: string; secretRef: string; redirectOrigin: string }): Promise<{ ok: true }> => post("/api/config/google-oauth", g),
   setServerIdentity: (name: string, color: string): Promise<{ ok: true }> => post("/api/config/identity", { name, color }),
   usage: (): Promise<Usage | null> => get("/api/usage").then(res),
   /** The unified inbox (shared/inbox.ts): one window of rows, newest first, with the filter facets. */

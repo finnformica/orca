@@ -15,12 +15,15 @@ import * as secretRefs from "./secretRefs";
 import { SLACK_CAPS, slackAdapter } from "./adapters/slack";
 import { WEBHOOK_CAPS, webhookAdapter } from "./adapters/webhook";
 import { DISCORD_CAPS, discordAdapter } from "./adapters/discord";
-import { emailAdapter, emailCaps } from "./adapters/email";
 import { LINEAR_CAPS, linearAdapter } from "./adapters/linear";
 import { GMAIL_CAPS, GMAIL_VERBS, gmailAdapter } from "./adapters/gmail";
+import { GMAIL_POLICY_DEFAULTS } from "./adapters/gmail/oauth";
 import { CLOUDFLARE_CAPS, cloudflareAdapter, ensureDefaults as cloudflareDefaults } from "./adapters/cloudflare";
 import { SLACK_VERBS } from "../slackTool";
 import { CLOUDFLARE_VERBS } from "../cloudflare";
+
+/** The operator's setup guide for Gmail sign-in (the Google OAuth client). */
+export const GMAIL_SETUP_DOCS = "https://github.com/finnformica/orca/blob/main/docs/integrations/gmail.md";
 
 const factories = new Map<AdapterKind, AdapterFactory>();
 const metas = new Map<AdapterKind, AdapterMeta>();
@@ -28,7 +31,7 @@ const running = new Map<string, { adapter: Adapter; connection: Connection; abor
 const connectHooks = new Map<AdapterKind, (c: Connection) => Promise<void>>();
 const cliVerbs = new Map<AdapterKind, VerbClasses>();
 
-/** Register a kind. A later adapter (Discord, email, GitHub, Linear) adds one line here. `meta` is
+/** Register a kind. A later adapter (GitHub) adds one line here. `meta` is
  *  what Settings > Integrations shows for the kind (its card, its Connect form). */
 export function register(kind: AdapterKind, factory: AdapterFactory, meta?: Omit<AdapterMeta, "kind">, onConnect?: (c: Connection) => Promise<void>): void {
   factories.set(kind, factory);
@@ -62,23 +65,6 @@ register("discord", discordAdapter, {
   ],
   help: "A bot token with the Message Content intent. Only one bridge runs it, also on Automatic. Setup: docs/integrations/discord.md.",
 });
-register("email", emailAdapter, {
-  label: "Email", caps: emailCaps({ imap: { host: "" }, outbound: "smtp" }), place: "address", secretExample: "ORCA_SECRET_EMAIL_IMAP",
-  help: "One mailbox only Orca reads. The secret is the IMAP password. Link each person's address. Setup: docs/integrations/email.md.",
-  config: [
-    { key: "address", label: "Orca's address", placeholder: "orca@yourdomain.com" },
-    { key: "imapHost", label: "IMAP host", placeholder: "imap.gmail.com" },
-    { key: "imapPort", label: "IMAP port", placeholder: "993" },
-    { key: "outbound", label: "Outbound (smtp, resend or none)", placeholder: "smtp" },
-    { key: "smtpHost", label: "SMTP host", placeholder: "smtp.gmail.com" },
-    { key: "smtpPort", label: "SMTP port", placeholder: "465" },
-    { key: "smtpSecretRef", label: "SMTP password variable", placeholder: "ORCA_SECRET_EMAIL_SMTP" },
-    { key: "resendSecretRef", label: "Resend key variable", placeholder: "ORCA_SECRET_RESEND" },
-    { key: "allowedSenders", label: "Allowed senders (comma-separated; @domain for a domain)", placeholder: "finn@yourdomain.com" },
-    { key: "authservId", label: "Receiving server's authserv-id", placeholder: "mx.google.com" },
-  ],
-});
-
 register("linear", linearAdapter, {
   label: "Linear", caps: LINEAR_CAPS, place: "team or project", secretExample: "ORCA_SECRET_LINEAR",
   config: [
@@ -105,21 +91,20 @@ register("cloudflare", (c) => cloudflareAdapter(c), {
   help: "An account API token, in Orca's secret store (Stored secret) or a secret variable. Orca polls the account (audit log, deploys, Worker errors, custom domains, DNS) and tells the orchestrator; it takes no posts. Setup: docs/integrations/cloudflare.md.",
 }, cloudflareDefaults);
 register("gmail", gmailAdapter, {
-  label: "Gmail", caps: GMAIL_CAPS, place: "sender address (* = every sender)", secretExample: "secret:chat/google-oauth-secret", secretDefault: "ORCA_SECRET_GOOGLE_OAUTH",
-  oauth: { provider: "google", label: "Connect with Google" },
+  label: "Gmail", caps: GMAIL_CAPS, place: "sender address (* = every sender)",
+  // The OAuth client is server config (Settings > Google sign-in), never the row's: no secret field.
+  oauth: { provider: "google", label: "Sign in with Google", docs: GMAIL_SETUP_DOCS },
   switches: { checkAuth: true },
   // Read only, events off until you set them on the card (docs/integrations/POLICY.md section 6).
-  policyDefaults: { access: "read", events: "off" },
+  policyDefaults: GMAIL_POLICY_DEFAULTS,
   verbs: GMAIL_VERBS,
   config: [
-    { key: "clientId", label: "OAuth client id", placeholder: "1234-abc.apps.googleusercontent.com" },
     { key: "query", label: "Gmail query (optional)", placeholder: "empty = label:Orca OR to:you+orca@yourdomain.com" },
     { key: "pollSeconds", label: "Poll every (seconds, at least 10; only with Events on)", placeholder: "30" },
     { key: "allowedSenders", label: "Allowed senders (optional; comma-separated, @domain for a domain)", placeholder: "empty = any sender the query finds" },
     { key: "checkAuth", label: "Require Google's DKIM/SPF/DMARC pass (default on)" },
-    { key: "redirectOrigin", label: "Redirect origin (optional)", placeholder: "empty = this page's origin" },
   ],
-  help: "One Gmail account, read only, by Sign in with Google. Connect each account as its own row and name it (personal, work). The secret is the OAuth client secret: secret:<stored name> (e.g. one saved with /secret) or a variable (empty = ORCA_SECRET_GOOGLE_OAUTH). Save, then press Connect with Google. Access read asks Google for gmail.readonly; Events Wake an agent polls, and matching mail wakes Orca. Setup: docs/integrations/gmail.md.",
+  help: "Your Gmail, read only. Sign in with Google: each sign-in adds one account, named by its address. Access is read (gmail.readonly); set Events on the card to poll. Setup: docs/integrations/gmail.md.",
 });
 
 /** Every registered kind with what the Settings page shows for it. A kind with no meta gets a plain one. */

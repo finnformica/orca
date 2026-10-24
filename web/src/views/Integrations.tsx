@@ -5,7 +5,7 @@
 // labels and their Connect fields come from the registry (`overview.kinds`), so a new adapter's
 // card and form appear with no change here. The decisions are pure in shared/integrationSettings.ts.
 import { useEffect, useState, type ReactNode } from "react";
-import { Bell, MoreHorizontal, Plug, Plus, RotateCw, Trash2, X } from "lucide-react";
+import { Bell, MoreHorizontal, Pencil, Plug, Plus, RotateCw, Trash2, X } from "lucide-react";
 import { api } from "../api";
 import { BrandIcon } from "@/components/BrandIcon";
 import { poll } from "@/lib/poll";
@@ -108,18 +108,19 @@ export function IntegrationsPage() {
   );
 }
 
-/** Back from Google (`/integrations?oauth=connected|failed&id=…&detail=…`): a failure is the one
- *  action-failed notification; success shows on the card. The query is then taken off the URL. */
+/** Back from Google (`/integrations?oauth=added|connected|failed&id=…&account=…&detail=…`): a failure
+ *  is the one action-failed notification; success shows on the card (a new account's card appears).
+ *  The query is then taken off the URL. */
 function oauthReturn(): void {
   const q = new URLSearchParams(window.location.search);
   const result = q.get("oauth");
   if (!result) return;
   if (result === "failed") {
     const error = q.get("detail") || "Google sign-in failed";
-    const label = `Connect ${q.get("id") ?? "Gmail"} with Google`;
+    const label = q.get("id") ? `Reconnect ${q.get("id")} with Google` : "Sign in with Google";
     notifyLocal({ kind: "action_failed", repo: "", title: "Integrations", label: `${label} failed`, body: error, copy: `Action: ${label}\nError:\n${error}`, ask: `Integrations: ${label} failed: ${error}. Please investigate and fix.` });
   }
-  for (const k of ["oauth", "id", "detail"]) q.delete(k);
+  for (const k of ["oauth", "id", "account", "detail"]) q.delete(k);
   window.history.replaceState(window.history.state, "", `${window.location.pathname}${q.size ? `?${q}` : ""}${window.location.hash}`);
 }
 
@@ -127,43 +128,59 @@ function oauthReturn(): void {
 const grantedWords = (scopes: string[] = []): string =>
   !scopes.some((x) => x.endsWith("/gmail.readonly")) ? "no Gmail scope" : scopes.some((x) => x.endsWith("/gmail.send")) ? "read + send" : "read only";
 
-/** The Connect button's text: a missing send scope (access switched to read-write) asks to allow sending. */
+/** The card's sign-in button text: the kind's label (Sign in with Google) until an account is
+ *  connected, then Reconnect; a missing send scope (access switched to read-write) asks to allow sending. */
 export function oauthButtonLabel(label: string, o: IntegrationCard["oauth"]): string {
   if (!o?.account) return label;
   if (o.missing?.some((x) => x.endsWith("/gmail.send"))) return "Reconnect to allow sending";
-  return label.replace(/^Connect/, "Reconnect");
+  return `Reconnect ${label.replace(/^(Connect|Sign in) /, "")}`;
+}
+
+/** The one line a Connect dialog or a card shows instead of the sign-in button: the OAuth client is
+ *  not set up on this server (with the setup doc), or the page is not on Orca's https address. */
+function OAuthBlocked({ setup, origin, docs }: { setup?: string; origin?: string; docs?: string }) {
+  if (setup) return (
+    <div data-slot="oauth-setup" className="text-geist-amber break-words text-xs">
+      {setup} {docs && <a href={docs} target="_blank" rel="noreferrer" className="underline underline-offset-2">Read the setup guide</a>}
+    </div>
+  );
+  return origin ? <div data-slot="oauth-origin" className="text-geist-amber break-words text-xs">{origin}</div> : null;
+}
+
+/** Ask the bridge for Google's consent URL and go there: no `id` adds a new account, an `id` reconnects that row. */
+async function startOAuth(label: string, id?: string): Promise<boolean> {
+  const r = await act(label, "oauth/google/start", { ...(id ? { id } : {}), origin: window.location.origin }, () => {});
+  if (r && typeof r.url === "string") { window.location.assign(r.url); return true; }
+  return false;
 }
 
 /** An OAuth kind's row on the card: the account it connected, or why it needs you, and its Connect /
  *  Reconnect / Disconnect. Connect asks the bridge for Google's consent URL and goes there. */
-function OAuthRow({ card: c, label, onChange }: { card: IntegrationCard; label: string; onChange: () => void }) {
+function OAuthRow({ card: c, meta, onChange }: { card: IntegrationCard; meta: NonNullable<AdapterMeta["oauth"]>; onChange: () => void }) {
   const [busy, setBusy] = useState(false);
   const [ask, confirmNode] = useConfirm("Disconnect");
   const o = c.oauth;
   const connected = !!o?.account;
+  const label = oauthButtonLabel(meta.label, o);
   // Google redirects only to an https domain: from a plain-http or localhost page, say where to go.
-  const originProblem = typeof c.config.redirectOrigin === "string" && c.config.redirectOrigin ? undefined : connectOriginProblem(window.location.origin);
-  const go = async () => {
-    setBusy(true);
-    const r = await act(`${label} (${c.name})`, "oauth/google/start", { id: c.id, origin: window.location.origin }, () => {});
-    if (r && typeof r.url === "string") window.location.assign(r.url);
-    else setBusy(false);
-  };
+  const fixed = (typeof c.config.redirectOrigin === "string" && c.config.redirectOrigin) || meta.fixedOrigin;
+  const originProblem = fixed ? undefined : connectOriginProblem(window.location.origin);
+  const go = async () => { setBusy(true); if (!(await startOAuth(`${label} (${c.name})`, c.id))) setBusy(false); };
   return (
     <div data-slot="integration-oauth" className="flex flex-col gap-2 px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
       <div className="min-w-0">
         <div className="break-words">
           {connected
             ? <>Signed in as <span className="font-medium">{o!.account}</span> · {grantedWords(o!.scopes)}</>
-            : "Not connected. Save the client id and secret, then sign in with Google."}
+            : "Not connected. Sign in with Google to connect this account again."}
         </div>
-        {originProblem && <div data-slot="oauth-origin" className="text-geist-amber mt-0.5 break-words text-xs">{originProblem}</div>}
+        <div className="mt-0.5"><OAuthBlocked setup={meta.setup} origin={originProblem} docs={meta.docs} /></div>
         {o?.reconnect && <div data-slot="oauth-reconnect" className="text-geist-red mt-0.5 break-words text-xs">{o.reconnect}</div>}
       </div>
       <div className="flex items-center gap-2 sm:shrink-0">
         {connected && <Button variant="ghost" size="sm" className="max-sm:h-10" onClick={() => ask(`Disconnect ${c.name}?`, "Orca revokes its access at Google and deletes the stored refresh token. The integration, its links and its events stay.", () => void act(`Disconnect ${c.name}`, "oauth/google/disconnect", { id: c.id }, onChange))}>Disconnect</Button>}
-        <Button size="sm" variant={connected && !o?.reconnect && !o?.missing?.length ? "secondary" : "default"} disabled={busy || !!originProblem} onClick={() => void go()} data-slot="oauth-connect" className="max-sm:h-10 max-sm:flex-1">
-          {oauthButtonLabel(label, o)}
+        <Button size="sm" variant={connected && !o?.reconnect && !o?.missing?.length ? "secondary" : "default"} disabled={busy || !!originProblem || !!meta.setup} onClick={() => void go()} data-slot="oauth-connect" className="max-sm:h-10 max-sm:flex-1">
+          {label}
         </Button>
       </div>
       {confirmNode}
@@ -180,6 +197,7 @@ function IntegrationCardView({ card: c, data, onChange }: { card: IntegrationCar
   const [test, setTest] = useState<{ busy?: boolean; ok?: boolean; detail?: string }>({});
   const [linkOpen, setLinkOpen] = useState<LinkRow | "new" | null>(null);
   const [editOpen, setEditOpen] = useState(false);
+  const [renameOpen, setRenameOpen] = useState(false);
   const runTest = async () => {
     setTest({ busy: true });
     const r = await act(`Test ${c.name}`, "test", { id: c.id }, onChange);
@@ -195,6 +213,7 @@ function IntegrationCardView({ card: c, data, onChange }: { card: IntegrationCar
       <span className="flex min-w-0 items-center gap-2">
         <BrandIcon kind={c.kind} />
         <span className="truncate">{c.name}</span>
+        <Tip label="Rename"><Button variant="ghost" size="icon" className="size-6" aria-label={`Rename ${c.name}`} data-slot="integration-rename-open" onClick={() => setRenameOpen(true)}><Pencil /></Button></Tip>
         <Pill>{meta?.label ?? c.kind}</Pill>
         <span className="max-sm:hidden" data-slot="integration-where"><Pill>{isAutomatic(c.instance) ? where : `on ${where}`}</Pill></span>
       </span>
@@ -219,7 +238,7 @@ function IntegrationCardView({ card: c, data, onChange }: { card: IntegrationCar
             <div className="text-muted-foreground mt-0.5 flex flex-wrap items-center gap-x-2 text-xs">
               {c.secretRef
                 ? <span data-slot="secret-status"><span className="font-mono">{c.secretRef}</span> · {c.secretSet === undefined ? "not checked yet" : c.secretSet ? "set" : "not set"}</span>
-                : <span>no secret</span>}
+                : !meta?.oauth && <span>no secret</span>}
               <span className="sm:hidden">· {isAutomatic(c.instance) ? where : `on ${where}`}</span>
               {c.running && <span>· running on this bridge</span>}
             </div>
@@ -231,13 +250,14 @@ function IntegrationCardView({ card: c, data, onChange }: { card: IntegrationCar
         </div>
       </div>
       <PolicyRow card={c} onChange={onChange} />
-      {meta?.oauth && <OAuthRow card={c} label={meta.oauth.label} onChange={onChange} />}
+      {meta?.oauth && <OAuthRow card={c} meta={meta.oauth} onChange={onChange} />}
       {links.length === 0
         ? <div className="text-muted-foreground flex items-center justify-between gap-2 px-4 py-3 text-xs">No {meta?.place ?? "link"}s linked. Orca listens only where a link says so.
             <Button variant="ghost" size="sm" onClick={() => setLinkOpen("new")}><Plus />Add</Button></div>
         : <ul data-slot="integration-links" className="divide-y">{links.map((l) => <LinkRowView key={l.id} link={l} events={c.events} onEdit={() => setLinkOpen(l)} onChange={onChange} />)}</ul>}
       {linkOpen && <LinkDialog integration={c} meta={meta} link={linkOpen === "new" ? undefined : linkOpen} onClose={() => setLinkOpen(null)} onSaved={onChange} />}
       {editOpen && <IntegrationDialog kinds={data.kinds} options={options} existing={c} onClose={() => setEditOpen(false)} onSaved={onChange} />}
+      {renameOpen && <RenameDialog card={c} onClose={() => setRenameOpen(false)} onSaved={onChange} />}
       {confirmNode}
     </VCard>
   );
@@ -370,6 +390,41 @@ function ConnectButton({ kinds, options, onSaved }: { kinds: AdapterMeta[]; opti
   );
 }
 
+/** Rename an account on its card (a Gmail account is named by its address at sign-in). Only the name
+ *  changes: the save carries the row's other fields as they are. */
+function RenameDialog({ card: c, onClose, onSaved }: { card: IntegrationCard; onClose: () => void; onSaved: () => void }) {
+  const [name, setName] = useState(c.name);
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    setBusy(true);
+    const r = await act(`Rename ${c.name}`, "save", { id: c.id, kind: c.kind, name: name.trim(), instance: c.instance, secretRef: c.secretRef ?? "", config: c.config, enabled: c.enabled }, onSaved);
+    setBusy(false);
+    if (r) onClose();
+  };
+  return (
+    <FormDialog title={`Rename ${c.name}`} problem={name.trim() ? undefined : "name is required"} busy={busy} onSubmit={() => void save()} onClose={onClose}>
+      <Field label="Name" htmlFor="int-rename"><Input id="int-rename" data-slot="integration-rename" value={name} onChange={(e) => setName(e.target.value)} autoFocus /></Field>
+    </FormDialog>
+  );
+}
+
+/** Connect for an OAuth kind (Gmail): ONE sign-in button and nothing to type. The OAuth client is the
+ *  server's; each sign-in adds one account, named by its address. When the client is not set up on
+ *  this server, or the page is not on Orca's https address, one line says so instead. */
+function OAuthConnect({ meta }: { meta: AdapterMeta & { oauth: NonNullable<AdapterMeta["oauth"]> } }) {
+  const [busy, setBusy] = useState(false);
+  const origin = meta.oauth.fixedOrigin ? undefined : connectOriginProblem(window.location.origin);
+  const blocked = !!meta.oauth.setup || !!origin;
+  const go = async () => { setBusy(true); if (!(await startOAuth(meta.oauth.label))) setBusy(false); };
+  return (
+    <div data-slot="oauth-connect-new" className="space-y-3">
+      {blocked
+        ? <OAuthBlocked setup={meta.oauth.setup} origin={origin} docs={meta.oauth.docs} />
+        : <Button type="button" className="w-full" disabled={busy} onClick={() => void go()} data-slot="oauth-sign-in"><BrandIcon kind={meta.kind} />{meta.oauth.label}</Button>}
+    </div>
+  );
+}
+
 function IntegrationDialog({ kinds, options, existing, onClose, onSaved }: { kinds: AdapterMeta[]; options: InstanceOption[]; existing?: IntegrationCard; onClose: () => void; onSaved: () => void }) {
   const [kind, setKind] = useState(existing?.kind ?? kinds[0]?.kind ?? "");
   const meta = kinds.find((k) => k.kind === kind);
@@ -386,15 +441,34 @@ function IntegrationDialog({ kinds, options, existing, onClose, onSaved }: { kin
   const body = { id: autoId, kind, name, instance, secretRef: secretRef || (existing ? "" : meta?.secretDefault ?? ""), config, enabled: existing?.enabled ?? true };
   const problem = integrationProblem(body, kinds.map((k) => k.kind), STRIPPED);
   const save = async () => { setBusy(true); const r = await act(existing ? `Save ${name}` : `Connect ${name}`, "save", body, onSaved); setBusy(false); if (r) onClose(); };
+  const kindSelect = (
+    <Field label="Kind" htmlFor="int-kind">
+      <Select value={kind} onValueChange={setKind} disabled={!!existing}>
+        <SelectTrigger id="int-kind" className="w-full"><SelectValue /></SelectTrigger>
+        <SelectContent>{kinds.map((k) => <SelectItem key={k.kind} value={k.kind}><BrandIcon kind={k.kind} className="mr-2" />{k.label}</SelectItem>)}</SelectContent>
+      </Select>
+    </Field>
+  );
+  // An OAuth kind connects by sign-in only: the kind, then one button. No name, id or secret.
+  if (!existing && meta?.oauth) return (
+    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-lg" data-slot="integration-connect-dialog">
+        <DialogHeader>
+          <DialogTitle>Connect an integration</DialogTitle>
+          {meta.help && <DialogDescription>{meta.help}</DialogDescription>}
+        </DialogHeader>
+        <div className="space-y-4">
+          {kindSelect}
+          <OAuthConnect meta={{ ...meta, oauth: meta.oauth }} />
+        </div>
+        <DialogFooter><Button type="button" variant="secondary" onClick={onClose}>Cancel</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
   return (
     <FormDialog title={existing ? `Edit ${existing.name}` : "Connect an integration"} problem={problem} busy={busy} onSubmit={() => void save()} onClose={onClose}
       description={meta?.help ?? "The token stays in the instance's environment. Orca stores only the variable name."}>
-      <Field label="Kind" htmlFor="int-kind">
-        <Select value={kind} onValueChange={setKind} disabled={!!existing}>
-          <SelectTrigger id="int-kind" className="w-full"><SelectValue /></SelectTrigger>
-          <SelectContent>{kinds.map((k) => <SelectItem key={k.kind} value={k.kind}><BrandIcon kind={k.kind} className="mr-2" />{k.label}</SelectItem>)}</SelectContent>
-        </Select>
-      </Field>
+      {kindSelect}
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Name" htmlFor="int-name"><Input id="int-name" value={name} onChange={(e) => setName(e.target.value)} placeholder={`Work ${meta?.label ?? ""}`.trim()} /></Field>
         <Field label="Id" htmlFor="int-id"><Input id="int-id" value={existing ? existing.id : id} disabled={!!existing} onChange={(e) => setId(e.target.value)} placeholder={autoId || "work-slack"} className="font-mono" /></Field>
@@ -420,6 +494,7 @@ function IntegrationDialog({ kinds, options, existing, onClose, onSaved }: { kin
           </SelectContent>
         </Select>
       </Field>
+      {!meta?.oauth && <>
       <Field label="Secret variable" htmlFor="int-secret" hint={storedSecretName(secretRef) !== undefined
         ? <>From Orca&apos;s secret store. The bridge decrypts it in memory when the integration starts.</>
         : <>Set it in the <span className="font-mono">.env</span> of {isAutomatic(instance) ? "each server that can run it" : "that server"}. It must start with <span className="font-mono">ORCA_SECRET_</span>, so agents never see it. Or choose a stored secret below.</>}>
@@ -428,6 +503,7 @@ function IntegrationDialog({ kinds, options, existing, onClose, onSaved }: { kin
       <Field label="Stored secret" htmlFor="int-stored-secret">
         <StoredSecretSelect id="int-stored-secret" value={storedSecretName(secretRef) ?? ""} onChange={(v) => setSecretRef(v ? `${STORED_SECRET_PREFIX}${v}` : storedSecretName(secretRef) !== undefined ? "" : secretRef)} />
       </Field>
+      </>}
       {meta?.config?.map((f) => meta.switches && f.key in meta.switches
         ? (
           <div key={f.key} className="flex items-center justify-between gap-3">
@@ -452,7 +528,7 @@ const secretRefInput = (v: string): string =>
 
 /** A stored Orca secret by name (the store gives names only, never a value), or none: then the
  *  secret variable above holds the token. A pick writes `secret:<name>` as the secret_ref. */
-function StoredSecretSelect({ id, value, onChange }: { id: string; value: string; onChange: (v: string) => void }) {
+export function StoredSecretSelect({ id, value, onChange, noneLabel = "None: use a secret variable" }: { id: string; value: string; onChange: (v: string) => void; noneLabel?: string }) {
   const [names, setNames] = useState<string[] | undefined>();
   useEffect(() => {
     let live = true;
@@ -464,7 +540,7 @@ function StoredSecretSelect({ id, value, onChange }: { id: string; value: string
     <Select value={value || NO_STORED_SECRET} onValueChange={(v) => onChange(v === NO_STORED_SECRET ? "" : v)}>
       <SelectTrigger id={id} data-slot="integration-stored-secret" className="w-full font-mono"><SelectValue /></SelectTrigger>
       <SelectContent>
-        <SelectItem value={NO_STORED_SECRET}><span className="font-sans">None: use a secret variable</span></SelectItem>
+        <SelectItem value={NO_STORED_SECRET}><span className="font-sans">{noneLabel}</span></SelectItem>
         {choices.length > 0 && <SelectSeparator />}
         {choices.map((n) => <SelectItem key={n} value={n}>{n}</SelectItem>)}
         {names !== undefined && !names.length && <SelectGroup><SelectLabel className="font-sans">No stored secrets yet. Save one with /secret in the chat.</SelectLabel></SelectGroup>}

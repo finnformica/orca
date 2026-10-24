@@ -1,6 +1,5 @@
 // Where an integration's secret comes from (docs/integrations/ADAPTERS.md "Secrets"). A row's
-// secret_ref — and any config key ending in `Ref` (email's `smtpSecretRef` / `resendSecretRef`,
-// Slack's `appTokenRef`) — is an environment variable name, or `secret:<name>` for a value in Orca's
+// secret_ref — and any config key ending in `Ref` (Slack's `appTokenRef`) — is an environment variable name, or `secret:<name>` for a value in Orca's
 // encrypted secret store (server/secrets.ts). The registry decrypts every stored ref of a row when
 // it starts the adapter (`load`), keeps the values HERE, in this process's memory only, and starts
 // the adapter again when a stored value changes (`stale`: rotation). An adapter reads every secret
@@ -23,7 +22,7 @@ export function secretValue(ref: string | undefined | null, env: Record<string, 
 }
 
 /** Every secret ref a row names: its secret_ref, then each config string under a key ending in
- *  `Ref`, nested objects included (email's `smtp.secretRef`). Pure. */
+ *  `Ref`, nested objects included. Pure. */
 export function refsOf(c: Pick<Connection, "secretRef" | "config">): string[] {
   const out: string[] = c.secretRef ? [c.secretRef] : [];
   const walk = (o: unknown, depth: number): void => {
