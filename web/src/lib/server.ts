@@ -1,5 +1,4 @@
-// The server switcher (the sidebar's server menu on a desktop, the top bar's on a phone — Shell.tsx):
-// several fully separate Orca servers — a work box,
+// The server switcher (the server menu on the sidebar's top-left button, and on a phone's top bar — Shell.tsx): several fully separate Orca servers — a work box,
 // a personal one — that never talk to each other; only this browser talks to each. The app is
 // always served by its HOME server (the origin that loaded the page); every API call and the event
 // stream go to ONE base URL, which is empty (same origin) unless another server is chosen. With
@@ -244,7 +243,7 @@ export function mergeServers(
   return out;
 }
 
-/** Whether the sidebar shows a server section in its menu: the home server has not turned the switcher off, and
+/** Whether the server button opens the server menu: the home server has not turned the switcher off, and
  *  there is a server to switch to — or there is no Tailscale API, so Add server must be reachable.
  *  The list has a self row only when the home origin is an Orca box (not localhost/127.0.0.1): then
  *  "a server to switch to" needs more than that one row; with no self row, any row is one. No
