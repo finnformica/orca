@@ -153,6 +153,8 @@ export const api = {
   },
   cancelForm: (id: string): Promise<{ form: FormView }> => post(`/api/orchestrator/forms/${encodeURIComponent(id)}/cancel`, {}),
   saveSecret: (body: { name: string; scope?: string; value: string }): Promise<{ ref: string; created: boolean }> => post("/api/orchestrator/secrets", body),
+  /** The stored secrets' names (never a value), for a picker such as the Cloudflare Connect form's. */
+  secretNames: (): Promise<{ secrets: { scope: string; name: string }[] }> => get("/api/orchestrator/secrets").then(res),
   handoffs: (): Promise<{ self: string; packs: PackView[] }> => get("/api/handoffs").then(res),
   /** One pack; null once it is deleted (404). */
   handoffPack: (id: string): Promise<{ self: string; pack: PackView } | null> => get(`/api/handoffs/${encodeURIComponent(id)}`).then((r) => (r.status === 404 ? null : res(r))),

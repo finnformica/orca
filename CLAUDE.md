@@ -190,8 +190,14 @@ same transaction; the dispatcher (primary only) claims them `FOR UPDATE SKIP LOC
 1 h and marks a row dead after 6 attempts (`orca.integration.failed`, an `integration_failed`
 notification). Adapters (`web`, `webhook`, `slack`, `discord`, `email`, `linear`) start only on a primary bridge:
 the one of `integration.instance`, or for Automatic (`*`, the default) the primary with the secret
-that holds the row's lease (`status.auto`, 150 s, renewed each sync — the failover when it lapses). Secrets stay in env vars named `ORCA_SECRET_*` (stripped from agents); a
-row holds only the name. An outside sender's message gets a grant (min of link level and person) that
+that holds the row's lease (`status.auto`, 150 s, renewed each sync — the failover when it lapses). Secrets stay in env vars named `ORCA_SECRET_*` (stripped from agents) or in
+Orca's secret store; a row holds only the name. **Any secret ref** — `secret_ref` and every config key
+ending in `Ref` (email's `smtpSecretRef` / `resendSecretRef`, Slack's `appTokenRef`) — may be
+`secret:<name>`: the registry decrypts it into memory before `start` (`secretRefs.load`, one audit row
+each), adapters read through `secretValue(ref)` (never `process.env`), a changed or deleted stored
+secret restarts the adapter on the next sync (`stale`), and an Automatic row goes only to a primary
+whose key decrypts it (`readable`). The Connect form's **Stored secret** Select writes it
+(ADAPTERS.md section 14). An outside sender's message gets a grant (min of link level and person) that
 rides `queued_message.grant_scope`: one grant per orchestrator wake, `orchestrator.tool` refuses
 verbs outside it (`grantRefusal`), and such a wake has no shell. Levels, low to high (Settings
 names in brackets, stored values unchanged): `notify` (Notify), `ask` (Viewer: read verbs, `post` on
@@ -248,13 +254,28 @@ Socket Mode is optional, only with `SLACK_APP_TOKEN`. In: another person's menti
 orchestrator posts — a user id is a DM opened first. `postsAsUser` keeps the core from posting by
 itself there (no pairing code). `orca slack conversations|read|search|post` (`server/slackTool.ts`)
 is your own chat only.
-**Cloudflare** (`server/cloudflare.ts`, `docs/integrations/cloudflare.md`) is not an adapter: it is
-the `orca cloudflare` verb. The bridge calls the REST and GraphQL API with an account token
-(`ORCA_SECRET_CLOUDFLARE`, account `ORCA_CLOUDFLARE_ACCOUNT_ID`, both stripped from agents). Reads
-cover Workers, deployments, versions, routes, domains, Pages, R2, D1, DNS, analytics and the audit
-log. The only writes are `rollback`, `delete`, `route add` and `route remove`: a dry run without
-`--confirm`, a `[cloudflare]` log line with it, and your own chat only (`cloudflareWriteName`). A 401/403
-names the token permission it needs (`PERMISSIONS`).
+**Cloudflare** (`adapters/cloudflare.ts`, `server/cloudflare.ts`, `docs/integrations/cloudflare.md`) is an
+inbound-only adapter plus the `orca cloudflare` verb. No webhooks (the bridge has no public address): every
+`pollSeconds` (120, at least 30; at most 10 deployment reads a tick, a 429 ends the tick and doubles the
+next wait up to 15 min) it reads the audit log since a cursor, Workers and their deployments, custom domains and each
+Worker's error rate, and hands in ONE envelope per topic and place (`ext.cloudflare.audit|dns|deploy|worker|
+domain|errors`, place `zone:<name>` with parent `account`). Its whole state is one JSON value in
+`integration_cursor`. The first Connect (`registry.onConnect`) makes a Viewer `*` link and the orchestrator's
+subscriptions (deploys as an hourly digest). It leaves out Orca's own confirmed writes (stored by `orca
+cloudflare … --confirm` as cursor row `cloudflare:own-writes`) and the deploy actors' audit entries (default
+`github`). `caps.outbound` is false: `orca post` to it is refused (`outboundRefusal`). The token is its secret_ref
+(default `ORCA_SECRET_CLOUDFLARE`, or `secret:<name>`, below). The verb reads the same token and
+`config.accountId`, else the env (`ORCA_CLOUDFLARE_ACCOUNT_ID`). Reads cover Workers, deployments, versions, routes,
+domains, Pages, R2, D1, DNS, analytics and the audit log. The writes are `rollback`, `delete`, `route
+add|remove`, `domain add|remove` and `dns add|remove`: a dry run without `--confirm`, a check of the target,
+a `[cloudflare]` log line with it, and your own chat only. ONE table, `CLOUDFLARE_VERBS`
+(`shared/integrations.ts`, the adapter's `meta.verbs`), says read or write for every verb (unknown =
+write): the grant check and the account policy (`policy.useAccount`, `--account`, Access) read it. The
+verb's token comes from `policy.accountEnv`, which reads a stored `secret:<name>` that `useAccount`
+loaded (`secretRefs.ensureLoaded`). No Cloudflare-only access or event switch: quiet = the account's
+Events "Inbox only". No command uploads Worker
+code: new Workers come from the repos' deploy pipelines. A 401/403 names the token permission it needs
+(`PERMISSIONS`).
 
 ## Forms in the chat and the secret store
 
@@ -271,8 +292,8 @@ made on first use. `orca secret list|pipe|env|delete` (owner only) gives a value
 the bridge; one audit row per use. `secrets.scrub` replaces every stored value in tool output,
 transcript steps, turns (also the outbox) and outbound channel posts. The composer's paste guard
 (`shared/secretGuard.ts` `secretFindings`) holds a key-like value with "Save as secret" / "Send
-anyway". The `ORCA_SECRET_*` integration tokens are a separate thing and stay env vars. Details and
-limits: `docs/secrets.md`.
+anyway". An integration's secret ref may name a stored secret (`secret:<name>`, Integrations above);
+`ORCA_SECRET_*` variables still work. Details and limits: `docs/secrets.md`.
 
 ## Multi-repo (aggregated)
 

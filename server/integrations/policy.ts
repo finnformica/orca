@@ -6,6 +6,7 @@ import { integrationAccessRefusal, pickAccount, type AdapterKind } from "../../s
 import type { Connection } from "./adapter";
 import * as registry from "./registry";
 import * as store from "./store";
+import * as secretRefs from "./secretRefs";
 
 export class PolicyError extends Error {}
 
@@ -20,14 +21,18 @@ export async function useAccount(kind: AdapterKind, verb: string, account?: unkn
   if (!c) return undefined;
   const refusal = integrationAccessRefusal(c, verb, registry.verbsFor(kind));
   if (refusal) throw new PolicyError(refusal);
+  // A stored secret (`secret:<name>`) into this process's memory, for accountEnv (secretRefs.ts).
+  try { await secretRefs.ensureLoaded(c); }
+  catch (e) { throw new PolicyError(`the ${kind} account "${c.name || c.id}" names a stored secret this bridge cannot read: ${e instanceof Error ? e.message : String(e)}`); }
   return c;
 }
 
 /** The environment a CLI tool reads, with the account's token in the variable the tool expects:
- *  the row's `secretRef` value as `tokenVar`, plus `extra` (an account id from its config). No row:
- *  the bridge's own environment, unchanged. The value is read here and never printed or logged. */
+ *  the row's `secretRef` value as `tokenVar` (a variable, or a stored `secret:<name>` that
+ *  useAccount loaded: secretRefs.secretValue), plus `extra` (an account id from its config). No
+ *  row: the bridge's own environment, unchanged. The value is read here and never printed or logged. */
 export function accountEnv(c: Connection | undefined, tokenVar: string, extra: Record<string, string | undefined> = {}, env: Record<string, string | undefined> = process.env): Record<string, string | undefined> {
   if (!c) return env;
   const set = Object.fromEntries(Object.entries(extra).filter(([, v]) => v !== undefined));
-  return { ...env, ...(c.secretRef ? { [tokenVar]: env[c.secretRef] } : {}), ...set };
+  return { ...env, ...(c.secretRef ? { [tokenVar]: secretRefs.secretValue(c.secretRef, env) } : {}), ...set };
 }

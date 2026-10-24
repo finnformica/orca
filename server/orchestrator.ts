@@ -36,6 +36,7 @@ import { API_PORT } from "./ports";
 import { reachable } from "./peer";
 import { machineReport } from "./liveMetrics";
 import { CLOUDFLARE_ACCOUNT_ENV, CLOUDFLARE_TOKEN_ENV, cloudflareTool, cloudflareVerb } from "./cloudflare";
+import { recordOwnWrite as recordCloudflareWrite } from "./integrations/adapters/cloudflare";
 import { slackTool } from "./slackTool";
 import * as policy from "./integrations/policy";
 import { featuresOf, runLimits, runsHere, type OrcaConfig, type RepoConfig } from "./config";
@@ -46,7 +47,7 @@ import {
 } from "../web/src/workstream";
 import { activityLines, type AgentTurn } from "../shared/agent";
 import { providerOfModel } from "../shared/models";
-import { attachmentIdOf, attachmentRefusal, catchAllPostRefusal, deleteRefusal, grantKey, grantRefusal, repoScoped, type Grant, type ReplyTo } from "../shared/integrations";
+import { attachmentIdOf, attachmentRefusal, catchAllPostRefusal, deleteRefusal, grantKey, grantRefusal, outboundRefusal, repoScoped, type Grant, type ReplyTo } from "../shared/integrations";
 import * as integrationStore from "./integrations/store";
 import * as integrationRouter from "./integrations/router";
 import * as integrationRegistry from "./integrations/registry";
@@ -730,6 +731,7 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       if (placeRefusal) throw new Error(placeRefusal);
       const { conn, caps } = await linkCaps(link.integrationId);
       const kind = conn?.kind ?? "this";
+      if (caps) { const refusal = outboundRefusal(kind, caps); if (refusal) throw new Error(refusal); }
       if (deleteId && caps) { const refusal = deleteRefusal(kind, caps); if (refusal) throw new Error(refusal); }
       if (newThreadName && caps && !caps.threads) throw new Error(`--new-thread: the ${kind} adapter has no threads`);
       // A wake an outside sender caused attaches stored ids only: a path would let a message ask Orca
@@ -1003,15 +1005,17 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       throw new Error("orca repo list [--user <login>] | orca repo add <owner/name> [--on <instance>] [--name <slug>]");
     }
     case "handoff": return handoffVerb(cfg, words, args);
-    // `orca cloudflare …` (server/cloudflare.ts): reads, and three writes behind --confirm. The grant
+    // `orca cloudflare …` (server/cloudflare.ts): reads, and the writes behind --confirm. The grant
     // check above keeps the writes to the user's own chat; the write log names who woke it.
-    // `--account` picks one Cloudflare account, and its access is checked (policy.useAccount).
+    // `--account` picks one Cloudflare account, and its access is checked (policy.useAccount). The
+    // token is the account's secret_ref (a variable, or a stored secret that useAccount loaded).
+    // Each confirmed write is recorded, so the account watcher leaves Orca's own change out.
     case "cloudflare": {
       const by = wakeGrant ? `outside sender (${wakeGrant.level} grant)` : "orchestrator (your chat)";
       if (!words.length || words[0] === "help") return cloudflareTool(args, { by });
       const c = await policy.useAccount("cloudflare", cloudflareVerb(words), args.account);
       const accountId = typeof c?.config.accountId === "string" ? c.config.accountId : undefined;
-      return cloudflareTool(args, { by, env: policy.accountEnv(c, CLOUDFLARE_TOKEN_ENV, { [CLOUDFLARE_ACCOUNT_ENV]: accountId }) });
+      return cloudflareTool(args, { by, env: policy.accountEnv(c, CLOUDFLARE_TOKEN_ENV, { [CLOUDFLARE_ACCOUNT_ENV]: accountId }), onWrite: recordCloudflareWrite });
     }
     // `orca slack …` (server/slackTool.ts): read, search and post as the user. The grant check above
     // keeps it to the user's own chat (an unknown verb is the owner's); the post log names who.

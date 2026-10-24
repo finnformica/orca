@@ -7,29 +7,41 @@
 import * as db from "../db";
 import * as primary from "../primary";
 import { ORCA_SECRETS } from "../env";
-import { AUTO_LEASE_MS, isAutomatic, leaseHolder, runsOn, secretRefRefusal, type AdapterKind, type AdapterMeta, type InboundEnvelope, type VerbClasses } from "../../shared/integrations";
+import { AUTO_LEASE_MS, isAutomatic, leaseHolder, runsOn, secretRefRefusal, storedSecretName, type AdapterKind, type AdapterMeta, type InboundEnvelope, type VerbClasses } from "../../shared/integrations";
 import type { Adapter, AdapterContext, AdapterFactory, Connection } from "./adapter";
 import * as router from "./router";
 import * as store from "./store";
+import * as secretRefs from "./secretRefs";
 import { SLACK_CAPS, slackAdapter } from "./adapters/slack";
 import { WEBHOOK_CAPS, webhookAdapter } from "./adapters/webhook";
 import { DISCORD_CAPS, discordAdapter } from "./adapters/discord";
 import { emailAdapter, emailCaps } from "./adapters/email";
 import { LINEAR_CAPS, linearAdapter } from "./adapters/linear";
+import { CLOUDFLARE_CAPS, cloudflareAdapter, ensureDefaults as cloudflareDefaults } from "./adapters/cloudflare";
 import { SLACK_VERBS } from "../slackTool";
 import { CLOUDFLARE_VERBS } from "../cloudflare";
 
 const factories = new Map<AdapterKind, AdapterFactory>();
 const metas = new Map<AdapterKind, AdapterMeta>();
 const running = new Map<string, { adapter: Adapter; connection: Connection; abort: AbortController }>();
+const connectHooks = new Map<AdapterKind, (c: Connection) => Promise<void>>();
 const cliVerbs = new Map<AdapterKind, VerbClasses>();
 
 /** Register a kind. A later adapter (Discord, email, GitHub, Linear) adds one line here. `meta` is
  *  what Settings > Integrations shows for the kind (its card, its Connect form). */
-export function register(kind: AdapterKind, factory: AdapterFactory, meta?: Omit<AdapterMeta, "kind">): void {
+export function register(kind: AdapterKind, factory: AdapterFactory, meta?: Omit<AdapterMeta, "kind">, onConnect?: (c: Connection) => Promise<void>): void {
   factories.set(kind, factory);
   if (meta) metas.set(kind, { kind, ...meta });
+  if (onConnect) connectHooks.set(kind, onConnect);
 }
+
+/** A kind's setup on its FIRST connect (its default links and subscriptions), if it has one. */
+export async function onConnect(c: Connection): Promise<void> {
+  await connectHooks.get(c.kind)?.(c);
+}
+
+/** The meta of one kind, if registered with one. */
+export const meta = (kind: AdapterKind): AdapterMeta | undefined => metas.get(kind);
 /** Declare the verb classes of a kind that has an `orca <kind>` CLI but no adapter yet (the account
  *  policy, docs/integrations/POLICY.md). A kind's `meta.verbs` wins over this. */
 export function registerVerbs(kind: AdapterKind, verbs: VerbClasses): void { cliVerbs.set(kind, verbs); }
@@ -76,8 +88,21 @@ register("linear", linearAdapter, {
   help: "A personal API key. Orca polls; it needs no webhook. Link team:<KEY>, project:<id> or *. Setup: docs/integrations/linear.md.",
 });
 
-// Cloudflare's CLI exists before its adapter (orca cloudflare, server/cloudflare.ts).
-registerVerbs("cloudflare", CLOUDFLARE_VERBS);
+register("cloudflare", (c) => cloudflareAdapter(c), {
+  label: "Cloudflare", caps: CLOUDFLARE_CAPS, place: "place (* = the whole account, zone:<name>)",
+  secretExample: "ORCA_SECRET_CLOUDFLARE", secretDefault: "ORCA_SECRET_CLOUDFLARE",
+  // The class of each `orca cloudflare` verb, for the account policy (POLICY.md): the ONE table.
+  verbs: CLOUDFLARE_VERBS,
+  config: [
+    { key: "accountId", label: "Account id", placeholder: "32 hex characters, from the account home page" },
+    { key: "pollSeconds", label: "Poll every (seconds, at least 30)", placeholder: "120" },
+    { key: "errorRatePct", label: "Worker error-rate threshold (%)", placeholder: "5" },
+    { key: "minRequests", label: "Fewest requests for an error alert", placeholder: "100" },
+    { key: "zones", label: "Zones to watch (comma-separated; empty = all)", placeholder: "example.com" },
+    { key: "deployActors", label: "Deploy actors to leave out (comma-separated)", placeholder: "github" },
+  ],
+  help: "An account API token, in Orca's secret store (Stored secret) or a secret variable. Orca polls the account (audit log, deploys, Worker errors, custom domains, DNS) and tells the orchestrator; it takes no posts. Setup: docs/integrations/cloudflare.md.",
+}, cloudflareDefaults);
 
 /** Every registered kind with what the Settings page shows for it. A kind with no meta gets a plain one. */
 export function kinds(): AdapterMeta[] {
@@ -91,14 +116,17 @@ export function kinds(): AdapterMeta[] {
 export const runsHere = (c: Pick<Connection, "instance" | "enabled" | "auto">, here = db.instanceName(), isPrimary = primary.held(), now = Date.now()): boolean =>
   runsOn(c, here, isPrimary, now);
 
-/** Whether the variable a row names is set in this process's environment (no secret: true). */
-export const secretHere = (c: Pick<Connection, "secretRef">, env: Record<string, string | undefined> = process.env): boolean =>
-  !c.secretRef || !!env[c.secretRef];
+/** Whether this process has the row's secret: the variable is set, and each stored secret it names
+ *  (`secret:<name>`, its secret_ref or a config `…Ref`) is in `readable` — the store's names this
+ *  bridge's key can decrypt (secretRefs.readable). No secret: true. */
+export const secretHere = (c: Pick<Connection, "secretRef" | "config">, env: Record<string, string | undefined> = process.env, readable: Set<string> = new Set()): boolean =>
+  (!c.secretRef || storedSecretName(c.secretRef) !== undefined || !!env[c.secretRef])
+  && secretRefs.storedNames({ secretRef: c.secretRef, config: c.config ?? {} }).every((n) => readable.has(n));
 
 export function context(connection: Connection, abort: AbortController): AdapterContext {
   return {
     connection,
-    secret: () => (connection.secretRef ? process.env[connection.secretRef] : undefined) || undefined,
+    secret: () => secretRefs.secretValue(connection.secretRef),
     ingest: (e: InboundEnvelope) => router.ingest(connection.id, e),
     cursor: { get: () => store.cursor(connection.id), set: (v) => store.setCursor(connection.id, v) },
     status: (s) => store.setIntegrationStatus(connection.id, { ...s, at: Date.now() }),
@@ -117,6 +145,7 @@ export async function startOne(connection: Connection): Promise<boolean> {
   const abort = new AbortController();
   const adapter = factory(connection);
   try {
+    await secretRefs.load(connection); // stored secrets into memory first: a missing one fails the start
     await adapter.start(context(connection, abort));
     running.set(connection.id, { adapter, connection, abort });
     await store.setIntegrationStatus(connection.id, { ok: true, startedAt: Date.now(), error: null }).catch(() => {});
@@ -136,10 +165,13 @@ export async function startOne(connection: Connection): Promise<boolean> {
 export async function sync(now = Date.now()): Promise<string[]> {
   const here = db.instanceName();
   const rows = primary.held() ? await store.integrations(here) : [];
+  // Stored secrets (`secret:<name>`): which this bridge can decrypt, read only when a row names one.
+  const usesStored = rows.some((c) => secretRefs.storedNames(c).length);
+  const readable = usesStored ? await secretRefs.readable().catch(() => new Set<string>()) : new Set<string>();
   for (const c of rows) {
     if (!isAutomatic(c.instance) || !c.enabled) continue;
     // Only a primary with the secret contends, so the lease goes where the connection can start.
-    const has = secretHere(c);
+    const has = secretHere(c, process.env, readable);
     await store.markSecretMissing(c.id, here, !has, now);
     if (has) { const lease = await store.claimAuto(c.id, here, now, AUTO_LEASE_MS); if (lease) c.auto = lease; else delete c.auto; }
     else if (leaseHolder(c.auto, now) === here) { await store.releaseAuto(c.id, here); delete c.auto; }
@@ -147,6 +179,11 @@ export async function sync(now = Date.now()): Promise<string[]> {
   const mine = rows.filter((c) => runsHere(c, here, true, now));
   const want = new Set(mine.map((c) => c.id));
   for (const id of [...running.keys()]) if (!want.has(id)) await stopOne(id);
+  // A stored secret that changed (rotated, deleted) restarts its adapter, which loads it again.
+  if (usesStored) {
+    const secretRows = await db.secrets().catch(() => undefined);
+    for (const c of mine) if (running.has(c.id) && secretRows && await secretRefs.stale(c, secretRows)) await stopOne(c.id);
+  }
   for (const c of mine) await startOne(c);
   return [...running.keys()];
 }

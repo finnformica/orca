@@ -15,6 +15,7 @@
 // Agent-app mode (Linear's agent sessions, `actor=app`) needs a webhook through a relay: not here.
 import { createHash } from "crypto";
 import type { Adapter, AdapterContext, Connection } from "../adapter";
+import { secretValue } from "../secretRefs";
 import type { Capabilities, InboundEnvelope, OutboundMessage, SendResult, Target } from "../../../shared/integrations";
 
 export const LINEAR_API = "https://api.linear.app/graphql";
@@ -203,7 +204,7 @@ export function linearAdapter(connection: Connection): LinearAdapter {
   let lastEventAt: number | undefined, lastPollAt: number | undefined;
   let inFlight: Promise<PollResult> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const token = () => ctx?.secret() ?? (connection.secretRef ? process.env[connection.secretRef] : undefined) ?? "";
+  const token = () => ctx?.secret() ?? secretValue(connection.secretRef) ?? "";
   const pollMs = () => Math.max(10, Number(connection.config.pollSeconds) || DEFAULT_POLL_SECONDS) * 1000;
 
   async function whoAmI(): Promise<GqlResult<LinearUser>> {

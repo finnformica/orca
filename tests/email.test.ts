@@ -9,6 +9,8 @@ import * as router from "../server/integrations/router";
 import * as dispatcher from "../server/integrations/dispatcher";
 import * as registry from "../server/integrations/registry";
 import * as store from "../server/integrations/store";
+import * as admin from "../server/integrations/admin";
+import * as secrets from "../server/secrets";
 import type { Connection } from "../server/integrations/adapter";
 import { emailAdapter, emailConfig, inboundText, outboundSubject } from "../server/integrations/adapters/email";
 import {
@@ -505,5 +507,42 @@ describe("with Postgres", () => {
     expect(await registry.startOne(c)).toBe(false);
     expect((await store.integration("mail")) as unknown).toBeDefined();
     expect(registry.runningIds()).toEqual([]);
+  });
+
+  test("Gmail from Orca's secret store: secret:<name> refs for the IMAP and SMTP passwords; a rotation restarts the adapter; a deleted secret stops it", async () => {
+    const prevKey = process.env.ORCA_SECRETS_KEY;
+    process.env.ORCA_SECRETS_KEY = Buffer.alloc(32, 5).toString("base64"); // never the state dir's key file
+    delete process.env.ORCA_SECRET_TEST_IMAP; // no variable: the store is the only source
+    try {
+      await secrets.store({ name: "gmail-app", value: "imap-pw", who: "user (chat)", source: "secret widget" });
+      await secrets.store({ name: "gmail-smtp", value: "smtp-pw-1", who: "user (chat)", source: "secret widget" });
+      // The Settings form's flat keys, as a save writes them.
+      const form = { address: "orca@example.com", imapHost: "127.0.0.1", imapPort: String(ports.imap), outbound: "smtp", smtpHost: "127.0.0.1", smtpPort: String(ports.smtp), smtpSecretRef: "secret:gmail-smtp", allowedSenders: "finn@example.com" };
+      await store.addIntegration({ ...conn({ ...form, imap: { host: "127.0.0.1", port: ports.imap, tls: false }, smtp: { host: "127.0.0.1", port: ports.smtp, security: "none", secretRef: "secret:gmail-smtp" } }, "secret:gmail-app") });
+      expect(await registry.sync()).toEqual(["mail"]);
+      const send = async (key: string) => {
+        const r = await registry.adapterFor("mail")!.send({ externalId: "finn@example.com" }, { text: "hello" }, key);
+        expect(r.ok).toBe(true);
+        return smtp.got.at(-1)!.auth;
+      };
+      expect(await send("d1")).toBe("orca@example.com:smtp-pw-1");
+      const first = registry.adapterFor("mail");
+      // Rotation: a new value under the same name restarts the adapter on the next sync.
+      await secrets.store({ name: "gmail-smtp", value: "smtp-pw-2", who: "user (chat)" });
+      await registry.sync();
+      expect(registry.adapterFor("mail")).not.toBe(first);
+      expect(await send("d2")).toBe("orca@example.com:smtp-pw-2");
+      // The values live in this process's memory only: not in the row, not in the environment.
+      expect(JSON.stringify(await store.integrations())).not.toContain("smtp-pw");
+      expect(Object.values(process.env).some((v) => v === "smtp-pw-2" || v === "imap-pw")).toBe(false);
+      expect((await db.secretUses()).filter((u) => u.action === "integration").map((u) => `${u.name} ${u.who} ${u.command}`)).toContain("gmail-smtp integration mail email");
+      // A deleted secret: the next sync stops the adapter, and its start fails with the reason.
+      await secrets.remove("gmail-smtp", "user");
+      await registry.sync();
+      expect(registry.runningIds()).toEqual([]);
+      expect(JSON.stringify((await admin.overview("local")).integrations[0]!.health)).toContain('no secret \\"gmail-smtp\\"');
+    } finally {
+      if (prevKey === undefined) delete process.env.ORCA_SECRETS_KEY; else process.env.ORCA_SECRETS_KEY = prevKey;
+    }
   });
 });
