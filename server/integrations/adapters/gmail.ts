@@ -24,11 +24,15 @@ import { clip, inboundEnvelope, type Capabilities, type SendResult } from "../..
 import type { Adapter, AdapterContext, Connection } from "../adapter";
 import { authVerdict, isAutomated, parseMail, senderAllowed, type ParsedMail } from "./email/mime";
 import { inboundText } from "./email";
-import { fromBase64Url, GoogleError, header, SCOPE, type Gmail } from "./gmail/google";
+import { fromBase64Url, GoogleError, header, SCOPE, storedSecretPathProblem, type Gmail } from "./gmail/google";
+export { storedSecretPathProblem } from "./gmail/google";
 import * as oauth from "./gmail/oauth";
 
 export type GmailConfig = {
   clientId: string;
+  /** The client secret as an Orca stored secret, by its path (`scope/name`, or `name` in the default
+   *  scope). Set: it wins over the row's secret_ref. Never the secret itself. */
+  clientSecretStored?: string;
   /** A Gmail search. Empty = `label:Orca OR to:<local>+orca@<domain>` of the connected account. */
   query?: string;
   pollSeconds: number;
@@ -56,9 +60,12 @@ const bool = (v: unknown, d: boolean) => (typeof v === "boolean" ? v : typeof v 
 export function gmailConfig(raw: Record<string, unknown>): { config: GmailConfig } | { error: string } {
   const clientId = str(raw.clientId);
   if (!clientId) return { error: "config.clientId is required: the OAuth client id from Google Cloud" };
+  const stored = str(raw.clientSecretStored);
+  const why = stored ? storedSecretPathProblem(stored) : undefined;
+  if (why) return { error: why };
   const senders = Array.isArray(raw.allowedSenders) ? raw.allowedSenders.map(String) : String(raw.allowedSenders ?? "").split(/[\s,;]+/);
   return { config: {
-    clientId, ...(str(raw.query) ? { query: str(raw.query) } : {}),
+    clientId, ...(stored ? { clientSecretStored: stored } : {}), ...(str(raw.query) ? { query: str(raw.query) } : {}),
     pollSeconds: Math.max(0.05, num(raw.pollSeconds, 60)),
     watch: bool(raw.watch, false),
     allowedSenders: senders.map((s) => s.trim().toLowerCase()).filter(Boolean),

@@ -75,6 +75,7 @@ register("gmail", gmailAdapter, {
   switches: { watch: false, checkAuth: true },
   config: [
     { key: "clientId", label: "OAuth client id", placeholder: "1234-abc.apps.googleusercontent.com" },
+    { key: "clientSecretStored", label: "Client secret: stored Orca secret (optional)", placeholder: "scope/name of the stored secret; empty = the secret variable" },
     { key: "query", label: "Gmail query (optional)", placeholder: "empty = label:Orca OR to:you+orca@yourdomain.com" },
     { key: "watch", label: "Watch new mail (matching mail wakes Orca)" },
     { key: "pollSeconds", label: "Poll every (seconds)", placeholder: "60" },

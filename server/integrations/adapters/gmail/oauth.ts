@@ -19,7 +19,7 @@ import * as secrets from "../../../secrets";
 import type { Connection } from "../../adapter";
 import { INTEGRATION_SCOPE, resolveSecret } from "../../secretValue";
 import * as store from "../../store";
-import { authorizeUrl, endpoints, exchangeCode, Gmail, GoogleError, pkce, redirectUriFor, refreshAccess, revoke, SCOPE, consentScopes, missingScopes, type GmailAccess } from "./google";
+import { authorizeUrl, endpoints, exchangeCode, Gmail, GoogleError, pkce, redirectUriFor, refreshAccess, revoke, SCOPE, consentScopes, storedSecretPathProblem, missingScopes, type GmailAccess } from "./google";
 
 export const CLIENT_SECRET_DEFAULT = "ORCA_SECRET_GOOGLE_OAUTH";
 export const PENDING_TTL_MS = 10 * 60_000;
@@ -56,6 +56,17 @@ function clientId(c: Connection): string {
 }
 
 async function clientSecret(c: Connection): Promise<string> {
+  // A stored-secret path in the config (`clientSecretStored`, e.g. a secret saved with /secret) wins.
+  const stored = typeof c.config.clientSecretStored === "string" ? c.config.clientSecretStored.trim() : "";
+  if (stored) {
+    const why = storedSecretPathProblem(stored);
+    if (why) throw new OAuthError(why, "config", c.id);
+    try { return await secrets.valueOf(stored); }
+    catch (e) {
+      const notFound = e instanceof secrets.SecretError && e.status === 404;
+      throw new OAuthError(notFound ? `the stored secret "${stored}" does not exist (orca secret list shows the names)` : e instanceof Error ? e.message : String(e), "config", c.id);
+    }
+  }
   const ref = clientSecretRef(c);
   const r = await resolveSecret(ref).catch((e) => { throw new OAuthError(e instanceof Error ? e.message : String(e), "config", c.id); });
   if (!r) throw new OAuthError(`${ref} is not set on this bridge: put the OAuth client secret in its .env, or store it as an Orca secret named ${ref}`, "config", c.id);

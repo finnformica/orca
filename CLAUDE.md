@@ -243,8 +243,11 @@ refuses), so no reply path yet (Finn's call). `POST /api/integrations/oauth/goog
 URL for the page's `Origin`; Google sends the browser to `<origin>/api/integrations/oauth/google/callback`
 (answered here, never forwarded, so a tailnet HTTPS name works). The PKCE state is encrypted in cursor
 row `<id>:oauth`; the refresh token is the stored secret `integrations/gmail.<id>.refresh_token`; access
-tokens stay in memory. The client secret is the row's secret_ref (default `ORCA_SECRET_GOOGLE_OAUTH`),
-env var else a stored Orca secret of that name (`server/integrations/secretValue.ts`, for every adapter).
+tokens stay in memory. The client secret is `config.clientSecretStored` (a stored secret's `scope/name`
+path, e.g. one saved with /secret; the secret itself is refused there) if set, else the row's secret_ref
+(default `ORCA_SECRET_GOOGLE_OAUTH`): env var, else a stored Orca secret of that name
+(`server/integrations/secretValue.ts`, for every adapter). The client id is box config (the Connect
+form), never in the repo.
 Only a row with `watch` on ("Watch new mail", default off) polls the History API from a
 `{ historyId, account }` cursor; `watch` maps 1:1 to the access policy's events `trigger` / `off`
 (`gmailEvents`; the shared policy is branch orca/integration-access-policy, not merged yet — join them

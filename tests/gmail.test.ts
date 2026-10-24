@@ -180,6 +180,10 @@ describe("decisions (pure)", () => {
     expect(gmailConfig({ clientId: "cid" })).toEqual({ config: { clientId: "cid", pollSeconds: 60, watch: false, allowedSenders: [], checkAuth: true, keepQuoted: false } });
     expect(gmailConfig({ clientId: "cid", watch: "true", checkAuth: "false", pollSeconds: "30", allowedSenders: "Ana@Example.com, @acme.test", query: "label:work" }))
       .toMatchObject({ config: { watch: true, checkAuth: false, pollSeconds: 30, allowedSenders: ["ana@example.com", "@acme.test"], query: "label:work" } });
+    // The client secret by its stored-secret path; the secret itself is refused (config is plain text).
+    expect(gmailConfig({ clientId: "cid", clientSecretStored: "chat/google-oauth-secret" })).toMatchObject({ config: { clientSecretStored: "chat/google-oauth-secret" } });
+    expect(gmailConfig({ clientId: "cid", clientSecretStored: "GOCSPX-abcdefghijklmnop" })).toEqual({ error: expect.stringContaining("not the secret itself") });
+    expect(gmailConfig({ clientId: "cid", clientSecretStored: "a b/c" })).toEqual({ error: expect.stringContaining("not a stored secret path") });
   });
 
   test("scopes follow access: read = openid, userinfo.email, gmail.readonly; read-write adds gmail.send; never modify", () => {
@@ -349,6 +353,18 @@ describe("against a fake Google", () => {
     const card = (await admin.overview()).integrations.find((c) => c.id === "gm")!;
     expect(card.oauth).toMatchObject({ account: ACCOUNT, scopes: scopesFor("read"), reconnect: null, missing: [] });
     expect((await admin.overview()).kinds.find((k) => k.kind === "gmail")).toMatchObject({ oauth: { provider: "google", label: "Connect with Google" }, switches: { watch: false, checkAuth: true } });
+  });
+
+  test("the client secret as a stored Orca secret by path (clientSecretStored): Connect works, and the path wins over the env var", async () => {
+    delete process.env.ORCA_SECRET_GOOGLE_OAUTH;
+    await secrets.store({ scope: "chat", name: "google-oauth-secret", value: "client-secret", who: "test" });
+    await setup({ clientSecretStored: "chat/google-oauth-secret" });
+    expect((await connect()).account).toBe(ACCOUNT);
+    process.env.ORCA_SECRET_GOOGLE_OAUTH = "wrong-secret";
+    oauth.resetTokens();
+    expect(await oauth.accessToken(conn({ clientSecretStored: "chat/google-oauth-secret" }))).toMatch(/^at-/);
+    await store.addIntegration({ ...conn({ clientSecretStored: "chat/nope" }), id: "gm3" });
+    await expect(oauth.begin("gm3", "https://orca.example.ts.net")).rejects.toThrow('the stored secret "chat/nope" does not exist');
   });
 
   test("a missing client secret or client id fails at Start, before the user goes to Google; a denied consent says so", async () => {

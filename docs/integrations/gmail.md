@@ -155,6 +155,10 @@ For an **External** app, do these steps too:
 
 The client secret is the integration's secret. Use one of these:
 
+- Store it as an Orca stored secret with any name, for example with the composer's `/secret`. Then
+  type its path (`scope/name`, for example `chat/google-oauth`) in the Connect form's **Client
+  secret: stored Orca secret** box (`clientSecretStored`). This path wins over the two ways below.
+  Orca refuses the secret itself in that box: config is plain text in the database.
 - Put it in the `.env` of each bridge that can run the integration, then restart that bridge:
 
   ```bash
@@ -171,17 +175,19 @@ with `ORCA_SECRET_`, so agents never see it. An empty box means `ORCA_SECRET_GOO
 
 1. Open **Integrations** and click **Connect**.
 2. Select the kind **Gmail**. Type a short name for the account, for example `work`.
-3. Paste the **OAuth client id**.
-4. Turn on **Watch new mail** if matching mail must wake Orca. Leave it off for search and read only.
-5. Change the **Gmail query** if you want. Empty means `label:Orca OR to:<you>+orca@<your domain>`.
-6. Click **Save**.
-7. On the new card, click **Connect with Google**.
-8. Select the Google account for this integration. Allow the access that Google shows.
-9. Google sends you back to the Integrations page. The card says
+3. Paste the **OAuth client id**. It is not a secret, but keep it out of the repo: it is per box.
+4. If the client secret is a stored Orca secret, type its path in **Client secret: stored Orca
+   secret**.
+5. Turn on **Watch new mail** if matching mail must wake Orca. Leave it off for search and read only.
+6. Change the **Gmail query** if you want. Empty means `label:Orca OR to:<you>+orca@<your domain>`.
+7. Click **Save**.
+8. On the new card, click **Connect with Google**.
+9. Select the Google account for this integration. Allow the access that Google shows.
+10. Google sends you back to the Integrations page. The card says
    `Signed in as <your address> · read only`.
-10. Add a link. Use the catch-all link (external id `*`) for every sender, or one link for each
+11. Add a link. Use the catch-all link (external id `*`) for every sender, or one link for each
     sender address.
-11. Add yourself as a person, with your Gmail address as an identity. Then your own notes to your
+12. Add yourself as a person, with your Gmail address as an identity. Then your own notes to your
     `+orca` address get your grant. A sender who is not a person gets a read-only grant (ADAPTERS.md
     section 10).
 
@@ -226,6 +232,7 @@ Each value can be a string, as the Settings form saves it.
 | Key | Default | Meaning |
 |---|---|---|
 | `clientId` | (required) | The OAuth client id. |
+| `clientSecretStored` | none | The path (`scope/name`) of a stored Orca secret that holds the client secret. It wins over the secret variable. |
 | `query` | `label:Orca OR to:<you>+orca@<domain>` | The Gmail search that selects Orca's mail. |
 | `watch` | `false` | Watch new mail: poll, and let matching mail wake Orca. |
 | `pollSeconds` | 60 | The poll interval. |
