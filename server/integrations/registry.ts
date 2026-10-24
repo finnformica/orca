@@ -7,7 +7,7 @@
 import * as db from "../db";
 import * as primary from "../primary";
 import { ORCA_SECRETS } from "../env";
-import { AUTO_LEASE_MS, isAutomatic, leaseHolder, runsOn, secretRefRefusal, storedSecretName, type AdapterKind, type AdapterMeta, type InboundEnvelope } from "../../shared/integrations";
+import { AUTO_LEASE_MS, isAutomatic, leaseHolder, runsOn, secretRefRefusal, storedSecretName, type AdapterKind, type AdapterMeta, type InboundEnvelope, type VerbClasses } from "../../shared/integrations";
 import type { Adapter, AdapterContext, AdapterFactory, Connection } from "./adapter";
 import * as router from "./router";
 import * as store from "./store";
@@ -18,11 +18,14 @@ import { DISCORD_CAPS, discordAdapter } from "./adapters/discord";
 import { emailAdapter, emailCaps } from "./adapters/email";
 import { LINEAR_CAPS, linearAdapter } from "./adapters/linear";
 import { CLOUDFLARE_CAPS, cloudflareAdapter, ensureDefaults as cloudflareDefaults } from "./adapters/cloudflare";
+import { SLACK_VERBS } from "../slackTool";
+import { CLOUDFLARE_VERBS } from "../cloudflare";
 
 const factories = new Map<AdapterKind, AdapterFactory>();
 const metas = new Map<AdapterKind, AdapterMeta>();
 const running = new Map<string, { adapter: Adapter; connection: Connection; abort: AbortController }>();
 const connectHooks = new Map<AdapterKind, (c: Connection) => Promise<void>>();
+const cliVerbs = new Map<AdapterKind, VerbClasses>();
 
 /** Register a kind. A later adapter (Discord, email, GitHub, Linear) adds one line here. `meta` is
  *  what Settings > Integrations shows for the kind (its card, its Connect form). */
@@ -39,8 +42,14 @@ export async function onConnect(c: Connection): Promise<void> {
 
 /** The meta of one kind, if registered with one. */
 export const meta = (kind: AdapterKind): AdapterMeta | undefined => metas.get(kind);
+/** Declare the verb classes of a kind that has an `orca <kind>` CLI but no adapter yet (the account
+ *  policy, docs/integrations/POLICY.md). A kind's `meta.verbs` wins over this. */
+export function registerVerbs(kind: AdapterKind, verbs: VerbClasses): void { cliVerbs.set(kind, verbs); }
+/** The verb classes of a kind, for `integrationAccessRefusal`. */
+export const verbsFor = (kind: AdapterKind): VerbClasses => metas.get(kind)?.verbs ?? cliVerbs.get(kind) ?? {};
+
 register("slack", slackAdapter, {
-  label: "Slack", caps: SLACK_CAPS, place: "channel", secretExample: "SLACK_TOKEN",
+  label: "Slack", caps: SLACK_CAPS, place: "channel", secretExample: "SLACK_TOKEN", verbs: SLACK_VERBS,
   help: "Your user token (xoxp-…): Orca posts as you and polls your mentions, DMs and group DMs each minute. Link `im` / `mpim` for DMs. Setup: docs/integrations/slack.md.",
 });
 register("webhook", webhookAdapter, { label: "Webhook", caps: WEBHOOK_CAPS, place: "hook", secretExample: "ORCA_SECRET_WEBHOOK", help: "Signed POSTs to /api/integrations/<id>/inbound (HMAC sha256 of the body)." });
@@ -82,6 +91,8 @@ register("linear", linearAdapter, {
 register("cloudflare", (c) => cloudflareAdapter(c), {
   label: "Cloudflare", caps: CLOUDFLARE_CAPS, place: "place (* = the whole account, zone:<name>)",
   secretExample: "ORCA_SECRET_CLOUDFLARE", secretDefault: "ORCA_SECRET_CLOUDFLARE",
+  // The class of each `orca cloudflare` verb, for the account policy (POLICY.md): the ONE table.
+  verbs: CLOUDFLARE_VERBS,
   config: [
     { key: "accountId", label: "Account id", placeholder: "32 hex characters, from the account home page" },
     { key: "pollSeconds", label: "Poll every (seconds, at least 30)", placeholder: "120" },

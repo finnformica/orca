@@ -197,7 +197,7 @@ ending in `Ref` (email's `smtpSecretRef` / `resendSecretRef`, Slack's `appTokenR
 each), adapters read through `secretValue(ref)` (never `process.env`), a changed or deleted stored
 secret restarts the adapter on the next sync (`stale`), and an Automatic row goes only to a primary
 whose key decrypts it (`readable`). The Connect form's **Stored secret** Select writes it
-(ADAPTERS.md section 13). An outside sender's message gets a grant (min of link level and person) that
+(ADAPTERS.md section 14). An outside sender's message gets a grant (min of link level and person) that
 rides `queued_message.grant_scope`: one grant per orchestrator wake, `orchestrator.tool` refuses
 verbs outside it (`grantRefusal`), and such a wake has no shell. Levels, low to high (Settings
 names in brackets, stored values unchanged): `notify` (Notify), `ask` (Viewer: read verbs, `post` on
@@ -211,6 +211,12 @@ gets `grantScope` and runs in SCOPED mode (`agent.scopedRules`: `claude -p --per
 plus allow and deny rules — files in the worktree, git and the toolchain, no secrets, no
 `--no-verify`, no push to the base branch; never `bypassPermissions`, which approves everything).
 Only a wake whose every message is yours clears it on a steer; `orca status --clear-grant` clears it.
+**Account policy** (`docs/integrations/POLICY.md`, named step `20261024-integration-access-events`):
+each `integration` row (one account; several per kind work) has `access` (`read` | `read-write`) and
+`events` (`trigger` | `record` | `off`), defaults = the old behaviour. ONE check,
+`integrationAccessRefusal`, at every door (publish, the dispatcher, a link's Test, `orca <kind>` via
+`policy.useAccount`, which also takes `--account`); an undeclared verb is a write. `events` narrows
+the link switches (`effectiveNotify`), never widens them. Adapters declare CLI verbs in `meta.verbs`.
 **Every link notifies you AND the agent by default** (Finn's call): two Switches per link, **Notify me**
 and **Notify agent** (`channel_link.notify_me` / `notify_agent`, named step `20261023-link-switches`,
 true for old links too; `#420`'s `pairing` column is unused). The gate stamps them on the envelope
@@ -263,9 +269,11 @@ cloudflare … --confirm` as cursor row `cloudflare:own-writes`) and the deploy 
 domains, Pages, R2, D1, DNS, analytics and the audit log. The writes are `rollback`, `delete`, `route
 add|remove`, `domain add|remove` and `dns add|remove`: a dry run without `--confirm`, a check of the target,
 a `[cloudflare]` log line with it, and your own chat only. ONE table, `CLOUDFLARE_VERBS`
-(`shared/integrations.ts`), says read or write for every verb (unknown = write) — the grant check reads
-it, and the coming per-account access policy (orca/integration-access-policy) is to read it too; no
-Cloudflare-only access or event switch (quiet = the link's Notify agent). No command uploads Worker
+(`shared/integrations.ts`, the adapter's `meta.verbs`), says read or write for every verb (unknown =
+write): the grant check and the account policy (`policy.useAccount`, `--account`, Access) read it. The
+verb's token comes from `policy.accountEnv`, which reads a stored `secret:<name>` that `useAccount`
+loaded (`secretRefs.ensureLoaded`). No Cloudflare-only access or event switch: quiet = the account's
+Events "Inbox only". No command uploads Worker
 code: new Workers come from the repos' deploy pipelines. A 401/403 names the token permission it needs
 (`PERMISSIONS`).
 

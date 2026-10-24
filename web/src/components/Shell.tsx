@@ -38,7 +38,8 @@ import { PANEL_MIN_W, SHELL_GAP, repoLabel, summarizeSync } from "../workstream"
 import { PreviewsBadge } from "@/views/PreviewControl";
 import { useInboxUnread } from "@/lib/inboxUnread";
 import { useHandoffBadge } from "@/lib/handoffBadge";
-import { AddServerDialog, ServerMenu, ServerOffline, useServerProblem, useServers } from "@/components/ServerMenu";
+import { AddServerDialog, Dot, healthText, ServerMenu, ServerOffline, useServerProblem, useServers } from "@/components/ServerMenu";
+import { currentServer } from "@/lib/server";
 import { loadIdentity, useServerIdentity } from "@/lib/identity";
 import { poll } from "@/lib/poll";
 import { NotificationBell, footIcon } from "@/components/Notifications";
@@ -386,30 +387,28 @@ function useShellFallbacks() {
 }
 
 // Vercel's team switcher, as the instance scope: "All instances", or one machine. It scopes the
-// Overview and Agents pages; with one instance it is just the wordmark.
+// Overview and Agents pages. A compact button at the sidebar's top left — never a link to Overview
+// (the nav's own Overview item already does that) — carrying the active server's status dot
+// (ServerMenu's `Dot`, so a server reads the same colour everywhere) and opening this menu on every
+// click, whatever the instance count.
 function InstanceSwitcher({ collapsed }: { collapsed: boolean }) {
   const [scope, setScope] = useAtom(instanceScopeAtom);
   useRepos(); // config (and with it the instance list) lands after first paint
   const choices = instanceChoices();
-  const label = scope === "all" ? (choices.length > 1 ? "All instances" : thisInstance() ?? "Orca") : scope;
+  const { servers } = useServers();
   const identity = useServerIdentity();
-  const mark = <RoundMark />;
-  const body = (
-    <>
-      {mark}
-      <span className={cn("min-w-0 flex-1 text-left", collapsed && "md:hidden")}>
-        <BrandName label={identity?.label} labelClass="text-server-fg" className="text-sm font-medium" />
-        <span data-slot="instance-scope" className="text-muted-foreground block truncate text-xs">{label}</span>
-      </span>
-    </>
-  );
-  if (choices.length < 2) return <button type="button" onClick={() => navigate("/")} className={cn("flex min-w-0 flex-1 items-center gap-2", collapsed && "md:justify-center")} aria-label="Orca — go to overview">{body}</button>;
+  const health = currentServer(servers).health;
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button type="button" className={cn("hover:bg-accent flex min-w-0 flex-1 items-center gap-2 rounded-md p-1", collapsed && "md:justify-center")} aria-label="Switch instance">
-          {body}
-          <ChevronsUpDown className={cn("text-muted-foreground size-3.5 shrink-0", collapsed && "md:hidden")} />
+        <button type="button" data-slot="instance-switcher" className={cn("hover:bg-accent flex min-w-0 flex-1 items-center gap-2 rounded-md p-1", collapsed && "md:justify-center")}
+          aria-label={`Server: ${identity?.label ?? thisInstance() ?? "Orca"}, ${healthText(health)}. Switch instance`}>
+          <span className="relative inline-flex shrink-0">
+            <RoundMark />
+            <Dot health={health} className="absolute -right-0.5 -bottom-0.5" />
+          </span>
+          {!collapsed && <BrandName label={identity?.label} labelClass="text-server-fg" className="min-w-0 flex-1 text-left text-sm font-medium" />}
+          {!collapsed && <ChevronsUpDown className="text-muted-foreground size-3.5 shrink-0" />}
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="min-w-[12rem]">

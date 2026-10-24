@@ -14,6 +14,7 @@
 // A 401/403 names the token permission that call needs, so the fix is one edit in the dashboard.
 // The account watcher (server/cloudflareWatch.ts) reuses this client.
 
+
 export const CLOUDFLARE_TOKEN_ENV = "ORCA_SECRET_CLOUDFLARE";
 export const CLOUDFLARE_ACCOUNT_ENV = "ORCA_CLOUDFLARE_ACCOUNT_ID";
 export const CLOUDFLARE_API = "https://api.cloudflare.com/client/v4";
@@ -538,6 +539,10 @@ export const CLOUDFLARE_USAGE = [
   "  | dns add --zone z --type t --name n --content c [--proxied] [--ttl s] [--comment m] [--confirm] | dns remove --zone z --id i [--confirm]",
   "No command uploads Worker code: new Workers come from the repo's deploy pipeline.",
 ].join("\n");
+
+// The class of each verb is ONE table in shared/integrations.ts (the grant check and the account
+// policy both read it); re-exported here, where the registry and the orchestrator look for it.
+export { CLOUDFLARE_VERBS, cloudflareVerb } from "../shared/integrations";
 
 /** `orca cloudflare <sub> …` → the text it prints. `by` names who asked, for the write log. */
 export async function cloudflareTool(args: Args, opts: CloudflareOpts & { by?: string } = {}): Promise<string> {

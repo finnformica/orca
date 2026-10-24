@@ -35,9 +35,10 @@ import { stateDir } from "./state";
 import { API_PORT } from "./ports";
 import { reachable } from "./peer";
 import { machineReport } from "./liveMetrics";
-import { cloudflareTool } from "./cloudflare";
-import { connectedCredentials as cloudflareCredentials, recordOwnWrite as recordCloudflareWrite } from "./integrations/adapters/cloudflare";
+import { CLOUDFLARE_ACCOUNT_ENV, CLOUDFLARE_TOKEN_ENV, cloudflareTool, cloudflareVerb } from "./cloudflare";
+import { recordOwnWrite as recordCloudflareWrite } from "./integrations/adapters/cloudflare";
 import { slackTool } from "./slackTool";
+import * as policy from "./integrations/policy";
 import { featuresOf, runsHere, type OrcaConfig, type RepoConfig } from "./config";
 import {
   MODEL_LADDER, NO_REPLY_PLACEHOLDER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, boardText, briefProblems, continuation, isWorkerEvent, isWorkerProblem, onlyCleanReports,
@@ -634,13 +635,15 @@ async function refuseAttachments(integrationId: string, refs: string[]): Promise
 async function channelsText(): Promise<string> {
   const [links, conns, subs, pairings] = await Promise.all([integrationStore.links(), integrationStore.integrations(), integrationStore.subscriptions(), integrationStore.pendingPairings()]);
   const byId = new Map(conns.map((c) => [c.id, c]));
+  // Each account's policy first (docs/integrations/POLICY.md): what Orca may do, and what its events do.
+  const accounts = conns.map((c) => `account ${c.id} · ${c.kind} ${c.name} · access ${c.access ?? "read-write"}${c.access === "read" ? " (no post, send or delete)" : ""} · events ${c.events ?? "trigger"}${c.events === "record" ? " (inbox only, never wakes an agent)" : c.events === "off" ? " (nothing is recorded)" : ""}`);
   const lines = links.length ? links.map((l) => {
     const c = byId.get(l.integrationId);
     return `link ${l.id} · ${c?.kind ?? "?"} ${c?.name ?? l.integrationId} on ${c ? (c.instance === "*" ? "automatic" : c.instance) : "?"} · ${l.externalId}${l.label ? ` (${l.label})` : ""} · ${l.level}${repoScoped(l.level) ? ` on ${l.repos.join(", ") || "no repos"}` : ""}${l.requireMention ? " · mention required" : ""}${l.notifyMe === false ? " · notify me off" : ""}${l.notifyAgent === false ? " · notify agent off: it never wakes you" : ""}${l.externalId === "*" ? " · catch-all: post with --channel <id> [--thread <id>]" : ""}`;
   }) : ["no channel links"];
   const subLines = subs.map((s) => `sub ${s.id} · ${s.topicPattern}${Object.keys(s.filter).length ? ` ${JSON.stringify(s.filter)}` : ""} → ${s.targetKind}${s.targetId ? ` ${s.targetId}` : ""}${s.digestSeconds ? ` · digest ${s.digestSeconds}s` : ""}`);
   const pairLines = pairings.map((p) => `pairing ${p.code} · ${p.adapter}:${p.externalId}${p.name ? ` (${p.name})` : ""} waits for the user's approval`);
-  return [...lines, ...subLines, ...pairLines].join("\n");
+  return [...accounts, ...lines, ...subLines, ...pairLines].join("\n");
 }
 
 /** Who an outside grant came from, for the card: the paired person's name and the link's adapter
@@ -1002,14 +1005,26 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
     case "handoff": return handoffVerb(cfg, words, args);
     // `orca cloudflare …` (server/cloudflare.ts): reads, and the writes behind --confirm. The grant
     // check above keeps the writes to the user's own chat; the write log names who woke it.
-    // The token and account come from the connected Cloudflare integration, else the environment.
-    case "cloudflare": return cloudflareTool(args, {
-      by: wakeGrant ? `outside sender (${wakeGrant.level} grant)` : "orchestrator (your chat)",
-      ...(await cloudflareCredentials()), onWrite: recordCloudflareWrite,
-    });
+    // `--account` picks one Cloudflare account, and its access is checked (policy.useAccount). The
+    // token is the account's secret_ref (a variable, or a stored secret that useAccount loaded).
+    // Each confirmed write is recorded, so the account watcher leaves Orca's own change out.
+    case "cloudflare": {
+      const by = wakeGrant ? `outside sender (${wakeGrant.level} grant)` : "orchestrator (your chat)";
+      if (!words.length || words[0] === "help") return cloudflareTool(args, { by });
+      const c = await policy.useAccount("cloudflare", cloudflareVerb(words), args.account);
+      const accountId = typeof c?.config.accountId === "string" ? c.config.accountId : undefined;
+      return cloudflareTool(args, { by, env: policy.accountEnv(c, CLOUDFLARE_TOKEN_ENV, { [CLOUDFLARE_ACCOUNT_ENV]: accountId }), onWrite: recordCloudflareWrite });
+    }
     // `orca slack …` (server/slackTool.ts): read, search and post as the user. The grant check above
     // keeps it to the user's own chat (an unknown verb is the owner's); the post log names who.
-    case "slack": return slackTool(args, { by: wakeGrant ? `outside sender (${wakeGrant.level} grant)` : "orchestrator (your chat)" });
+    // `--account` picks one Slack account, and its access is checked (policy.useAccount).
+    case "slack": {
+      const by = wakeGrant ? `outside sender (${wakeGrant.level} grant)` : "orchestrator (your chat)";
+      const sub = String(words[0] ?? "");
+      if (!sub || sub === "help") return slackTool(args, { by });
+      const c = await policy.useAccount("slack", sub, args.account);
+      return slackTool(args, { by, env: policy.accountEnv(c, "SLACK_TOKEN") });
+    }
     case "notes": {
       if (words[0] !== "set") return (await blob()).notes || "(empty)";
       const text = words.slice(1).join(" ").trim();

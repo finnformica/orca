@@ -62,7 +62,7 @@ orca secret env billing/api_key=STRIPE_KEY -- ./scripts/sync-prices.sh
 ```
 
 Every integration can use a stored secret as its token or password: set its secret ref to
-`secret:<name>` ([integrations/ADAPTERS.md](integrations/ADAPTERS.md) section 13). The bridge
+`secret:<name>` ([integrations/ADAPTERS.md](integrations/ADAPTERS.md) section 14). The bridge
 decrypts the value with `secrets.reveal` when the adapter starts, and keeps it in memory only. No
 agent, log or `.env` file gets it. Each read writes one audit row with action `integration`.
 

@@ -51,6 +51,15 @@ export async function load(c: Pick<Connection, "id" | "kind" | "secretRef" | "co
   }
 }
 
+/** Load a row's stored secrets that this process has not loaded yet, or that changed since (an
+ *  `orca <kind>` verb on a bridge that does not run the adapter: policy.useAccount). No stored
+ *  secret: nothing to do, no query. */
+export async function ensureLoaded(c: Pick<Connection, "id" | "kind" | "secretRef" | "config">): Promise<void> {
+  const names = storedNames(c);
+  if (!names.length) return;
+  if (names.some((n) => !loaded.has(n)) || await stale(c)) await load(c);
+}
+
 /** The stored secrets this bridge can decrypt, by every name a ref may use (`name`, `scope/name`). */
 export async function readable(): Promise<Set<string>> {
   const rows = await db.secrets();

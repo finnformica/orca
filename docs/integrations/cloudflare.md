@@ -47,7 +47,7 @@ Orca a wider token.
 
 Use one of the two paths. The integration's secret_ref names the one it uses: `secret:<name>` for
 path A, a variable name for path B. Every integration takes both forms
-([ADAPTERS.md](ADAPTERS.md) section 13).
+([ADAPTERS.md](ADAPTERS.md) section 14).
 
 ### Path A: Orca's secret store (recommended)
 
@@ -155,9 +155,10 @@ These changes do not come in:
 - Each topic has its own subscription to the orchestrator. `ext.cloudflare.deploy` is a digest of
   one hour, so routine deploys come as one summary.
 - To stop a topic, remove its subscription.
-- For quiet mode, turn off **Notify agent** on the link. The events then show only in the Inbox.
-  This is the link switch that every integration has. Cloudflare has no event switch of its own.
-  Turn off **Notify me** to keep them out of the Inbox.
+- For quiet mode, set the account's **Events** to **Inbox only** (Settings > Integrations). The
+  events then show only in the Inbox and wake no agent. **Off** records nothing. This is the account
+  policy that every integration has ([POLICY.md](POLICY.md)); Cloudflare has no switch of its own.
+- A link can only narrow the account's Events: turn off **Notify agent** or **Notify me** on one link.
 - To treat one zone differently, add a link with place `zone:<name>`. It wins over `*`.
 - To send a topic to a channel, add a subscription with a link target, for example
   `ext.cloudflare.errors` to a Discord channel link.
@@ -238,7 +239,11 @@ does not try another token.
 - Each confirmed write writes one line to the bridge log: `[cloudflare] <time> <who>: <what> → ok`,
   or `→ failed: <error>`.
 - One table in `shared/integrations.ts`, `CLOUDFLARE_VERBS`, says which verb reads and which
-  writes. The grant check uses it. A verb that the table does not name counts as a write.
+  writes. A verb that the table does not name counts as a write. Two checks read it:
+  - the account's **Access** setting: with **Read**, Orca refuses every write verb, also in your
+    own chat ([POLICY.md](POLICY.md));
+  - the grant check, below.
+- With several Cloudflare accounts connected, name one with `--account <id or name>`.
 - Only your own chat can run a write command. Orca refuses it for an outside sender at every level
   (`grantRefusal` in `shared/integrations.ts`).
 

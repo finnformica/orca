@@ -110,6 +110,9 @@ export type AdapterMeta = {
   secretDefault?: string;
   config?: { key: string; label: string; placeholder?: string }[];
   help?: string;
+  /** The class of each CLI verb of the kind (`orca <kind> <verb>`), for the access check
+   *  (`integrationAccessRefusal`). `send` and `delete` are the core's (CORE_VERBS). */
+  verbs?: VerbClasses;
 };
 
 export type Capabilities = {
@@ -414,15 +417,13 @@ export const GRANT_ALLOWS: Record<Exclude<Level, "full">, string> = {
 
 const grantName = (l: Level): string => `${/^[aeiou]/.test(l) ? "an" : "a"} "${l}" grant`;
 
-/** Whether a verb only reads an outside account or changes it. */
-export type VerbAccess = "read" | "write";
-
-/** Every `orca cloudflare` verb (server/cloudflare.ts), read or write: the ONE table. The grant
- *  check reads it now (a write needs your own chat), and an account's shared access policy can read
- *  it later. A write also needs `--confirm` (server/cloudflare.ts), at every access level. Keys are
- *  the subcommand, or "subcommand action" for a group with writes. */
-export const CLOUDFLARE_VERBS: Readonly<Record<string, VerbAccess>> = {
-  help: "read", account: "read", workers: "read", deployments: "read", versions: "read", routes: "read",
+/** Every `orca cloudflare` verb (server/cloudflare.ts), read or write: the ONE table, in the account
+ *  policy's shape (`VerbClasses`, docs/integrations/POLICY.md). The grant check reads it (a write
+ *  needs your own chat), and the Cloudflare adapter registers it as `meta.verbs`, so the account's
+ *  Access setting reads it too (`integrationAccessRefusal`). A write also needs `--confirm`
+ *  (server/cloudflare.ts). Keys are the subcommand, or "subcommand action" for a group with writes. */
+export const CLOUDFLARE_VERBS: VerbClasses = {
+  help: "read", account: "read", workers: "read", deployments: "read", versions: "read", routes: "read", route: "read",
   domains: "read", pages: "read", r2: "read", d1: "read", zones: "read", dns: "read", analytics: "read", audit: "read",
   rollback: "write", delete: "write",
   "route add": "write", "route remove": "write",
@@ -430,20 +431,19 @@ export const CLOUDFLARE_VERBS: Readonly<Record<string, VerbAccess>> = {
   "dns add": "write", "dns remove": "write",
 };
 
-/** The Cloudflare verb in `words` and its access. "subcommand action" first, then the subcommand;
- *  a verb the table does not name is a write, so a check fails closed. Pure. */
-export function cloudflareVerb(words: unknown): { name: string; access: VerbAccess } {
+/** The Cloudflare verb that `words` names: "subcommand action" when the table has it, else the
+ *  subcommand. Pure. */
+export function cloudflareVerb(words: unknown): string {
   const [a = "", b = ""] = Array.isArray(words) ? words.map(String) : [];
   const pair = b ? `${a} ${b}` : "";
-  if (pair && CLOUDFLARE_VERBS[pair]) return { name: pair, access: CLOUDFLARE_VERBS[pair]! };
-  if (CLOUDFLARE_VERBS[a]) return { name: a, access: CLOUDFLARE_VERBS[a]! };
-  return { name: (pair || a || "help").trim(), access: "write" };
+  return pair && Object.hasOwn(CLOUDFLARE_VERBS, pair) ? pair : a || "help";
 }
 
-/** The Cloudflare verb in `words` when it writes, else undefined (from CLOUDFLARE_VERBS). Pure. */
+/** The Cloudflare verb in `words` when it writes, else undefined. A verb the table does not name is
+ *  a write (`verbClass` fails closed). Pure. */
 export function cloudflareWriteName(words: unknown): string | undefined {
-  const v = cloudflareVerb(words);
-  return v.access === "write" ? v.name : undefined;
+  const name = cloudflareVerb(words);
+  return verbClass(name, CLOUDFLARE_VERBS) === "write" ? name : undefined;
 }
 
 /** Why `verb` is refused under `grant`, or undefined when allowed. Server-side: the tool route calls
@@ -637,6 +637,60 @@ export function secretRefRefusal(ref: string | undefined | null, stripped: reado
   if (!/^[A-Z][A-Z0-9_]*$/.test(ref)) return `secret_ref "${ref.slice(0, 40)}" must be an environment variable name`;
   if (stripped.includes(ref) || ref.startsWith("ORCA_SECRET_")) return undefined;
   return `secret_ref ${ref} must start with ORCA_SECRET_ (or be one of ${stripped.join(", ")}), or be secret:<stored name>, so agents never see it`;
+}
+
+// ── The account policy (docs/integrations/POLICY.md) ─────────────────────────────────────────────
+
+/** What Orca itself may do with one connected account (an `integration` row): only read verbs, or
+ *  read and write verbs. Not a grant: it applies to every caller, your own chat too. */
+export type Access = "read" | "read-write";
+/** What Orca does with an inbound event from the account: show it and let it wake an agent
+ *  (`trigger`), only show it (`record`), or record nothing (`off`). */
+export type EventsMode = "trigger" | "record" | "off";
+export const ACCESS_VALUES: readonly Access[] = ["read", "read-write"];
+export const EVENTS_VALUES: readonly EventsMode[] = ["trigger", "record", "off"];
+/** The defaults are the behaviour before the policy, so an old row does not change. */
+export const DEFAULT_ACCESS: Access = "read-write";
+export const DEFAULT_EVENTS: EventsMode = "trigger";
+export const ACCESS_LABEL: Record<Access, string> = { read: "Read", "read-write": "Read and write" };
+export const EVENTS_LABEL: Record<EventsMode, string> = { trigger: "Wake an agent", record: "Inbox only", off: "Off" };
+
+/** A verb's class. A write verb posts, sends, replies, creates, deletes or provisions. */
+export type VerbClass = "read" | "write";
+export type VerbClasses = Record<string, VerbClass>;
+/** The core's own verbs on every adapter. A kind declares its CLI verbs in its registry meta. */
+export const CORE_VERBS: VerbClasses = { send: "write", delete: "write", health: "read" };
+
+/** The class of `verb`: the kind's declaration, else the core's, else WRITE (fail closed: a verb
+ *  that nobody declared is refused on a read account). */
+export const verbClass = (verb: string, classes: VerbClasses = {}): VerbClass =>
+  (Object.hasOwn(classes, verb) ? classes[verb] : Object.hasOwn(CORE_VERBS, verb) ? CORE_VERBS[verb] : undefined) ?? "write";
+
+/** THE access check. Why Orca may not run `verb` with `account`, or undefined when it may. Every
+ *  door calls it: publish, the dispatcher, a link's Test and every `orca <kind>` verb. */
+export function integrationAccessRefusal(account: { id: string; name?: string; kind: string; access?: Access }, verb: string, classes: VerbClasses = {}): string | undefined {
+  if (verbClass(verb, classes) === "read") return undefined;
+  if ((account.access ?? DEFAULT_ACCESS) !== "read") return undefined;
+  return `refused: the ${account.kind} account "${account.name || account.id}" (${account.id}) has read access, and "${verb}" writes. The user can set Access to "Read and write" in Settings > Integrations.`;
+}
+
+/** A link's switches under its account's events mode. The account sets the default; a link may
+ *  narrow it, never widen it. */
+export const effectiveNotify = (link: LinkNotify, events: EventsMode = DEFAULT_EVENTS): LinkNotify =>
+  ({ me: link.me && events !== "off", agent: link.agent && events === "trigger" });
+
+/** The one account of `kind` a CLI verb uses (`--account <id or name>`). One row: that row. No row:
+ *  none (the verb keeps its old env-token path). Several and no name: an error, never a guess. */
+export function pickAccount<T extends { id: string; name: string; kind: string }>(rows: T[], kind: string, want?: string): { account?: T; error?: string } {
+  const mine = rows.filter((r) => r.kind === kind);
+  const list = mine.map((r) => (r.name && r.name !== r.id ? `${r.id} (${r.name})` : r.id)).join(", ");
+  const name = want?.trim().toLowerCase();
+  if (name) {
+    const hit = mine.find((r) => r.id.toLowerCase() === name) ?? mine.find((r) => r.name.toLowerCase() === name);
+    return hit ? { account: hit } : { error: `no ${kind} account "${want}"${mine.length ? ` (accounts: ${list})` : ` (no ${kind} account is connected)`}` };
+  }
+  if (mine.length > 1) return { error: `${mine.length} ${kind} accounts are connected (${list}): name one with --account <id>` };
+  return mine[0] ? { account: mine[0] } : {};
 }
 
 // ── Placement: which bridge opens an integration's connection ───────────────────────────────────

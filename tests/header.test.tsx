@@ -53,6 +53,9 @@ const navLabel = (b: Element) => b.querySelector('[data-slot="nav-label"]')?.tex
 const navItem = (label: string) => [...container!.querySelectorAll<HTMLButtonElement>('nav[aria-label="Main"] button')].find((b) => navLabel(b) === label)!;
 const click = async (el: Element) => { await act(async () => { el.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); }); };
 const crumb = () => container!.querySelector('nav[aria-label="Breadcrumb"]')!.textContent;
+// Radix opens a dropdown menu on pointerdown, not click — drive it the way a pointer would.
+const pointerdown = async (el: Element) => { await act(async () => { el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 })); await flush(); await flush(); }); };
+const key = async (el: Element, k: string) => { await act(async () => { el.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true })); await flush(); await flush(); }); };
 
 describe("console shell", () => {
   test("'/' is the Overview: usage, the agents snapshot, instances and recent activity — not the kanban grid", async () => {
@@ -130,7 +133,18 @@ describe("console shell", () => {
     const sidebar = container!.querySelector('[data-slot="sidebar"]')!;
     expect(sidebar.querySelector("svg")).not.toBeNull(); // the orca mark
     expect(sidebar.textContent).toContain("Orca");
-    expect(sidebar.querySelector('[data-slot="instance-scope"]')!.textContent).toBe("All instances"); // two instances in the fake config
+    // A compact button, top left, carrying the server's status dot — not a link to Overview, and no
+    // subtext under the name. Clicking it opens the instance-scope menu, whatever the instance count.
+    const switcher = sidebar.querySelector<HTMLButtonElement>('[data-slot="instance-switcher"]')!;
+    expect(switcher.tagName).toBe("BUTTON");
+    expect(switcher.getAttribute("aria-haspopup")).toBe("menu");
+    expect(switcher.querySelector('[data-health]')).not.toBeNull();
+    await pointerdown(switcher);
+    expect(switcher.getAttribute("aria-expanded")).toBe("true");
+    const menu = document.body.querySelector('[role="menu"]')!;
+    expect([...menu.querySelectorAll('[role="menuitemradio"]')].map((i) => i.textContent?.trim())).toEqual(["All instances", "cloud", "laptop (this machine)"]);
+    await key(menu, "Escape");
+    expect(document.body.querySelector('[role="menu"]')).toBeNull();
     expect(sidebar.querySelector('input[aria-label="Find agents"]')).not.toBeNull();
     const items = [...sidebar.querySelectorAll('nav[aria-label="Main"] button')].map(navLabel);
     expect(items).toEqual(["Overview", "Agents", "Board", "Inbox", "Previews", "Integrations", "Handoffs", "Settings"]);
@@ -148,7 +162,6 @@ describe("console shell", () => {
     await mount();
     getDefaultStore().set(instanceScopeAtom, "cloud");
     await act(flush);
-    expect(container!.querySelector('[data-slot="instance-scope"]')!.textContent).toBe("cloud");
     // The Overview now shows that machine's card only.
     expect(container!.querySelector('[data-slot="instance-cloud"]')).not.toBeNull();
     expect(container!.querySelector('[data-slot="instance-laptop"]')).toBeNull();

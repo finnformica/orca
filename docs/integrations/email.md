@@ -56,7 +56,7 @@ unit). The agent environment removes every `ORCA_SECRET_*` variable. Use these n
 
 You can use other names. Each name must start with `ORCA_SECRET_`.
 
-Or keep a password in Orca's secret store, not in `.env` ([ADAPTERS.md](ADAPTERS.md) section 13):
+Or keep a password in Orca's secret store, not in `.env` ([ADAPTERS.md](ADAPTERS.md) section 14):
 
 1. In the orchestrator's chat, type `/secret`. Store the app password, for example as `gmail-app`.
 2. In the Connect form, choose `gmail-app` under **Stored secret**. The secret_ref becomes `secret:gmail-app`.

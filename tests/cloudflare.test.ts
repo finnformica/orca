@@ -4,7 +4,7 @@
 import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
 import { CLOUDFLARE_ACCOUNT_ENV, CLOUDFLARE_TOKEN_ENV, PERMISSIONS, auditMatches, cloudflareTool, isOwnWrite, parseSince, recordName } from "../server/cloudflare";
 import { scrubbedEnv } from "../server/env";
-import { CLOUDFLARE_VERBS, cloudflareVerb, grantRefusal, type Grant } from "../shared/integrations";
+import { CLOUDFLARE_VERBS, cloudflareVerb, grantRefusal, verbClass, type Grant } from "../shared/integrations";
 import { orchestratorPrompt } from "../web/src/workstream";
 import { native } from "./happydom";
 
@@ -366,10 +366,12 @@ test("one table classifies every verb read or write; the grant check follows it;
     if (access === "read") expect(refusal).toBeUndefined();
     else expect(refusal).toContain(`"cloudflare ${verb}" needs your own chat`);
   }
-  expect(cloudflareVerb(["dns"])).toEqual({ name: "dns", access: "read" });
-  expect(cloudflareVerb(["dns", "remove"])).toEqual({ name: "dns remove", access: "write" });
-  expect(cloudflareVerb(["domain"])).toEqual({ name: "domain", access: "write" }); // not in the table: a write
-  expect(cloudflareVerb(["purge", "all"])).toEqual({ name: "purge all", access: "write" });
+  const cls = (words: string[]) => [cloudflareVerb(words), verbClass(cloudflareVerb(words), CLOUDFLARE_VERBS)];
+  expect(cls(["dns"])).toEqual(["dns", "read"]);
+  expect(cls(["dns", "remove"])).toEqual(["dns remove", "write"]);
+  expect(cls(["domain", "add"])).toEqual(["domain add", "write"]);
+  expect(cls(["domain"])).toEqual(["domain", "write"]); // not in the table: a write
+  expect(cls(["purge", "all"])).toEqual(["purge", "write"]);
   // Every write is still a dry run without --confirm.
   expect(await cf(["dns", "add"], { zone: "example.com", type: "TXT", name: "t", content: "x" })).toStartWith("Dry run, nothing changed.");
   expect(writes()).toEqual([]);

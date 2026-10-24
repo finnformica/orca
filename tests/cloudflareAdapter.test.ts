@@ -9,10 +9,12 @@ import * as registry from "../server/integrations/registry";
 import * as store from "../server/integrations/store";
 import type { AdapterContext, Connection } from "../server/integrations/adapter";
 import {
-  DEFAULT_SUBSCRIPTIONS, OWN_WRITES_CURSOR, auditItems, batchEnvelopes, cloudflareAdapter, cloudflareConfig, connectedCredentials, errorItems,
-  MAX_BACKOFF_MS, MAX_DEPLOYMENT_READS, nextAudit, pollDelayMs, readOwnWrites, recordOwnWrite, resolveToken, tokenSource, type CloudflareAdapter,
+  DEFAULT_SUBSCRIPTIONS, OWN_WRITES_CURSOR, auditItems, batchEnvelopes, cloudflareAdapter, cloudflareConfig, errorItems,
+  MAX_BACKOFF_MS, MAX_DEPLOYMENT_READS, nextAudit, pollDelayMs, readOwnWrites, recordOwnWrite, tokenSource, type CloudflareAdapter,
 } from "../server/integrations/adapters/cloudflare";
 import * as secrets from "../server/secrets";
+import * as policy from "../server/integrations/policy";
+import * as secretRefs from "../server/integrations/secretRefs";
 import type { AuditLog } from "../server/cloudflare";
 import { fenceExternal, outboundRefusal, type InboundEnvelope } from "../shared/integrations";
 import { native } from "./happydom";
@@ -288,16 +290,8 @@ describe("the poll loop", () => {
 });
 
 describe("the token from Orca's secret store", () => {
-  test("resolveToken (orca cloudflare): secret:<name> is decrypted, else the variable; the source names it; a bad secret throws", async () => {
-    const asked: string[][] = [];
-    const reveal = async (ref: string, who: string, use: string) => { asked.push([ref, who, use]); if (ref !== "cf-token") throw new Error(`no secret "${ref}"`); return ` ${TOKEN} `; };
-    const stored = { ...conn(), secretRef: "secret:cf-token" };
-    expect(await resolveToken(stored, { ORCA_SECRET_CLOUDFLARE: "from-env" }, reveal)).toBe(TOKEN);
-    expect(asked).toEqual([["cf-token", "integration cf", "cloudflare"]]);
-    expect(await resolveToken(conn(), { ORCA_SECRET_CLOUDFLARE: "from-env" }, reveal)).toBe("from-env");
-    expect(await resolveToken(conn(), {}, reveal)).toBeUndefined();
-    await expect(resolveToken({ ...conn(), secretRef: "secret:gone" }, {}, reveal)).rejects.toThrow('no secret "gone"');
-    expect(tokenSource(stored)).toBe('the stored secret "cf-token"');
+  test("the token source names the stored secret or the variable", () => {
+    expect(tokenSource({ ...conn(), secretRef: "secret:cf-token" })).toBe('the stored secret "cf-token"');
     expect(tokenSource(conn())).toBe("ORCA_SECRET_CLOUDFLARE");
   });
 
@@ -361,8 +355,14 @@ describe("with Postgres", () => {
     expect(targets).toEqual(["ext.cloudflare.domain>orchestrator", "ext.cloudflare.domain>web", "ext.cloudflare.errors>orchestrator", "ext.cloudflare.errors>web"]);
     // The same poll again: nothing new.
     expect((await a.poll()).ingested).toBe(0);
-    expect(await connectedCredentials({ ORCA_SECRET_CLOUDFLARE: TOKEN })).toEqual({ token: TOKEN, account: ACCT });
-    expect(await connectedCredentials({})).toEqual({ account: ACCT });
+    // orca cloudflare goes through the shared account door (policy.useAccount, POLICY.md).
+    const c = await policy.useAccount("cloudflare", "workers");
+    expect(policy.accountEnv(c, "ORCA_SECRET_CLOUDFLARE", { ORCA_CLOUDFLARE_ACCOUNT_ID: ACCT }, { ORCA_SECRET_CLOUDFLARE: TOKEN }))
+      .toMatchObject({ ORCA_SECRET_CLOUDFLARE: TOKEN, ORCA_CLOUDFLARE_ACCOUNT_ID: ACCT });
+    // A read account refuses every write verb from the ONE table; the reads still run.
+    await store.addIntegration({ ...(await store.integration("cf"))!, access: "read" });
+    for (const verb of ["dns add", "domain remove", "route add", "rollback"]) await expect(policy.useAccount("cloudflare", verb)).rejects.toThrow(`"${verb}" writes`);
+    expect((await policy.useAccount("cloudflare", "dns"))?.id).toBe("cf");
   });
 });
 
@@ -394,13 +394,17 @@ describe("with Postgres and the secret store", () => {
     expect(row?.config).toEqual({ accountId: ACCT });
     expect(registry.runningIds()).toEqual(["cf"]);
     expect(await registry.adapterFor("cf")!.health()).toMatchObject({ ok: true, detail: "connected to Test account" });
-    expect(await connectedCredentials({})).toEqual({ token: TOKEN, account: ACCT });
+    // orca cloudflare on a bridge that has not loaded it: policy.useAccount loads it, accountEnv reads it.
+    secretRefs.clear();
+    const c = await policy.useAccount("cloudflare", "workers");
+    expect(policy.accountEnv(c, "ORCA_SECRET_CLOUDFLARE", {}, {}).ORCA_SECRET_CLOUDFLARE).toBe(TOKEN);
+    await policy.useAccount("cloudflare", "zones"); // loaded and unchanged: no second read
     const uses = (await db.secretUses()).filter((u) => u.action === "integration");
-    expect(uses.length).toBe(2); // the registry's load at start, and orca cloudflare (a health check reads memory)
+    expect(uses.length).toBe(2); // the registry's load at start, and the first orca cloudflare (a health check reads memory)
     expect(uses[0]).toMatchObject({ name: "cloudflare-token", command: "cloudflare", who: "integration cf" });
     expect(JSON.stringify(await store.integrations())).not.toContain(TOKEN);
     // A stored secret that is gone: orca cloudflare says so, it never falls back to another token.
     await secrets.remove("cloudflare-token", "user");
-    await expect(connectedCredentials({ ORCA_SECRET_CLOUDFLARE: "other" })).rejects.toThrow(/the stored secret "cloudflare-token", cannot be read: no secret "cloudflare-token"/);
+    await expect(policy.useAccount("cloudflare", "workers")).rejects.toThrow(/names a stored secret this bridge cannot read: no secret "cloudflare-token"/);
   });
 });

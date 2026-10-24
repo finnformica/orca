@@ -22,12 +22,11 @@
 import { createHash } from "crypto";
 import {
   CLOUDFLARE_ACCOUNT_ENV, CLOUDFLARE_TOKEN_ENV, PERMISSIONS, client, isOwnWrite, workerTotals,
-  type AuditLog, type Client, type CloudflareOpts, type Deployment, type Domain, type OwnWrite, type Script, type WorkerTotals,
+  type AuditLog, type Client, type Deployment, type Domain, type OwnWrite, type Script, type WorkerTotals,
 } from "../../cloudflare";
 import { CATCH_ALL, storedSecretName, type Capabilities, type InboundEnvelope, type SendResult } from "../../../shared/integrations";
 import type { Adapter, AdapterContext, Connection } from "../adapter";
 import * as store from "../store";
-import * as secrets from "../../secrets";
 import { secretValue } from "../secretRefs";
 
 export const CLOUDFLARE_CAPS: Capabilities = {
@@ -87,38 +86,11 @@ export function cloudflareConfig(raw: Record<string, unknown>, env: Record<strin
 /** The token variable of a connection: its secret_ref, else the default. */
 export const tokenRef = (c: Pick<Connection, "secretRef">): string => c.secretRef || CLOUDFLARE_TOKEN_ENV;
 
-/** Reads a stored Orca secret for a bridge-side caller (server/secrets.ts `reveal`); a test swaps it. */
-export type Reveal = (ref: string, who: string, use: string) => Promise<string>;
-
 /** Where a connection's token comes from, for a message: the stored secret, else the variable. Pure. */
 export const tokenSource = (c: Pick<Connection, "secretRef">): string => {
   const name = storedSecretName(tokenRef(c));
   return name ? `the stored secret "${name}"` : tokenRef(c);
 };
-
-/** A connection's token for `orca cloudflare`, which runs outside the adapter: a stored secret
- *  (`secret:<name>`) is decrypted here and kept in the caller's memory only — never an env file, a
- *  log or an agent; else the variable. Undefined when the variable is unset; a stored secret that
- *  cannot be read throws. */
-export async function resolveToken(c: Pick<Connection, "id" | "secretRef">, env: Record<string, string | undefined> = process.env, reveal: Reveal = secrets.reveal): Promise<string | undefined> {
-  const name = storedSecretName(tokenRef(c));
-  if (name) return (await reveal(name, `integration ${c.id}`, "cloudflare")).trim() || undefined;
-  return env[tokenRef(c)]?.trim() || undefined;
-}
-
-/** `orca cloudflare …`'s credentials: the first enabled Cloudflare integration's token (a stored
- *  secret or this bridge's variable) and account id. Empty when none is connected, so the env
- *  fallback applies. A stored secret that cannot be read is an error, not a silent fallback. */
-export async function connectedCredentials(env: Record<string, string | undefined> = process.env, reveal: Reveal = secrets.reveal): Promise<Pick<CloudflareOpts, "token" | "account">> {
-  const rows = await store.integrations().catch(() => []);
-  const c = rows.find((r) => r.kind === "cloudflare" && r.enabled);
-  if (!c) return {};
-  let token: string | undefined;
-  try { token = await resolveToken(c, env, reveal); }
-  catch (e) { throw new Error(`the Cloudflare integration's token, ${tokenSource(c)}, cannot be read: ${e instanceof Error ? e.message : String(e)}`); }
-  const account = cloudflareConfig(c.config, env).accountId;
-  return { ...(token ? { token } : {}), ...(account ? { account } : {}) };
-}
 
 /** Record one confirmed write for the watcher (any instance reads it from the database). */
 export async function recordOwnWrite(targets: string[], at: number): Promise<void> {

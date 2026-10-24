@@ -17,12 +17,15 @@ The core does these tasks. An adapter never does them:
 - It stores thread links and passes the thread back to the adapter.
 - It paces outbound sends per target (from `caps.rate`) and inbound messages per sender.
 - It starts the adapter on one primary bridge only. Section 6.1 tells which one.
+- It applies the account policy: what Orca may do with the account (`access`) and what its events
+  do (`events`). Section 13 and [POLICY.md](POLICY.md) tell how.
 
 An adapter does only these tasks:
 
 - It talks to one platform (a socket, a poll loop, or an HTTP route).
 - It turns each platform event into an envelope and calls `ctx.ingest`.
 - It sends one message in `send` and returns a `SendResult`.
+- It declares the class (read or write) of each `orca <kind>` CLI verb it has (section 13).
 
 ## 2. Files
 
@@ -30,7 +33,8 @@ An adapter does only these tasks:
 |---|---|
 | `shared/integrations.ts` | The envelope, topics, grants, `Capabilities`, `Target`, `OutboundMessage`, `SendResult`, `InboundMessage`, `ConversationRef`, and the pure decisions. |
 | `server/integrations/adapter.ts` | The `Adapter` interface, `AdapterContext`, `Connection`, `AdapterFactory`. |
-| `server/integrations/registry.ts` | `register(kind, factory)`, `sync()`, `handle()`, `health()`. |
+| `server/integrations/registry.ts` | `register(kind, factory, meta)`, `registerVerbs()`, `verbsFor()`, `sync()`, `handle()`, `health()`. |
+| `server/integrations/policy.ts` | `useAccount(kind, verb, account)`: the CLI door of the account policy (section 13). |
 | `server/integrations/router.ts` | `ingest` (the gate) and `publish`. |
 | `server/integrations/dispatcher.ts` | The delivery loop. |
 | `server/integrations/inbox.ts` | The orchestrator and workstream targets. |
@@ -51,6 +55,8 @@ export type Connection = {
   config: Record<string, unknown>; // non-secret settings
   secretRef?: string;           // an environment variable NAME, never a value
   enabled: boolean;
+  access?: "read" | "read-write";          // the account policy (section 13); the core enforces it
+  events?: "trigger" | "record" | "off";
 };
 
 export type AdapterContext = {
@@ -208,7 +214,8 @@ export type InboundMessage = {
 ## 5. Register the adapter
 
 1. Write `server/integrations/adapters/<kind>.ts`. Export a factory `(connection) => Adapter`.
-2. Add one line to `server/integrations/registry.ts`: `register("<kind>", <kind>Adapter);`.
+2. Add one line to `server/integrations/registry.ts`: `register("<kind>", <kind>Adapter, meta)`.
+   Put the class of each CLI verb in `meta.verbs` (section 13).
 3. Add the kind's topics to `Topic` in `shared/integrations.ts` only if `ext.<kind>.<event>` is not
    enough.
 4. Write a test in `tests/` that drives the adapter with a stubbed `fetch` or a fake server.
@@ -219,7 +226,7 @@ export type InboundMessage = {
    removed link or subscription stays removed.
 6. Read every secret with `secretValue(ref)` (`server/integrations/secretRefs.ts`) or
    `ctx.secret()`, never `process.env` directly. Then a stored secret works for your adapter too
-   (section 13).
+   (section 14).
 
 ## 6. Configure an integration
 
@@ -406,7 +413,58 @@ seconds. At the window's end, the dispatcher sends ONE message for the window.
 - A digest does not apply to `web` targets. The web already shows each event.
 - A digest over more than one workstream starts no thread.
 
-## 13. Secrets: a variable or Orca's secret store
+## 13. The account policy: declare verb classes, get the rest free
+
+Each `integration` row is one connected account. It has two settings (named step
+`20261024-integration-access-events`; the design is [POLICY.md](POLICY.md)):
+
+- `access`: `read` or `read-write` (the default). What Orca may do with the account.
+- `events`: `trigger` (the default), `record` or `off`. What an inbound event does.
+
+The core enforces both. An adapter does not check them.
+
+| The core does | Where |
+|---|---|
+| Refuses `orca post` and the Inbox Reply to a read account (`send`, or `delete` for `--delete`). | `router.publish` |
+| Plans no delivery for a subscription to a read account. | `router.publish` |
+| Ends a delivery that was planned before the account became read. | the dispatcher |
+| Refuses a link's Test on a read account. | `admin.testLink` |
+| Narrows the link switches with `effectiveNotify(link, events)`: `record` wakes no agent, `off` records nothing. A link never widens them. | `router.ingest` |
+| Picks the account of an `orca <kind>` verb (`--account`) and checks the verb. | `policy.useAccount` |
+
+The one decision is `integrationAccessRefusal(account, verb, classes)` in `shared/integrations.ts`.
+
+What a new adapter does:
+
+1. Declare the class of each CLI verb in its meta. A verb that is not declared is a write, so a
+   read account refuses it:
+
+   ```ts
+   export const GMAIL_VERBS: VerbClasses = { search: "read", read: "read", list: "read", send: "write", reply: "write" };
+   register("gmail", gmailAdapter, { label: "Gmail", caps: GMAIL_CAPS, verbs: GMAIL_VERBS, … });
+   ```
+
+   `send` and `delete` (the delivery queue) are the core's (`CORE_VERBS`). Do not declare them.
+2. In the CLI verb (`case "<kind>"` in `orchestrator.tool`), pick the account and check the verb
+   before any call to the platform:
+
+   ```ts
+   const c = await policy.useAccount("gmail", sub, args.account);   // throws a clear refusal
+   return gmailTool(args, { env: policy.accountEnv(c, "ORCA_SECRET_GMAIL") });
+   ```
+
+   `useAccount` returns `undefined` when no account of the kind is connected. Keep the old path then.
+3. Optional: skip an inbound poll when `connection.events === "off"`. The core drops the events
+   anyway, so this only saves platform calls.
+
+A kind with a CLI but no adapter yet calls `registerVerbs(kind, verbs)`. When its adapter
+registers `meta.verbs`, the meta wins. Cloudflare's adapter registers `CLOUDFLARE_VERBS`
+(`shared/integrations.ts`), the same table the grant check reads.
+
+Several accounts of one kind: each is its own row. `--account <id or name>` picks one. With one
+row, it is the default. With several and no `--account`, the verb fails and lists them.
+
+## 14. Secrets: a variable or Orca's secret store
 
 Every secret ref of an integration has one of two forms:
 
@@ -439,5 +497,6 @@ Rules:
 - The Connect form has a **Stored secret** Select for every kind. It lists the store's names, never
   a value, and writes `secret:<name>` as the secret_ref. For a config ref (email's SMTP and Resend
   boxes), type `secret:<name>`.
-- Code outside an adapter (`orca cloudflare`) reads a stored secret with `secrets.reveal`, and keeps
-  it in memory for that one call.
+- An `orca <kind>` verb gets the account's stored secrets from `policy.useAccount` (section 13): it
+  loads any that this bridge has not loaded yet, or that changed (`secretRefs.ensureLoaded`), and
+  `policy.accountEnv` reads them through `secretValue`.
