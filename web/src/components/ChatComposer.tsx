@@ -505,7 +505,6 @@ export function ChatComposer({
             aria-disabled={c.disabled ? true : undefined}
             data-command={c.name}
             data-disabled={c.disabled ? "" : undefined}
-            title={c.disabled ? `/${c.name} — ${c.disabled}` : undefined}
             className={cn("flex cursor-default items-center gap-2 rounded-sm px-2 py-1.5 text-sm", c.disabled ? "opacity-50" : i === cmdIdx && "bg-accent text-accent-foreground")}
             onMouseDown={(e) => e.preventDefault()} // keep the textarea's focus + caret
             onMouseEnter={() => { if (!c.disabled) setActive(i); }}
