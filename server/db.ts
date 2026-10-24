@@ -1062,6 +1062,21 @@ export const MIGRATIONS: MigrationStep[] = [
     sql: `ALTER TABLE channel_link ADD COLUMN IF NOT EXISTS notify_me BOOLEAN NOT NULL DEFAULT true;
       ALTER TABLE channel_link ADD COLUMN IF NOT EXISTS notify_agent BOOLEAN NOT NULL DEFAULT true;`,
   },
+  {
+    name: "20261024-integration-access-events",
+    idempotent: true,
+    // The account policy (docs/integrations/POLICY.md): what Orca may do with an account, and whether
+    // its events wake an agent. The defaults are the behaviour before it, so old rows do not change.
+    // Each constraint is dropped and re-added in one ALTER TABLE, so a re-run is a no-op.
+    sql: `
+      ALTER TABLE integration ADD COLUMN IF NOT EXISTS access TEXT NOT NULL DEFAULT 'read-write';
+      ALTER TABLE integration ADD COLUMN IF NOT EXISTS events TEXT NOT NULL DEFAULT 'trigger';
+      ALTER TABLE integration DROP CONSTRAINT IF EXISTS integration_access_check,
+        ADD CONSTRAINT integration_access_check CHECK (access IN ('read','read-write'));
+      ALTER TABLE integration DROP CONSTRAINT IF EXISTS integration_events_check,
+        ADD CONSTRAINT integration_events_check CHECK (events IN ('trigger','record','off'));
+    `,
+  },
 ];
 
 export type MigrationMismatch = { id: number; recorded: string; expected: string; idempotent: boolean };

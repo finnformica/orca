@@ -205,6 +205,12 @@ gets `grantScope` and runs in SCOPED mode (`agent.scopedRules`: `claude -p --per
 plus allow and deny rules — files in the worktree, git and the toolchain, no secrets, no
 `--no-verify`, no push to the base branch; never `bypassPermissions`, which approves everything).
 Only a wake whose every message is yours clears it on a steer; `orca status --clear-grant` clears it.
+**Account policy** (`docs/integrations/POLICY.md`, named step `20261024-integration-access-events`):
+each `integration` row (one account; several per kind work) has `access` (`read` | `read-write`) and
+`events` (`trigger` | `record` | `off`), defaults = the old behaviour. ONE check,
+`integrationAccessRefusal`, at every door (publish, the dispatcher, a link's Test, `orca <kind>` via
+`policy.useAccount`, which also takes `--account`); an undeclared verb is a write. `events` narrows
+the link switches (`effectiveNotify`), never widens them. Adapters declare CLI verbs in `meta.verbs`.
 **Every link notifies you AND the agent by default** (Finn's call): two Switches per link, **Notify me**
 and **Notify agent** (`channel_link.notify_me` / `notify_agent`, named step `20261023-link-switches`,
 true for old links too; `#420`'s `pairing` column is unused). The gate stamps them on the envelope

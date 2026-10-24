@@ -2,12 +2,14 @@
 // decisions — a card's health tone, the subscription presets, what a row reads as, and the checks a
 // form runs before it posts. Pure: the server (server/integrations/admin.ts), the page
 // (web/src/views/Integrations.tsx) and the tests import it as is.
-import { isAutomatic, secretRefRefusal, type AdapterMeta, type DeliveryTarget, type Level, type Subscription, type TargetKind } from "./integrations";
+import { isAutomatic, secretRefRefusal, type Access, type AdapterMeta, type EventsMode, type DeliveryTarget, type Level, type Subscription, type TargetKind } from "./integrations";
 
 /** One integration as the page shows it: the row, its health and what it ran last. */
 export type IntegrationCard = {
   id: string; kind: string; name: string; instance: string; enabled: boolean;
   config: Record<string, unknown>; secretRef?: string;
+  /** The account policy (docs/integrations/POLICY.md). */
+  access: Access; events: EventsMode;
   /** Whether the variable `secretRef` names is set — known only on the instance that runs it
    *  (undefined elsewhere, until that instance's Test records it). Never the value. */
   secretSet?: boolean;

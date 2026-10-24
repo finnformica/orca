@@ -12,6 +12,7 @@
 // A target is a channel id (C…, G…, D…), `#name`, a user id (U…) or `@name` (a DM), or a comma list
 // of users (a group DM). A post is logged as one `[slack]` line with the place and the ts, never the text.
 import { openConversation, slackApi, slackRead, type SlackResult } from "./integrations/adapters/slack";
+import type { VerbClasses } from "../shared/integrations";
 
 type Args = Record<string, unknown> & { _?: unknown[] };
 export type SlackToolOpts = { env?: Record<string, string | undefined>; log?: (line: string) => void; by?: string };
@@ -22,7 +23,11 @@ export const SLACK_USAGE = [
   "orca slack search \"<query>\" [--limit 20]   search every message you can see (Slack search syntax: in:#eng from:@ana)",
   "orca slack post <target> [--thread <ts>] \"<text>\"   post as the user",
   "A target is a channel id (C…, G…, D…), #name, a user id (U…) or @name (a DM), or a comma list of users (a group DM).",
+  "With more than one Slack account connected, name one: --account <id or name>.",
 ].join("\n");
+
+/** The class of each `orca slack` verb, for the account policy (docs/integrations/POLICY.md). */
+export const SLACK_VERBS: VerbClasses = { help: "read", conversations: "read", read: "read", search: "read", post: "write" };
 
 export class SlackToolError extends Error {}
 
