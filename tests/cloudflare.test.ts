@@ -4,7 +4,7 @@
 import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
 import { CLOUDFLARE_ACCOUNT_ENV, CLOUDFLARE_TOKEN_ENV, PERMISSIONS, auditMatches, cloudflareTool, isOwnWrite, parseSince, recordName } from "../server/cloudflare";
 import { scrubbedEnv } from "../server/env";
-import { grantRefusal, type Grant } from "../shared/integrations";
+import { CLOUDFLARE_VERBS, cloudflareVerb, grantRefusal, type Grant } from "../shared/integrations";
 import { orchestratorPrompt } from "../web/src/workstream";
 import { native } from "./happydom";
 
@@ -349,4 +349,28 @@ test("dns add and remove: full names, CNAME and duplicate checks, --confirm, DNS
   expect(await cloudflareTool({ _: ["help"] })).toContain("No command uploads Worker code");
   expect(isOwnWrite('{"name":"shop.example.com"}', NOW.getTime() + 60_000, wrote)).toBe(true);
   expect(isOwnWrite('{"name":"shop.example.com"}', NOW.getTime() + 3_600_000, wrote)).toBe(false);
+});
+
+test("one table classifies every verb read or write; the grant check follows it; an unknown verb fails closed", async () => {
+  // Every subcommand the tool dispatches is in the table, alone or as "subcommand action".
+  const src = await Bun.file(new URL("../server/cloudflare.ts", import.meta.url)).text();
+  const tool = src.slice(src.indexOf("export async function cloudflareTool"));
+  const cases = [...tool.matchAll(/case "([a-z0-9]+)":/g)].map((m) => m[1]!);
+  expect(cases.length).toBeGreaterThan(10);
+  for (const c of cases) expect(Object.keys(CLOUDFLARE_VERBS).some((k) => k === c || k.startsWith(`${c} `))).toBe(true);
+  expect(Object.entries(CLOUDFLARE_VERBS).filter(([, a]) => a === "write").map(([k]) => k).sort()).toEqual(
+    ["delete", "dns add", "dns remove", "domain add", "domain remove", "rollback", "route add", "route remove"]);
+  const ask: Grant = { level: "ask", repos: [] } as unknown as Grant;
+  for (const [verb, access] of Object.entries(CLOUDFLARE_VERBS)) {
+    const refusal = grantRefusal(ask, "cloudflare", { _: verb.split(" ") });
+    if (access === "read") expect(refusal).toBeUndefined();
+    else expect(refusal).toContain(`"cloudflare ${verb}" needs your own chat`);
+  }
+  expect(cloudflareVerb(["dns"])).toEqual({ name: "dns", access: "read" });
+  expect(cloudflareVerb(["dns", "remove"])).toEqual({ name: "dns remove", access: "write" });
+  expect(cloudflareVerb(["domain"])).toEqual({ name: "domain", access: "write" }); // not in the table: a write
+  expect(cloudflareVerb(["purge", "all"])).toEqual({ name: "purge all", access: "write" });
+  // Every write is still a dry run without --confirm.
+  expect(await cf(["dns", "add"], { zone: "example.com", type: "TXT", name: "t", content: "x" })).toStartWith("Dry run, nothing changed.");
+  expect(writes()).toEqual([]);
 });

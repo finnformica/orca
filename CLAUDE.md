@@ -261,7 +261,10 @@ cloudflare … --confirm` as cursor row `cloudflare:own-writes`) and the deploy 
 `config.accountId`, else the env (`ORCA_CLOUDFLARE_ACCOUNT_ID`). Reads cover Workers, deployments, versions, routes,
 domains, Pages, R2, D1, DNS, analytics and the audit log. The writes are `rollback`, `delete`, `route
 add|remove`, `domain add|remove` and `dns add|remove`: a dry run without `--confirm`, a check of the target,
-a `[cloudflare]` log line with it, and your own chat only (`cloudflareWriteName`). No command uploads Worker
+a `[cloudflare]` log line with it, and your own chat only. ONE table, `CLOUDFLARE_VERBS`
+(`shared/integrations.ts`), says read or write for every verb (unknown = write) — the grant check reads
+it, and the coming per-account access policy (orca/integration-access-policy) is to read it too; no
+Cloudflare-only access or event switch (quiet = the link's Notify agent). No command uploads Worker
 code: new Workers come from the repos' deploy pipelines. A 401/403 names the token permission it needs
 (`PERMISSIONS`).
 

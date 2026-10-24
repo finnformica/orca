@@ -402,7 +402,7 @@ export function grantAllowsRepo(g: Grant | undefined, repo: string | undefined, 
  *  own chat — at every level. */
 export const READ_VERBS = ["board", "chats", "read", "channels", "machine"] as const;
 export const WORK_VERBS = ["spawn", "send", "address", "status", "pr-shots", "stop", "archive"] as const;
-export const OWNER_ONLY = ["status --clear-grant", "notes set", "preview --push-to-template --confirm", "handoff create", "cloudflare rollback|delete|route|domain|dns add|dns remove"] as const;
+export const OWNER_ONLY = ["status --clear-grant", "notes set", "preview --push-to-template --confirm", "handoff create", "cloudflare writes (CLOUDFLARE_VERBS)"] as const;
 
 /** What each outside level may do, as the orchestrator's prompt says it. */
 export const GRANT_ALLOWS: Record<Exclude<Level, "full">, string> = {
@@ -414,14 +414,36 @@ export const GRANT_ALLOWS: Record<Exclude<Level, "full">, string> = {
 
 const grantName = (l: Level): string => `${/^[aeiou]/.test(l) ? "an" : "a"} "${l}" grant`;
 
-/** The Cloudflare subcommand in `words` that writes, or undefined (server/cloudflare.ts CLOUDFLARE_WRITES). Pure. */
-export function cloudflareWriteName(words: unknown): string | undefined {
+/** Whether a verb only reads an outside account or changes it. */
+export type VerbAccess = "read" | "write";
+
+/** Every `orca cloudflare` verb (server/cloudflare.ts), read or write: the ONE table. The grant
+ *  check reads it now (a write needs your own chat), and an account's shared access policy can read
+ *  it later. A write also needs `--confirm` (server/cloudflare.ts), at every access level. Keys are
+ *  the subcommand, or "subcommand action" for a group with writes. */
+export const CLOUDFLARE_VERBS: Readonly<Record<string, VerbAccess>> = {
+  help: "read", account: "read", workers: "read", deployments: "read", versions: "read", routes: "read",
+  domains: "read", pages: "read", r2: "read", d1: "read", zones: "read", dns: "read", analytics: "read", audit: "read",
+  rollback: "write", delete: "write",
+  "route add": "write", "route remove": "write",
+  "domain add": "write", "domain remove": "write",
+  "dns add": "write", "dns remove": "write",
+};
+
+/** The Cloudflare verb in `words` and its access. "subcommand action" first, then the subcommand;
+ *  a verb the table does not name is a write, so a check fails closed. Pure. */
+export function cloudflareVerb(words: unknown): { name: string; access: VerbAccess } {
   const [a = "", b = ""] = Array.isArray(words) ? words.map(String) : [];
-  if (a === "rollback" || a === "delete") return a;
-  if (a === "route" && b !== "list") return `route ${b || "add"}`;
-  if (a === "domain") return `domain ${b || "add"}`; // `domains` (plural) is the read
-  if (a === "dns" && (b === "add" || b === "remove")) return `dns ${b}`; // bare `dns` is the read
-  return undefined;
+  const pair = b ? `${a} ${b}` : "";
+  if (pair && CLOUDFLARE_VERBS[pair]) return { name: pair, access: CLOUDFLARE_VERBS[pair]! };
+  if (CLOUDFLARE_VERBS[a]) return { name: a, access: CLOUDFLARE_VERBS[a]! };
+  return { name: (pair || a || "help").trim(), access: "write" };
+}
+
+/** The Cloudflare verb in `words` when it writes, else undefined (from CLOUDFLARE_VERBS). Pure. */
+export function cloudflareWriteName(words: unknown): string | undefined {
+  const v = cloudflareVerb(words);
+  return v.access === "write" ? v.name : undefined;
 }
 
 /** Why `verb` is refused under `grant`, or undefined when allowed. Server-side: the tool route calls

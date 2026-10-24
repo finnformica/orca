@@ -156,6 +156,7 @@ These changes do not come in:
   one hour, so routine deploys come as one summary.
 - To stop a topic, remove its subscription.
 - For quiet mode, turn off **Notify agent** on the link. The events then show only in the Inbox.
+  This is the link switch that every integration has. Cloudflare has no event switch of its own.
   Turn off **Notify me** to keep them out of the Inbox.
 - To treat one zone differently, add a link with place `zone:<name>`. It wins over `*`.
 - To send a topic to a channel, add a subscription with a link target, for example
@@ -236,6 +237,8 @@ does not try another token.
 - `dns add` takes `--zone` as a zone name. `--name www` becomes `www.<zone>`, and `@` is the zone.
 - Each confirmed write writes one line to the bridge log: `[cloudflare] <time> <who>: <what> → ok`,
   or `→ failed: <error>`.
+- One table in `shared/integrations.ts`, `CLOUDFLARE_VERBS`, says which verb reads and which
+  writes. The grant check uses it. A verb that the table does not name counts as a write.
 - Only your own chat can run a write command. Orca refuses it for an outside sender at every level
   (`grantRefusal` in `shared/integrations.ts`).
 

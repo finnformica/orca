@@ -49,7 +49,8 @@ export const PERMISSIONS = {
 } as const;
 type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
 
-// Which subcommands write (and so need the owner's own chat) is shared/integrations.ts cloudflareWriteName.
+// Which subcommands read and which write is ONE table, shared/integrations.ts CLOUDFLARE_VERBS: the
+// grant check reads it (a write needs the owner's own chat), and every write here also needs --confirm.
 
 export class CloudflareError extends Error {}
 
