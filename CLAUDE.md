@@ -430,7 +430,11 @@ all/local/cloud scoping the pages, Find — the `F` key — which filters Agents
 Agents / Previews / Integrations (`G I`) / Handoffs / Settings, then **Add New** as the last action, above the divider — a modal `<dialog>` holding the New-draft box
 (`C` opens it; it is the portal container for the composer's selects, since a modal leaves the rest
 of the page inert; sending closes it and leaves "Sent to … · Undo" for 6s; the typed draft persists) — and
-below it you on one thin line — "You · local" — with the collapse toggle;
+below it the profile button on one thin line — the Tailscale login `tailscale serve` names the
+caller (its `Tailscale-User-Login`/`-Name`/`-Profile-Pic` headers, read only when the request
+reached this bridge over loopback — a tailnet peer hitting the tailnet-bound socket directly could
+set them itself), with the picture as the avatar and initials as its fallback; else "You" with a
+generic icon (local dev, a tagged device, an older server) — with the collapse toggle;
 collapsed it is one icon column, expand toggle above you; off-canvas when narrow; `⌘B` / Ctrl+B
 toggles it, remembered) and a top bar (repo switcher, breadcrumb, and **Ask the orchestrator** at its
 right on every page — Vercel's "Ask AI", as a BUTTON: it opens the orchestrator's side panel with its

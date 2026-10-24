@@ -20,9 +20,14 @@ import { persistedKey, readPersisted, writePersisted } from "./persisted";
 import { resolveIdentity, type ServerIdentity, type ServerIdentityConfig } from "../../../shared/serverIdentity";
 
 export type ServerRef = { name: string; url: string };
+/** The browser's own Tailscale identity, read off `self.tailscaleUser` (server/servers.ts
+ *  `tailscaleUserFromHeaders`): present only when `tailscale serve` fronts this bridge and the
+ *  request reached it over loopback. `picture` is a URL, absent when the identity provider gives
+ *  none. */
+export type TailscaleUser = { login: string; name?: string; picture?: string };
 /** A server's display name and theme colour, as its GET /api/servers `self` row gives them (absent on
  *  an older server). `name` stays the Tailscale host name. */
-export type IdentityFields = { label?: string; color?: string; identity?: ServerIdentityConfig };
+export type IdentityFields = { label?: string; color?: string; identity?: ServerIdentityConfig; tailscaleUser?: TailscaleUser };
 /** What this browser found when it asked a server (`probeServer`): it answered, it answered 403
  *  (whois refused this device, or no CORS), or no answer inside the timeout. */
 export type ServerHealth = "checking" | "online" | "offline" | "refused";

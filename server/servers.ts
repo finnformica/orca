@@ -20,6 +20,7 @@
 // untouched, and so does everything when the feature is off.
 import { instanceName } from "./db";
 import { API_PORT } from "./ports";
+import { isLoopback } from "./terminal";
 import { resolveIdentity, type ServerIdentity, type ServerIdentityConfig } from "../shared/serverIdentity";
 
 export type ServerEntry = { name: string; url: string };
@@ -37,8 +38,10 @@ export type ServerSwitcherConfig = {
 };
 /** One row of `GET /api/servers`. */
 export type ServerInfo = { name: string; url: string; online: boolean; self: boolean };
+/** The caller's own Tailscale identity (`tailscaleUserFromHeaders`), not this server's. */
+export type TailscaleUser = { login: string; name?: string; picture?: string };
 export type ServersAnswer = {
-  enabled: boolean; self: ServerEntry & Partial<ServerIdentity> & { identity?: ServerIdentityConfig }; servers: ServerInfo[]; source: "tailscale" | "config" | "self";
+  enabled: boolean; self: ServerEntry & Partial<ServerIdentity> & { identity?: ServerIdentityConfig; tailscaleUser?: TailscaleUser }; servers: ServerInfo[]; source: "tailscale" | "config" | "self";
   /** The Tailscale API is configured here (TS_OAUTH_CLIENT_ID and TS_OAUTH_CLIENT_SECRET are set). */
   tailscaleApi: boolean;
 };
@@ -262,6 +265,29 @@ export async function listServers(sw: ServerSwitcherConfig | undefined, now = Da
  *  stored (Settings' form edits it). Pure. */
 export function withIdentity(answer: ServersAnswer, identity: ServerIdentityConfig | undefined): ServersAnswer {
   return { ...answer, self: { ...answer.self, ...resolveIdentity(identity, answer.self.name), identity: identity ?? {} } };
+}
+
+/** The caller's Tailscale identity from the request headers `tailscale serve` adds
+ *  (https://tailscale.com/kb/1312/serve#serve-headers): `Tailscale-User-Login`, `Tailscale-User-Name`
+ *  and `Tailscale-User-Profile-Pic`. Serve adds them only to tailnet traffic it proxies, and strips
+ *  any a client sent itself — so they are genuine THERE. But on this side they arrive over the
+ *  loopback connection serve makes to this bridge: a caller reaching a tailnet-bound socket directly,
+ *  bypassing serve, could set them itself, so they are read only when the request came in over
+ *  loopback (`remoteAddr`, the socket Bun accepted it on). A tagged device, Funnel traffic, local dev
+ *  with no `tailscale serve` in front, or a serve this old gives none of these — `null`. Pure. */
+export function tailscaleUserFromHeaders(headers: Headers, remoteAddr: string | undefined): TailscaleUser | null {
+  if (!remoteAddr || !isLoopback(remoteAddr)) return null;
+  const login = headers.get("tailscale-user-login");
+  if (!login) return null;
+  return { login, name: headers.get("tailscale-user-name") || undefined, picture: headers.get("tailscale-user-profile-pic") || undefined };
+}
+
+/** The answer with the CALLER's Tailscale identity on `self.tailscaleUser` (above), when it is
+ *  present and trusted. Added per request like `withIdentity`, never cached: it is who is asking
+ *  now, not a property of this server. Pure. */
+export function withTailscaleUser(answer: ServersAnswer, headers: Headers, remoteAddr: string | undefined): ServersAnswer {
+  const tailscaleUser = tailscaleUserFromHeaders(headers, remoteAddr);
+  return tailscaleUser ? { ...answer, self: { ...answer.self, tailscaleUser } } : answer;
 }
 
 export type WhoisVerdict = { ok: true; login: string } | { ok: false; reason: string };

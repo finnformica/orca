@@ -189,7 +189,7 @@ describe("console shell", () => {
     await mount();
     const profile = container!.querySelector<HTMLElement>('[data-slot="profile"]')!;
     expect(profile.className).toContain("h-9"); // one line, a nav row's height
-    expect(profile.textContent).toBe("Youlaptop"); // "You", a dot, then the machine
+    expect(profile.textContent).toBe("You"); // no Tailscale user here: the fallback
     expect(profile.querySelector("svg.lucide-chevrons-up-down")).not.toBeNull(); // it opens a menu, as branch-demo's user row
     // Add New is an outline button, full width on the lower surface, so it stands apart from the
     // content below — the nav rows' height and icon column, so it still lines up with them.
