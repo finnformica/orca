@@ -106,9 +106,12 @@ export type AdapterMeta = {
   caps: Capabilities;
   place?: string;
   secretExample?: string;
-  /** The variable a row names when the Connect form leaves the secret empty. */
+  /** The variable a row names when the Connect form leaves the secret empty — unless the config
+   *  key `storedSecretKey` names a stored Orca secret, which then holds the token instead. */
   secretDefault?: string;
-  config?: { key: string; label: string; placeholder?: string }[];
+  storedSecretKey?: string;
+  /** `type: "secret"`: the form offers the names in Orca's secret store (server/secrets.ts), never a value. */
+  config?: { key: string; label: string; placeholder?: string; type?: "text" | "secret" }[];
   help?: string;
 };
 

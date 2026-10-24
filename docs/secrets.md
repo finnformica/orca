@@ -61,6 +61,11 @@ orca secret pipe gh_token -- gh auth login --with-token
 orca secret env billing/api_key=STRIPE_KEY -- ./scripts/sync-prices.sh
 ```
 
+An integration can also use a stored secret as its token. The Cloudflare adapter does this
+(`tokenSecret`, [integrations/cloudflare.md](integrations/cloudflare.md)). The bridge decrypts the
+value with `secrets.reveal` and keeps it in memory only. No agent, log or `.env` file gets it. Each
+read writes one audit row with action `integration`.
+
 ## The paste guard
 
 The chat composer holds text that looks like a key before it is sent. It knows the shape of each of

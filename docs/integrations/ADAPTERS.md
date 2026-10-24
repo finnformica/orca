@@ -217,6 +217,11 @@ export type InboundMessage = {
    FIRST save of a row of that kind (`admin.saveIntegration`). Cloudflare uses it to make its
    catch-all link and its subscriptions to the orchestrator. A later edit does not run it, so a
    removed link or subscription stays removed.
+6. Optional: let the token come from Orca's secret store. Add a config field with `type: "secret"`
+   (the Connect form shows a Select of stored secret names, never a value), and name that key in
+   `meta.storedSecretKey`. When the key is set, `secretDefault` does not apply. Read the value in the
+   bridge with `secrets.reveal(ref, who, use)`: one audit row each call, so read it at start and on
+   `health`, not on each poll. Keep it in memory only. Cloudflare's key is `tokenSecret`.
 
 ## 6. Configure an integration
 

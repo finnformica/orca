@@ -94,10 +94,15 @@ const fail = (msg: string): never => { throw new AdminError(msg); };
 
 /** Connect (or edit) one integration. The secret is a variable NAME; the value never reaches here. */
 export async function saveIntegration(b: Record<string, unknown>): Promise<void> {
+  const meta = registry.meta(String(b.kind ?? ""));
+  const config = b.config && typeof b.config === "object" ? Object.fromEntries(Object.entries(b.config as Record<string, unknown>).filter(([, v]) => v !== "" && v != null)) : {};
+  // An empty secret field takes the kind's default variable — not when a stored Orca secret holds
+  // the token, or an Automatic row would wait for a variable that no bridge needs.
+  const stored = meta?.storedSecretKey ? config[meta.storedSecretKey] : undefined;
   const c = {
     id: String(b.id ?? "").trim(), kind: String(b.kind ?? ""), name: String(b.name ?? "").trim(), instance: String(b.instance ?? "").trim(),
-    secretRef: typeof b.secretRef === "string" && b.secretRef.trim() ? b.secretRef.trim() : registry.meta(String(b.kind ?? ""))?.secretDefault,
-    config: b.config && typeof b.config === "object" ? Object.fromEntries(Object.entries(b.config as Record<string, unknown>).filter(([, v]) => v !== "" && v != null)) : {},
+    secretRef: typeof b.secretRef === "string" && b.secretRef.trim() ? b.secretRef.trim() : stored ? undefined : meta?.secretDefault,
+    config,
     enabled: b.enabled !== false,
   };
   const problem = integrationProblem(c, registry.kinds().map((k) => k.kind), ORCA_SECRETS);

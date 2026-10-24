@@ -250,9 +250,11 @@ domain|errors`, place `zone:<name>` with parent `account`). Its whole state is o
 `integration_cursor`. The first Connect (`registry.onConnect`) makes a Viewer `*` link and the orchestrator's
 subscriptions (deploys as an hourly digest). It leaves out Orca's own confirmed writes (stored by `orca
 cloudflare … --confirm` as cursor row `cloudflare:own-writes`) and the deploy actors' audit entries (default
-`github`). `caps.outbound` is false: `orca post` to it is refused (`outboundRefusal`). The verb reads the token
-(the integration's secret, default `ORCA_SECRET_CLOUDFLARE`) and `config.accountId` of the connected
-integration, else the env (`ORCA_CLOUDFLARE_ACCOUNT_ID`). Reads cover Workers, deployments, versions, routes,
+`github`). `caps.outbound` is false: `orca post` to it is refused (`outboundRefusal`). The token is a stored Orca
+secret named by `config.tokenSecret` (the Connect form's "Token secret" Select, `secrets.reveal`: kept
+in memory, one audit row per read, at start and health only), else the integration's secret variable
+(default `ORCA_SECRET_CLOUDFLARE`). The verb reads the same token and `config.accountId`, else the env
+(`ORCA_CLOUDFLARE_ACCOUNT_ID`). Reads cover Workers, deployments, versions, routes,
 domains, Pages, R2, D1, DNS, analytics and the audit log. The writes are `rollback`, `delete`, `route
 add|remove`, `domain add|remove` and `dns add|remove`: a dry run without `--confirm`, a check of the target,
 a `[cloudflare]` log line with it, and your own chat only (`cloudflareWriteName`). No command uploads Worker

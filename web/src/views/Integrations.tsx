@@ -275,7 +275,9 @@ function IntegrationDialog({ kinds, options, existing, onClose, onSaved }: { kin
   const [config, setConfig] = useState<Record<string, string>>(() => Object.fromEntries(Object.entries(existing?.config ?? {}).map(([k, v]) => [k, String(v)])));
   const [busy, setBusy] = useState(false);
   const autoId = id || name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-  const body = { id: autoId, kind, name, instance, secretRef: secretRef || (existing ? "" : meta?.secretDefault ?? ""), config, enabled: existing?.enabled ?? true };
+  // A stored Orca secret chosen for the token (meta.storedSecretKey) takes the default variable's place.
+  const storedChosen = !!(meta?.storedSecretKey && config[meta.storedSecretKey]);
+  const body = { id: autoId, kind, name, instance, secretRef: secretRef || (existing || storedChosen ? "" : meta?.secretDefault ?? ""), config, enabled: existing?.enabled ?? true };
   const problem = integrationProblem(body, kinds.map((k) => k.kind), STRIPPED);
   const save = async () => { setBusy(true); const r = await act(existing ? `Save ${name}` : `Connect ${name}`, "save", body, onSaved); setBusy(false); if (r) onClose(); };
   return (
@@ -317,10 +319,37 @@ function IntegrationDialog({ kinds, options, existing, onClose, onSaved }: { kin
       </Field>
       {meta?.config?.map((f) => (
         <Field key={f.key} label={f.label} htmlFor={`int-cfg-${f.key}`}>
-          <Input id={`int-cfg-${f.key}`} value={config[f.key] ?? ""} placeholder={f.placeholder} onChange={(e) => setConfig({ ...config, [f.key]: e.target.value })} />
+          {f.type === "secret"
+            ? <StoredSecretSelect id={`int-cfg-${f.key}`} value={config[f.key] ?? ""} onChange={(v) => setConfig({ ...config, [f.key]: v })} />
+            : <Input id={`int-cfg-${f.key}`} value={config[f.key] ?? ""} placeholder={f.placeholder} onChange={(e) => setConfig({ ...config, [f.key]: e.target.value })} />}
         </Field>
       ))}
     </FormDialog>
+  );
+}
+
+const NO_STORED_SECRET = "__none__";
+
+/** A stored Orca secret by name (the store gives names only, never a value), or none: then the
+ *  secret variable above holds the token. */
+function StoredSecretSelect({ id, value, onChange }: { id: string; value: string; onChange: (v: string) => void }) {
+  const [names, setNames] = useState<string[] | undefined>();
+  useEffect(() => {
+    let live = true;
+    api.secretNames().then((r) => { if (live) setNames(r.secrets.map((s) => (s.scope === "default" ? s.name : `${s.scope}/${s.name}`))); }).catch(() => { if (live) setNames([]); });
+    return () => { live = false; };
+  }, []);
+  const choices = [...new Set([...(names ?? []), ...(value ? [value] : [])])];
+  return (
+    <Select value={value || NO_STORED_SECRET} onValueChange={(v) => onChange(v === NO_STORED_SECRET ? "" : v)}>
+      <SelectTrigger id={id} data-slot="integration-stored-secret" className="w-full font-mono"><SelectValue /></SelectTrigger>
+      <SelectContent>
+        <SelectItem value={NO_STORED_SECRET}><span className="font-sans">None: use the secret variable</span></SelectItem>
+        {choices.length > 0 && <SelectSeparator />}
+        {choices.map((n) => <SelectItem key={n} value={n}>{n}</SelectItem>)}
+        {names !== undefined && !names.length && <SelectLabel className="font-sans">No stored secrets yet. Save one with /secret in the chat.</SelectLabel>}
+      </SelectContent>
+    </Select>
   );
 }
 

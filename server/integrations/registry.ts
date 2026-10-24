@@ -80,16 +80,17 @@ register("linear", linearAdapter, {
 
 register("cloudflare", (c) => cloudflareAdapter(c), {
   label: "Cloudflare", caps: CLOUDFLARE_CAPS, place: "place (* = the whole account, zone:<name>)",
-  secretExample: "ORCA_SECRET_CLOUDFLARE", secretDefault: "ORCA_SECRET_CLOUDFLARE",
+  secretExample: "ORCA_SECRET_CLOUDFLARE", secretDefault: "ORCA_SECRET_CLOUDFLARE", storedSecretKey: "tokenSecret",
   config: [
     { key: "accountId", label: "Account id", placeholder: "32 hex characters, from the account home page" },
+    { key: "tokenSecret", label: "Token secret (a stored Orca secret; else the secret variable)", type: "secret" },
     { key: "pollMinutes", label: "Poll every (minutes)", placeholder: "5" },
     { key: "errorRatePct", label: "Worker error-rate threshold (%)", placeholder: "5" },
     { key: "minRequests", label: "Fewest requests for an error alert", placeholder: "100" },
     { key: "zones", label: "Zones to watch (comma-separated; empty = all)", placeholder: "example.com" },
     { key: "deployActors", label: "Deploy actors to leave out (comma-separated)", placeholder: "github" },
   ],
-  help: "An account API token. Orca polls the account (audit log, deploys, Worker errors, custom domains, DNS) and tells the orchestrator; it takes no posts. Setup: docs/integrations/cloudflare.md.",
+  help: "An account API token, from Orca's secret store or a secret variable. Orca polls the account (audit log, deploys, Worker errors, custom domains, DNS) and tells the orchestrator; it takes no posts. Setup: docs/integrations/cloudflare.md.",
 }, cloudflareDefaults);
 
 /** Every registered kind with what the Settings page shows for it. A kind with no meta gets a plain one. */
