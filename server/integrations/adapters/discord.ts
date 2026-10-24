@@ -27,6 +27,7 @@
 // only when the bot wrote it: a person's message is refused. Edits PATCH the message. A 429 is retryable with Discord's `retry_after`. The bot token is
 // `secretRef` (ORCA_SECRET_DISCORD_BOT) — never logged, never in `raw`.
 import type { Adapter, AdapterContext, Connection } from "../adapter";
+import { secretValue } from "../secretRefs";
 import * as db from "../../db";
 import { attachmentIdOf, attachmentRefusal, clip, inboundEnvelope, type Capabilities, type OutboundMessage, type SendResult, type Target, type Topic } from "../../../shared/integrations";
 
@@ -299,7 +300,7 @@ const remember = (map: Map<string, string>, k: string, v: string) => {
 const threadName = (msg: OutboundMessage): string => msg.title || msg.text.split("\n")[0] || "Orca";
 
 export function discordAdapter(connection: Connection): Adapter {
-  const token = () => (connection.secretRef ? process.env[connection.secretRef] : undefined) ?? "";
+  const token = () => secretValue(connection.secretRef) ?? "";
   const dmLink = typeof connection.config.dmLink === "string" && connection.config.dmLink ? connection.config.dmLink : undefined;
   // Off unless `config.threads` is true (Settings stores the text "true"): Orca answers where it was
   // mentioned (docs/integrations/discord.md).

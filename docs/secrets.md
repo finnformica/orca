@@ -61,14 +61,13 @@ orca secret pipe gh_token -- gh auth login --with-token
 orca secret env billing/api_key=STRIPE_KEY -- ./scripts/sync-prices.sh
 ```
 
-## Integration secrets
+Every integration can use a stored secret as its token or password: set its secret ref to
+`secret:<name>` ([integrations/ADAPTERS.md](integrations/ADAPTERS.md) section 14). The bridge
+decrypts the value with `secrets.reveal` when the adapter starts, and keeps it in memory only. No
+agent, log or `.env` file gets it. Each read writes one audit row with action `integration`.
 
-An integration's `secret_ref` names an environment variable. It can also name a stored secret of the
-same name, in the `integrations` or the `default` scope (`server/integrations/secretValue.ts`). The
-env var wins. The bridge reads the value itself; no agent gets it.
-
-Orca stores some integration secrets itself, in the `integrations` scope. The Gmail adapter keeps
-its refresh token as `integrations/gmail.<integration id>.refresh_token` ([gmail.md](integrations/gmail.md)).
+Orca also stores one integration secret itself: the Gmail adapter keeps each account's refresh
+token as `integrations/gmail.<integration id>.refresh_token` ([gmail.md](integrations/gmail.md)).
 Disconnect and Remove delete it.
 
 ## The paste guard

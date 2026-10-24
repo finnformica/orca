@@ -112,10 +112,6 @@ export async function refresh(): Promise<void> {
   }
 }
 
-/** The cached value of one stored secret (`scope/name`, or `name` in the default scope), or
- *  undefined. Synchronous, from the cache; for server/integrations/secretValue.ts only. */
-export const cachedValue = (ref: string): string | undefined => cache.find((c) => c.ref === ref)?.value;
-
 /** When the cache was last read (0: never). */
 export const cachedAt = (): number => cacheAt;
 
@@ -196,6 +192,18 @@ export async function valueOf(ref: string): Promise<string> {
 }
 
 // ---- use ----
+
+/** A stored value for a BRIDGE-side caller only (an integration's token, `secret:<name>`:
+ *  server/integrations/secretRefs.ts). It never goes to an agent, an env file or a log; the caller keeps it in memory.
+ *  One audit row per call (`action` "integration", `command` = what used it). */
+export async function reveal(ref: string, who: string, use: string): Promise<string> {
+  const s = await resolve(ref);
+  const k = key();
+  if (s.keyId !== k.id) throw new SecretError(`"${secretRef(s.scope, s.name)}" was stored with key ${s.keyId}, but this bridge has key ${k.id}. Run it on the instance that stored it, or set ${SECRETS_KEY_ENV} to the same key on every instance.`);
+  const value = decrypt(s.ciphertext, k);
+  await db.addSecretUse({ scope: s.scope, name: s.name, action: "integration", command: use, who, at: Date.now() });
+  return value;
+}
 
 /** The env variable for `env <name>[=VAR]`: VAR, else the name in capitals ("openai-key" → OPENAI_KEY). */
 export function envVarFor(spec: string): { ref: string; variable: string } {

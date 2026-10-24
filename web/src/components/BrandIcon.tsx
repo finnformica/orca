@@ -2,7 +2,7 @@
 // Paths from simple-icons 13.21 (CC0, https://simpleicons.org), only the ones Orca's adapters use, so
 // the bundle carries five paths and not the set. A kind with no brand (email, webhook, web) or a kind
 // a later adapter adds gets a lucide icon.
-import { Globe, Mail, Plug, Webhook } from "lucide-react";
+import { Cloud, Globe, Mail, Plug, Webhook } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type Brand = { title: string; paths: { d: string; fill: string }[] };
@@ -24,7 +24,7 @@ export const BRANDS: Record<string, Brand> = {
   linear: { title: "Linear", paths: [{ fill: "#5E6AD2", d: "M2.886 4.18A11.982 11.982 0 0 1 11.99 0C18.624 0 24 5.376 24 12.009c0 3.64-1.62 6.903-4.18 9.105L2.887 4.18ZM1.817 5.626l16.556 16.556c-.524.33-1.075.62-1.65.866L.951 7.277c.247-.575.537-1.126.866-1.65ZM.322 9.163l14.515 14.515c-.71.172-1.443.282-2.195.322L0 11.358a12 12 0 0 1 .322-2.195Zm-.17 4.862 9.823 9.824a12.02 12.02 0 0 1-9.824-9.824Z" }] },
 };
 
-const GENERIC: Record<string, typeof Plug> = { email: Mail, webhook: Webhook, web: Globe };
+const GENERIC: Record<string, typeof Plug> = { email: Mail, webhook: Webhook, web: Globe, cloudflare: Cloud };
 
 /** The service name for a kind: the brand's title, else the kind itself. */
 export const brandTitle = (kind: string): string => BRANDS[kind]?.title ?? kind;

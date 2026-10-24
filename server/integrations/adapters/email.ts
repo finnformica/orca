@@ -14,6 +14,7 @@ import * as db from "../../db";
 import { ORCA_SECRETS } from "../../env";
 import { clip, inboundEnvelope, secretRefRefusal, type Capabilities, type OutboundMessage, type SendResult, type Target } from "../../../shared/integrations";
 import type { Adapter, AdapterContext, Connection } from "../adapter";
+import { secretValue } from "../secretRefs";
 import { ImapClient } from "./email/imap";
 import { buildMail, gate, outboundMessageId, parseMail, replyHeaders, stripQuotedReply, threadOf, type ParsedMail } from "./email/mime";
 import { sendMail, SmtpError, type SmtpSecurity } from "./email/smtp";
@@ -132,7 +133,8 @@ export function emailAdapter(connection: Connection): Adapter {
   let state: { ok: boolean; detail: string } = { ok: false, detail: "not started" };
   let pos = { uidValidity: 0, uid: 0 };
 
-  const env = (ref?: string) => (ref ? process.env[ref] : undefined) || undefined;
+  // A variable or a stored secret (`secret:<name>`, loaded by the registry at start): secretRefs.ts.
+  const env = (ref?: string) => secretValue(ref);
   const imapPassword = () => ctx?.secret() ?? env(connection.secretRef);
   const report = async (ok: boolean, detail: string) => {
     state = { ok, detail };

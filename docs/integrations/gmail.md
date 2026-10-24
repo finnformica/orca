@@ -159,31 +159,29 @@ For an **External** app, do these steps too:
 
 ## 5. Give the client secret to Orca
 
-The client secret is the integration's secret. Use one of these:
+The client secret is the integration's **Secret** (its secret ref, [ADAPTERS.md](ADAPTERS.md)
+section 14). Use one of these:
 
-- Store it as an Orca stored secret with any name, for example with the composer's `/secret`. Then
-  type its path (`scope/name`, for example `chat/google-oauth`) in the Connect form's **Client
-  secret: stored Orca secret** box (`clientSecretStored`). This path wins over the two ways below.
-  Orca refuses the secret itself in that box: config is plain text in the database.
-- Put it in the `.env` of each bridge that can run the integration, then restart that bridge:
+- Store it in Orca's secret store, for example with the composer's `/secret`. Then type
+  `secret:<scope>/<name>` (for example `secret:chat/google-oauth`) in the Connect form's **Secret**
+  box. The bridge decrypts it into its memory only.
+- Or put it in the `.env` of each bridge that can run the integration, then restart that bridge.
+  Leave the **Secret** box empty for the default name:
 
   ```bash
   ORCA_SECRET_GOOGLE_OAUTH=GOCSPX-…
   ```
 
-- Or store it as an Orca stored secret named `ORCA_SECRET_GOOGLE_OAUTH`, in the `integrations` or the
-  `default` scope (a form's secret field, or the composer's `/secret`). Orca uses the env var first.
-
-You can use another name. Type it in the **Secret variable** box of the Connect form. It must start
-with `ORCA_SECRET_`, so agents never see it. An empty box means `ORCA_SECRET_GOOGLE_OAUTH`.
+A variable name must start with `ORCA_SECRET_`, so agents never see it. A stored secret must be
+readable with this bridge's key: set the same `ORCA_SECRETS_KEY` on each instance, or pin the row.
 
 ## 6. Connect in Orca
 
 1. Open **Integrations** and click **Connect**.
 2. Select the kind **Gmail**. Type a short name for the account, for example `work`.
 3. Paste the **OAuth client id**. It is not a secret, but keep it out of the repo: it is per box.
-4. If the client secret is a stored Orca secret, type its path in **Client secret: stored Orca
-   secret**.
+4. In **Secret**, type `secret:<scope>/<name>` of the stored client secret. Leave it empty for the
+   `ORCA_SECRET_GOOGLE_OAUTH` variable.
 5. Change the **Gmail query** if you want. Empty means `label:Orca OR to:<you>+orca@<your domain>`.
 6. Click **Save**.
 7. On the new card, click **Connect with Google**.
@@ -239,7 +237,6 @@ Each value can be a string, as the Settings form saves it.
 | Key | Default | Meaning |
 |---|---|---|
 | `clientId` | (required) | The OAuth client id. |
-| `clientSecretStored` | none | The path (`scope/name`) of a stored Orca secret that holds the client secret. It wins over the secret variable. |
 | `query` | `label:Orca OR to:<you>+orca@<domain>` | The Gmail search that selects Orca's mail. |
 | `pollSeconds` | 30 | The poll interval in seconds, at least 10. An account with Events **Off** does not poll. |
 | `allowedSenders` | none | Addresses, or `@domain` for a domain, separated by commas. Empty: every sender that the query finds. |

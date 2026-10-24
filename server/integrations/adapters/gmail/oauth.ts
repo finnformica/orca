@@ -11,20 +11,22 @@
 //    token as the stored secret `integrations/gmail.<id>.refresh_token`, and records the account.
 // The access token stays in memory. A refresh token Google refuses (revoked, expired) marks the row
 // "reconnect needed" and is not tried again until a new Connect stores another one.
-// The client secret is the variable the row's secret_ref names (default ORCA_SECRET_GOOGLE_OAUTH),
-// else an Orca stored secret of that name (../../secretValue.ts).
+// The client secret is the row's secret_ref (default ORCA_SECRET_GOOGLE_OAUTH): a variable, or
+// secret:<stored name> through the core's shared secret refs (../../secretRefs.ts).
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import * as db from "../../../db";
 import * as secrets from "../../../secrets";
 import type { Connection } from "../../adapter";
-import { INTEGRATION_SCOPE, resolveSecret } from "../../secretValue";
+import * as secretRefs from "../../secretRefs";
 import * as store from "../../store";
 import { connectOriginProblem } from "../../../../shared/integrationSettings";
-import { authorizeUrl, endpoints, exchangeCode, Gmail, GoogleError, pkce, redirectUriFor, refreshAccess, revoke, SCOPE, consentScopes, storedSecretPathProblem, missingScopes, type GmailAccess } from "./google";
+import { authorizeUrl, endpoints, exchangeCode, Gmail, GoogleError, pkce, redirectUriFor, refreshAccess, revoke, SCOPE, consentScopes, missingScopes, type GmailAccess } from "./google";
 
 export const CLIENT_SECRET_DEFAULT = "ORCA_SECRET_GOOGLE_OAUTH";
 export const PENDING_TTL_MS = 10 * 60_000;
 export const refreshTokenName = (id: string): string => `gmail.${id}.refresh_token`;
+/** The scope Orca keeps its own integration secrets in (the Gmail refresh token). */
+export const INTEGRATION_SCOPE = "integrations";
 const refreshRef = (id: string) => `${INTEGRATION_SCOPE}/${refreshTokenName(id)}`;
 const pendingKey = (id: string) => `${id}:oauth`;
 
@@ -57,21 +59,15 @@ function clientId(c: Connection): string {
 }
 
 async function clientSecret(c: Connection): Promise<string> {
-  // A stored-secret path in the config (`clientSecretStored`, e.g. a secret saved with /secret) wins.
-  const stored = typeof c.config.clientSecretStored === "string" ? c.config.clientSecretStored.trim() : "";
-  if (stored) {
-    const why = storedSecretPathProblem(stored);
-    if (why) throw new OAuthError(why, "config", c.id);
-    try { return await secrets.valueOf(stored); }
-    catch (e) {
-      const notFound = e instanceof secrets.SecretError && e.status === 404;
-      throw new OAuthError(notFound ? `the stored secret "${stored}" does not exist (orca secret list shows the names)` : e instanceof Error ? e.message : String(e), "config", c.id);
-    }
-  }
+  // The row's secret ref, through the core's shared secret refs: a variable, or secret:<stored name>
+  // (decrypted into this bridge's memory; ensureLoaded, since Connect may run on a bridge that does
+  // not run the adapter).
   const ref = clientSecretRef(c);
-  const r = await resolveSecret(ref).catch((e) => { throw new OAuthError(e instanceof Error ? e.message : String(e), "config", c.id); });
-  if (!r) throw new OAuthError(`${ref} is not set on this bridge: put the OAuth client secret in its .env, or store it as an Orca secret named ${ref}`, "config", c.id);
-  return r.value;
+  try { await secretRefs.ensureLoaded({ ...c, secretRef: ref }); }
+  catch (e) { throw new OAuthError(e instanceof Error ? e.message : String(e), "config", c.id); }
+  const value = secretRefs.secretValue(ref);
+  if (!value) throw new OAuthError(`${ref} is not set on this bridge: set the secret to secret:<name> of the stored client secret (saved with /secret), or put ${ref} in the bridge's .env`, "config", c.id);
+  return value;
 }
 
 async function gmailRow(id: string): Promise<Connection> {

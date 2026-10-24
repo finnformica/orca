@@ -1,7 +1,7 @@
 # How to write an Orca adapter
 
 This guide is for the branches that stack on the integrations core: Slack two-way, Discord, email,
-the Settings page, the GitHub poller and Linear. The design is
+the Settings page, the GitHub poller, Linear and Cloudflare. The design is
 [docs/research/integrations.md](../research/integrations.md) section 3. Read this guide first. Do not
 change the core to add an adapter. If an adapter needs a core change, change the core in its own
 commit and update this guide.
@@ -40,7 +40,6 @@ An adapter does only these tasks:
 | `server/integrations/inbox.ts` | The orchestrator and workstream targets. |
 | `server/integrations/store.ts` | All SQL. |
 | `server/integrations/adapters/` | `web.ts`, `webhook.ts`, `slack.ts` (setup: [slack.md](slack.md)), `email.ts` (setup: [email.md](email.md)), `gmail.ts` (setup: [gmail.md](gmail.md)). Put a new adapter here. |
-| `server/integrations/secretValue.ts` | An integration's secret: the variable `secret_ref` names, else an Orca stored secret of that name. |
 
 ## 3. The interface
 
@@ -49,7 +48,7 @@ This is the exact contract (`server/integrations/adapter.ts`):
 ```ts
 export type Connection = {
   id: string;
-  kind: AdapterKind;            // "slack" | "discord" | "email" | "github" | "linear" | "webhook" | "web" | string
+  kind: AdapterKind;            // "slack" | "discord" | "email" | "github" | "linear" | "cloudflare" | "webhook" | "web" | string
   name: string;
   instance: string;             // the ONE instance that runs it, or "*" (Automatic)
   auto?: AutoLease;             // Automatic only: the lease holder and its end time
@@ -188,6 +187,10 @@ export type InboundMessage = {
 - `msg.newThread` (`orca post --new-thread "<name>"`): post as usual, then open a thread with that
   name on the post. Return the thread's id as `threadId`. If the platform refuses the thread, keep
   the post and return no new thread. Only Discord does this now.
+- An inbound-only adapter (Cloudflare) sets `caps.outbound: false`. Its `send` returns
+  `{ ok: false, retryable: false }`. `orca post` to its link refuses before it queues
+  (`outboundRefusal`), and `fenceExternal` tells the orchestrator there is no sender to answer
+  (`TAKES_NO_POSTS` in `shared/integrations.ts`).
 
 ### `delete(target, externalMsgId)` (optional)
 
@@ -216,19 +219,26 @@ export type InboundMessage = {
 3. Add the kind's topics to `Topic` in `shared/integrations.ts` only if `ext.<kind>.<event>` is not
    enough.
 4. Write a test in `tests/` that drives the adapter with a stubbed `fetch` or a fake server.
+5. Optional: pass `meta.secretDefault` (the variable a row names when the Connect form leaves the
+   secret empty) and a fourth argument, `onConnect(connection)`. The registry runs it once, on the
+   FIRST save of a row of that kind (`admin.saveIntegration`). Cloudflare uses it to make its
+   catch-all link and its subscriptions to the orchestrator. A later edit does not run it, so a
+   removed link or subscription stays removed.
+6. Read every secret with `secretValue(ref)` (`server/integrations/secretRefs.ts`) or
+   `ctx.secret()`, never `process.env` directly. Then a stored secret works for your adapter too
+   (section 14).
 
 ## 6. Configure an integration
 
 Use Settings > Integrations (`/settings/integrations`): Connect, links, people, subscriptions and Retry. A new kind shows there when it registers with `meta` (`register(kind, factory, meta)`). You can also use SQL or `store.ts` from a script:
 
-1. Put the token in the environment (`.env` or the systemd unit) of each instance that can run it. Name it
-   `ORCA_SECRET_<SOMETHING>`. The agent environment strips every `ORCA_SECRET_*` variable. The
-   registry refuses any other name, except the names in `ORCA_SECRETS` (`server/env.ts`).
-   You can also store the value as an Orca stored secret with the same name, in the `integrations`
-   or the `default` scope (`server/integrations/secretValue.ts`). The env var wins when both are set.
-   `ctx.secret()` and the registry's secret check read both.
+1. Put the token in Orca's secret store (`/secret` in the chat), or in the environment (`.env` or the
+   systemd unit) of each instance that can run it. Name a variable `ORCA_SECRET_<SOMETHING>`. The
+   agent environment strips every `ORCA_SECRET_*` variable. The registry refuses any other name,
+   except the names in `ORCA_SECRETS` (`server/env.ts`). Section 13 has the stored form.
 2. Add an `integration` row: `id`, `kind`, `name`, `instance` (`*` for Automatic, or the one
-   instance that runs it, section 6.1), `config`, `secret_ref` (the variable name).
+   instance that runs it, section 6.1), `config`, `secret_ref` (the variable name, or
+   `secret:<stored name>`).
 3. Add a `channel_link` row for each external place: `level` (`notify`, `ask`, `work` or `admin`),
    `repos` (for `work` and `admin`), `require_mention`.
 4. Add `principal` and `identity` rows for each person who may act through Orca. Use the People
@@ -335,10 +345,11 @@ no public address, because the browser makes both redirects.
 | Slack two-way (done: [slack.md](slack.md)) | `ingest`, `inboundEnvelope`, `thread`, `source.parents`, thread links, `caps.edits`. | A poll in `start` (`inbound: "poll"`, a JSON cursor) with your user token `SLACK_TOKEN` alone; Socket Mode only when `SLACK_APP_TOKEN` is set, so Orca posts as you and never posts by itself (`postsAsUser`). `postAsUser` keeps "post as me". |
 | Discord | The same as Slack. | Gateway in `start`. Automatic or pinned: only one bridge runs it (section 6.1). |
 | Email | `OutboundMessage.replyToExternalMsgId` and `references`, `idempotencyKey` as the Message-ID, `ConversationRef.messageId`, `cursor` for an IMAP UID. | IMAP IDLE in `start`. A DKIM check before `ingest`. |
-| Gmail (done: [gmail.md](gmail.md)) | The email adapter's MIME parse, `cursor` (a History API `historyId`), Gmail thread ids as `thread`, stored secrets (`secretValue.ts`). | Connect with Google (OAuth code + PKCE, `meta.oauth`), one named row per account, read only (`caps.outbound: false`), the core's policy (`meta.verbs`, `meta.policyDefaults`: read, off; no poll with events `off`), the query match by Gmail itself. |
+| Gmail (done: [gmail.md](gmail.md)) | The email adapter's MIME parse, `cursor` (a History API `historyId`), Gmail thread ids as `thread`, shared secret refs (`secretRefs.ts`; the client secret as `secret:<name>`), a stored secret it writes itself (the refresh token). | Connect with Google (OAuth code + PKCE, `meta.oauth`), one named row per account, read only (`caps.outbound: false`), the core's policy (`meta.verbs`, `meta.policyDefaults`: read, off; no poll with events `off`), the query match by Gmail itself. |
 | Settings UI | `store.ts` (every table), `registry.health()`, `store.retryDead()`, `GET /api/integrations`, the pairing routes (section 10). | Routes to write rows. A Test button that calls `publish` with a test key. An Approve / Deny list over `GET /api/integrations/pairing`. |
 | GitHub poller | `cursor` (an ETag or a timestamp), `ingest` without `actor`, topics `orca.pr.*` or `ext.github.*`. | A poll loop in `start` (`inbound: "poll"`). |
 | Linear | The same as the GitHub poller, plus thread links for issues. | GraphQL polls. |
+| Cloudflare (done: [cloudflare.md](cloudflare.md)) | `cursor` (one JSON state), `ingest` without `actor`, topics `ext.cloudflare.*`, `source.parents` (`zone:<name>` in `account`). | A poll loop in `start`; no outbound (`caps.outbound: false`); `onConnect` for its link and subscriptions. |
 | Unified inbox | The `event` table (`ext.*.message`, `orca.question`). | A view. |
 
 ## 9. Behaviour that stays as before
@@ -467,9 +478,46 @@ What a new adapter does:
 3. Optional: skip an inbound poll when `connection.events === "off"`. The core drops the events
    anyway, so this only saves platform calls.
 
-A kind with a CLI but no adapter yet calls `registerVerbs(kind, verbs)` (Cloudflare now). When
-its adapter registers `meta.verbs`, the meta wins.
+A kind with a CLI but no adapter yet calls `registerVerbs(kind, verbs)`. When its adapter
+registers `meta.verbs`, the meta wins. Cloudflare's adapter registers `CLOUDFLARE_VERBS`
+(`shared/integrations.ts`), the same table the grant check reads.
 
 Several accounts of one kind: each is its own row. `--account <id or name>` picks one. With one
 row, it is the default. With several and no `--account`, the verb fails and lists them.
 
+## 14. Secrets: a variable or Orca's secret store
+
+Every secret ref of an integration has one of two forms:
+
+| Form | Example | Where the value is |
+|---|---|---|
+| A variable name | `ORCA_SECRET_EMAIL_IMAP` | The bridge's environment (`.env`). It must start with `ORCA_SECRET_` or be in `ORCA_SECRETS`. |
+| `secret:<name>` or `secret:<scope>/<name>` | `secret:gmail-app` | Orca's encrypted secret store ([docs/secrets.md](../secrets.md)): `/secret` in the chat, or an `ask-form` secret field. |
+
+A secret ref is the row's `secret_ref`, and each config key that ends in `Ref`, nested keys too:
+email's `smtpSecretRef` (`smtp.secretRef`) and `resendSecretRef` (`resend.secretRef`), Slack's
+`appTokenRef`. `secretRefRefusal` checks both forms. A plain value is refused.
+
+How a stored secret reaches an adapter (`server/integrations/secretRefs.ts`):
+
+1. Before `start`, the registry decrypts each stored secret that the row names (`secretRefs.load`).
+   It keeps the values in the bridge's memory only. Each read writes one audit row (action
+   `integration`, command = the kind, who = `integration <id>`).
+2. The adapter reads it with `secretValue(ref)` or `ctx.secret()`, like a variable.
+3. Each sync (every minute) compares the stored secret's `updated_at`. A changed or deleted secret
+   stops the adapter, and the registry starts it again. That start loads the new value, or fails
+   with the reason on the card (`no secret "gmail-app"`).
+4. An Automatic row goes only to a primary whose key can decrypt every stored secret it names
+   (`secretRefs.readable`). Set the same `ORCA_SECRETS_KEY` on each instance, or pin the row.
+
+Rules:
+
+- No value goes to a file, a log, the environment or an agent's spawn. `secrets.scrub` masks a
+  stored value in tool output and posts.
+- A `secret:` ref never falls back to a variable, and a variable never falls back to the store.
+- The Connect form has a **Stored secret** Select for every kind. It lists the store's names, never
+  a value, and writes `secret:<name>` as the secret_ref. For a config ref (email's SMTP and Resend
+  boxes), type `secret:<name>`.
+- An `orca <kind>` verb gets the account's stored secrets from `policy.useAccount` (section 13): it
+  loads any that this bridge has not loaded yet, or that changed (`secretRefs.ensureLoaded`), and
+  `policy.accountEnv` reads them through `secretValue`.

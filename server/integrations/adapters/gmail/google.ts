@@ -47,14 +47,6 @@ export function consentScopes(access: GmailAccess, granted?: readonly string[], 
   return fresh || !granted?.length || !missing.length ? scopesFor(access) : missing;
 }
 
-/** Why `v` is not a stored-secret path (`scope/name` or `name`), or undefined. A value that looks
- *  like the secret itself (Google's `GOCSPX-…`) is refused: config is plain text in the database. Pure. */
-export function storedSecretPathProblem(v: string): string | undefined {
-  if (/^GOCSPX-/i.test(v) || v.length > 129) return "config.clientSecretStored takes the NAME of a stored Orca secret (scope/name), not the secret itself. Store the secret first (the composer's /secret), then name it here";
-  if (!/^(?:[A-Za-z0-9_.-]{1,64}\/)?[A-Za-z_][A-Za-z0-9_.-]{0,63}$/.test(v)) return `config.clientSecretStored "${v.slice(0, 40)}" is not a stored secret path (scope/name)`;
-  return undefined;
-}
-
 /** The callback path. The redirect URI is the Orca page's origin + this path. */
 export const CALLBACK_PATH = "/api/integrations/oauth/google/callback";
 export const redirectUriFor = (origin: string): string => `${origin.replace(/\/+$/, "")}${CALLBACK_PATH}`;
