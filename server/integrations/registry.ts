@@ -84,7 +84,7 @@ register("cloudflare", (c) => cloudflareAdapter(c), {
   secretExample: "ORCA_SECRET_CLOUDFLARE", secretDefault: "ORCA_SECRET_CLOUDFLARE",
   config: [
     { key: "accountId", label: "Account id", placeholder: "32 hex characters, from the account home page" },
-    { key: "pollMinutes", label: "Poll every (minutes)", placeholder: "5" },
+    { key: "pollSeconds", label: "Poll every (seconds, at least 30)", placeholder: "120" },
     { key: "errorRatePct", label: "Worker error-rate threshold (%)", placeholder: "5" },
     { key: "minRequests", label: "Fewest requests for an error alert", placeholder: "100" },
     { key: "zones", label: "Zones to watch (comma-separated; empty = all)", placeholder: "example.com" },

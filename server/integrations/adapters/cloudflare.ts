@@ -1,5 +1,6 @@
 // The Cloudflare adapter (setup: docs/integrations/cloudflare.md). Inbound only: the bridge has no
-// public address, so there are no Cloudflare webhooks. Every `pollMinutes` it reads one account with
+// public address, so there are no Cloudflare webhooks. Every `pollSeconds` (default 120, at least 30)
+// it reads one account with
 // the account API token its secret_ref names (default ORCA_SECRET_CLOUDFLARE, or `secret:<name>` for
 // Orca's secret store — the registry loads it, server/integrations/secretRefs.ts) and compares
 // with what it saw last time:
@@ -32,7 +33,14 @@ import { secretValue } from "../secretRefs";
 export const CLOUDFLARE_CAPS: Capabilities = {
   inbound: "poll", outbound: false, threads: false, edits: false, reactions: false, attachments: false, maxTextLength: 0,
 };
-export const DEFAULT_POLL_MINUTES = 5;
+export const DEFAULT_POLL_SECONDS = 120;
+export const MIN_POLL_SECONDS = 30;
+/** Deployment reads in one tick at most (one per new or changed Worker). The rest wait for the
+ *  next tick, so a tick costs at most this + 4 calls: audit, Workers, custom domains, GraphQL.
+ *  At the minimum interval that is 140 calls in 5 minutes; Cloudflare allows 1,200 per token. */
+export const MAX_DEPLOYMENT_READS = 10;
+/** After a 429 the next tick waits twice as long each time, up to this; a clean tick resets it. */
+export const MAX_BACKOFF_MS = 15 * 60_000;
 export const DEFAULT_ERROR_RATE_PCT = 5;
 export const DEFAULT_MIN_REQUESTS = 100;
 export const DEFAULT_DEPLOY_ACTORS = ["github"];
@@ -51,7 +59,7 @@ export const DEFAULT_SUBSCRIPTIONS: { topic: `ext.cloudflare.${CloudflareTopic}`
 
 // ── Config ───────────────────────────────────────────────────────────────────────────────────────
 
-export type CloudflareConfig = { accountId?: string; pollMinutes: number; errorRatePct: number; minRequests: number; zones: string[]; deployActors: string[] };
+export type CloudflareConfig = { accountId?: string; pollSeconds: number; errorRatePct: number; minRequests: number; zones: string[]; deployActors: string[] };
 
 const list = (v: unknown): string[] | undefined =>
   Array.isArray(v) ? v.map(String).map((s) => s.trim().toLowerCase()).filter(Boolean)
@@ -66,7 +74,9 @@ export function cloudflareConfig(raw: Record<string, unknown>, env: Record<strin
   const accountId = (typeof raw.accountId === "string" && raw.accountId.trim()) || env[CLOUDFLARE_ACCOUNT_ENV]?.trim() || undefined;
   return {
     ...(accountId ? { accountId } : {}),
-    pollMinutes: num(raw.pollMinutes, DEFAULT_POLL_MINUTES, 1),
+    // `pollMinutes` is the first cut's key, kept as an alias when `pollSeconds` is not set.
+    // Under the minimum is raised to it, not dropped to the default.
+    pollSeconds: Math.max(MIN_POLL_SECONDS, num(raw.pollSeconds ?? (raw.pollMinutes !== undefined && raw.pollMinutes !== "" ? Number(raw.pollMinutes) * 60 : undefined), DEFAULT_POLL_SECONDS, 1)),
     errorRatePct: num(raw.errorRatePct, DEFAULT_ERROR_RATE_PCT, 0.01),
     minRequests: num(raw.minRequests, DEFAULT_MIN_REQUESTS, 1),
     zones: list(raw.zones) ?? [],
@@ -303,7 +313,13 @@ export function batchEnvelopes(connectionId: string, account: string, items: Wat
 
 // ── The adapter ──────────────────────────────────────────────────────────────────────────────────
 
-export type PollResult = { items: number; ingested: number; problems: string[]; error?: string };
+export type PollResult = { items: number; ingested: number; problems: string[]; error?: string; rateLimited?: boolean };
+
+/** The wait before the next tick: the interval, doubled for each rate-limited tick in a row. Pure. */
+export function pollDelayMs(pollSeconds: number, limitedInARow: number): number {
+  return Math.min(pollSeconds * 1000 * 2 ** Math.max(0, limitedInARow), Math.max(MAX_BACKOFF_MS, pollSeconds * 1000));
+}
+const isRateLimit = (e: unknown): boolean => /\(429\)|rate.?limit/i.test(errText(e));
 export type CloudflareDeps = { base?: string; fetch?: typeof fetch; now?: () => Date; env?: Record<string, string | undefined>; ownWrites?: () => Promise<OwnWrite[]> };
 export type CloudflareAdapter = Adapter & { poll(): Promise<PollResult> };
 type Health = { ok: boolean; detail?: string; lastEventAt?: number; lastPollAt?: number };
@@ -319,6 +335,7 @@ export function cloudflareAdapter(connection: Connection, deps: CloudflareDeps =
   let lastEventAt: number | undefined, lastPollAt: number | undefined;
   let inFlight: Promise<PollResult> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let limitedInARow = 0;
 
   // The registry loaded a stored secret before start (and loads it again on rotation).
   const fromStore = storedSecretName(tokenRef(connection)) !== undefined;
@@ -342,7 +359,12 @@ export function cloudflareAdapter(connection: Connection, deps: CloudflareDeps =
     const next: WatchState = prev ? structuredClone(prev) : { v: 1, polledAt: iso, auditAt: iso, seen: [], workers: {}, domains: {}, alerting: [] };
     const items: WatchItem[] = [];
     const problems: string[] = [];
-    const step = async (name: string, fn: () => Promise<void>) => { try { await fn(); } catch (e) { problems.push(`${name}: ${errText(e)}`); } };
+    // A 429 ends the tick: the steps after it keep their last state and run on the next tick.
+    let rateLimited = false;
+    const step = async (name: string, fn: () => Promise<void>) => {
+      if (rateLimited) return;
+      try { await fn(); } catch (e) { problems.push(`${name}: ${errText(e)}`); if (isRateLimit(e)) rateLimited = true; }
+    };
 
     await step("audit log", async () => {
       if (!prev) return; // the first poll starts the cursor at now: no history replayed
@@ -359,7 +381,12 @@ export function cloudflareAdapter(connection: Connection, deps: CloudflareDeps =
         (await c.get<{ deployments?: Deployment[] }>(c.acct(`/workers/scripts/${encodeURIComponent(name)}/deployments`), PERMISSIONS.scripts))?.deployments?.[0];
       next.workers = Object.fromEntries(scripts.map((s) => [s.id, { ...before[s.id], modified: s.modified_on, created: s.created_on }]));
       if (!prev) return; // the first poll is the baseline
+      // At most MAX_DEPLOYMENT_READS deployment reads a tick: a Worker past the cap keeps its old
+      // state (a new one stays unknown), so the next tick sees it as new or changed again.
+      let reads = 0;
+      const budget = () => reads++ < MAX_DEPLOYMENT_READS;
       for (const s of diff.added) {
+        if (!budget()) { delete next.workers[s.id]; continue; }
         const d = await newest(s.id).catch(() => undefined);
         next.workers[s.id]!.deployment = d?.id;
         if (isOwnWrite(s.id, ms(s.created_on), own)) continue;
@@ -373,6 +400,7 @@ export function cloudflareAdapter(connection: Connection, deps: CloudflareDeps =
           line: [utc(t.getTime()), "deleted Worker", one(name), `read: orca cloudflare audit --resource ${one(name)} --since ${prev.polledAt}`].join(" · ") });
       }
       for (const s of diff.changed) {
+        if (!budget()) { next.workers[s.id] = before[s.id]!; continue; }
         const d = await newest(s.id);
         const it = deployItem(s.id, d, before[s.id]?.deployment, own);
         if (d) next.workers[s.id]!.deployment = d.id;
@@ -404,7 +432,7 @@ export function cloudflareAdapter(connection: Connection, deps: CloudflareDeps =
     lastPollAt = Date.now();
     const detail = problems.length ? problems.join("; ") : `connected to ${accountName ?? cfg.accountId}, ${Object.keys(next.workers).length} Workers watched`;
     await ctx.status({ ok: !problems.length, detail, lastPollAt, ...(lastEventAt ? { lastEventAt } : {}) });
-    return { items: items.length, ingested, problems };
+    return { items: items.length, ingested, problems, ...(rateLimited ? { rateLimited } : {}) };
   }
 
   /** One poll at a time: a call while one runs waits for it, then polls again. */
@@ -420,9 +448,10 @@ export function cloudflareAdapter(connection: Connection, deps: CloudflareDeps =
 
   function loop(signal: AbortSignal): void {
     if (signal.aborted) return;
-    void poll().then(() => {
+    void poll().then((r) => {
       if (signal.aborted) return;
-      timer = setTimeout(() => loop(signal), cfg.pollMinutes * 60_000);
+      limitedInARow = r.rateLimited ? limitedInARow + 1 : 0;
+      timer = setTimeout(() => loop(signal), pollDelayMs(cfg.pollSeconds, limitedInARow));
     });
   }
 
@@ -435,7 +464,7 @@ export function cloudflareAdapter(connection: Connection, deps: CloudflareDeps =
       const why = missing();
       if (why) throw new Error(why);
       accountName = await account(api()); // a bad token fails the start, and names the permission
-      c.log(`watching account ${accountName} every ${cfg.pollMinutes} min`);
+      c.log(`watching account ${accountName} every ${cfg.pollSeconds}s`);
       loop(c.signal);
     },
     async stop() {

@@ -112,7 +112,7 @@ permission does not start the adapter. The card shows the error, for example
 
 ## 4. What comes in
 
-Every `pollMinutes` (default 5), the adapter reads the account and compares it with the last poll.
+Every `pollSeconds` (default 120, at least 30), the adapter reads the account and compares it with the last poll.
 
 | Topic | What it reports | Read command on each line |
 |---|---|---|
@@ -173,7 +173,7 @@ look, uses the read commands, and tells you what matters.
 | Form field (`config` key) | Default | Meaning |
 |---|---|---|
 | Account id (`accountId`) | `ORCA_CLOUDFLARE_ACCOUNT_ID` | The account to watch and to act on. |
-| Poll every (`pollMinutes`) | 5 | Minutes between two polls. The minimum is 1. |
+| Poll every (`pollSeconds`) | 120 | Seconds between two polls. A smaller value than 30 becomes 30. The old key `pollMinutes` still works when `pollSeconds` is not set. |
 | Error-rate threshold (`errorRatePct`) | 5 | The error rate in percent that alerts. |
 | Fewest requests (`minRequests`) | 100 | Fewer requests in the window give no error alert. |
 | Zones to watch (`zones`) | all | Comma-separated zone names. Zone changes outside them do not come in. |
@@ -258,18 +258,25 @@ To test the watcher on a real account:
 1. Connect the integration (section 3). Click Test: `OK · connected to <account name>`.
 2. Wait for one poll. The card shows `last poll`. Nothing comes in: the first poll is the baseline.
 3. In the dashboard, add a TXT record to a watched zone, for example `orca-test` with the content `hello`.
-4. Wait for the next poll (at most `pollMinutes`). An activity row with the Cloudflare icon comes into
+4. Wait for the next poll (at most `pollSeconds`). An activity row with the Cloudflare icon comes into
    the orchestrator's chat: `Cloudflare: 1 DNS change`. The Inbox shows it too.
 5. Ask the orchestrator to remove the record:
    `orca cloudflare dns remove --zone <zone> --id <id> --confirm`. That change does not come back in:
    it is Orca's own write.
-6. For a shorter test, set Poll every to 1 and click Save. The new value applies after the
+6. For a shorter test, set Poll every to 30 and click Save. The new value applies after the
    integration restarts (switch it off and on).
 
 ## 11. Limits
 
-- A poll makes one audit-log read, one Workers read, one deployments read for each changed Worker,
-  one custom-domains read and one GraphQL query.
+- A poll makes one audit-log read, one Workers read, one custom-domains read, one GraphQL query,
+  and one deployments read for each new or changed Worker.
+- A poll reads the deployments of at most 10 Workers. The other Workers wait for the next poll, and
+  each deploy still comes in once. A poll is then at most 14 calls.
+- Cloudflare allows 1,200 API calls in 5 minutes for each token. At the minimum interval of 30
+  seconds, the adapter makes at most 140 calls in 5 minutes. The `orca cloudflare` commands use the
+  same token, so leave room for them.
+- A rate-limit answer (429) ends the poll at once. The next poll waits twice as long, and again
+  after each 429 in a row, up to 15 minutes. A poll with no 429 goes back to `pollSeconds`.
 - Route changes and DNS changes come from the audit log only. The adapter does not compare routes
   or records itself.
 - A restart forgets nothing, but an own write made more than 15 minutes before its audit-log entry

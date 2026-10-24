@@ -250,7 +250,8 @@ itself there (no pairing code). `orca slack conversations|read|search|post` (`se
 is your own chat only.
 **Cloudflare** (`adapters/cloudflare.ts`, `server/cloudflare.ts`, `docs/integrations/cloudflare.md`) is an
 inbound-only adapter plus the `orca cloudflare` verb. No webhooks (the bridge has no public address): every
-`pollMinutes` (5) it reads the audit log since a cursor, Workers and their deployments, custom domains and each
+`pollSeconds` (120, at least 30; at most 10 deployment reads a tick, a 429 ends the tick and doubles the
+next wait up to 15 min) it reads the audit log since a cursor, Workers and their deployments, custom domains and each
 Worker's error rate, and hands in ONE envelope per topic and place (`ext.cloudflare.audit|dns|deploy|worker|
 domain|errors`, place `zone:<name>` with parent `account`). Its whole state is one JSON value in
 `integration_cursor`. The first Connect (`registry.onConnect`) makes a Viewer `*` link and the orchestrator's

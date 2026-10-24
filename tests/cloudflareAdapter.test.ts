@@ -10,7 +10,7 @@ import * as store from "../server/integrations/store";
 import type { AdapterContext, Connection } from "../server/integrations/adapter";
 import {
   DEFAULT_SUBSCRIPTIONS, OWN_WRITES_CURSOR, auditItems, batchEnvelopes, cloudflareAdapter, cloudflareConfig, connectedCredentials, errorItems,
-  nextAudit, readOwnWrites, recordOwnWrite, resolveToken, tokenSource, type CloudflareAdapter,
+  MAX_BACKOFF_MS, MAX_DEPLOYMENT_READS, nextAudit, pollDelayMs, readOwnWrites, recordOwnWrite, resolveToken, tokenSource, type CloudflareAdapter,
 } from "../server/integrations/adapters/cloudflare";
 import * as secrets from "../server/secrets";
 import type { AuditLog } from "../server/cloudflare";
@@ -29,6 +29,8 @@ let domains: { id: string; hostname: string; service: string; zone_name?: string
 let audit: AuditLog[] = [];
 let totals: { requests: number; errors: number; name: string }[] = [];
 let deny = new Set<string>();
+let limited = new Set<string>(); // paths answered 429
+let calls: string[] = [];
 let auditQueries: URLSearchParams[] = [];
 let server: ReturnType<typeof Bun.serve>;
 const ok = (result: unknown, extra: Record<string, unknown> = {}) => R.json({ success: true, errors: [], result, ...extra });
@@ -40,6 +42,8 @@ beforeAll(() => {
       const url = new URL(req.url);
       const path = url.pathname.replace(/^\/client\/v4/, "");
       if (req.headers.get("authorization") !== `Bearer ${TOKEN}`) return R.json({ success: false, errors: [{ code: 10000, message: "Authentication error" }] }, { status: 401 });
+      calls.push(path);
+      if (limited.has(path)) return R.json({ success: false, errors: [{ code: 971, message: "Please wait and consider throttling your request speed" }] }, { status: 429 });
       if (deny.has(path)) return R.json({ success: false, errors: [{ code: 9109, message: "Unauthorized to access requested resource" }] }, { status: 403 });
       const a = `/accounts/${ACCT}`;
       if (path === a) return ok({ id: ACCT, name: "Test account" });
@@ -62,7 +66,7 @@ beforeEach(() => {
   scripts = [{ id: "edge-api", created_on: "2026-01-01T00:00:00Z", modified_on: "2026-10-01T00:00:00Z" }];
   deployments = { "edge-api": [{ id: "dep-1", created_on: "2026-10-01T00:00:00Z", author_email: "dev@example.com", source: "wrangler" }] };
   domains = [{ id: "d1", hostname: "api.example.com", service: "edge-api", zone_name: "example.com" }];
-  audit = []; totals = []; deny = new Set(); auditQueries = [];
+  audit = []; totals = []; deny = new Set(); limited = new Set(); calls = []; auditQueries = [];
 });
 
 const base = () => `http://127.0.0.1:${server.port}/client/v4`;
@@ -88,9 +92,20 @@ describe("pure decisions", () => {
   const entry = (id: string, o: Partial<AuditLog> = {}): AuditLog => ({ id, when: "2026-10-24T12:01:00Z", action: { type: "update", result: true }, actor: { email: "dev@example.com", type: "user" }, resource: { id: "edge-api", type: "script" }, ...o });
 
   test("config: strings from the form, defaults, the env account id as a fallback", () => {
-    expect(cloudflareConfig({ pollMinutes: "10", errorRatePct: "2.5", minRequests: "50", zones: "Example.com, example.org" }, {}))
-      .toEqual({ pollMinutes: 10, errorRatePct: 2.5, minRequests: 50, zones: ["example.com", "example.org"], deployActors: ["github"] });
-    expect(cloudflareConfig({ pollMinutes: "0", errorRatePct: "x" }, { ORCA_CLOUDFLARE_ACCOUNT_ID: ACCT })).toMatchObject({ accountId: ACCT, pollMinutes: 5, errorRatePct: 5, minRequests: 100 });
+    expect(cloudflareConfig({ pollSeconds: "300", errorRatePct: "2.5", minRequests: "50", zones: "Example.com, example.org" }, {}))
+      .toEqual({ pollSeconds: 300, errorRatePct: 2.5, minRequests: 50, zones: ["example.com", "example.org"], deployActors: ["github"] });
+    expect(cloudflareConfig({ errorRatePct: "x" }, { ORCA_CLOUDFLARE_ACCOUNT_ID: ACCT })).toMatchObject({ accountId: ACCT, pollSeconds: 120, errorRatePct: 5, minRequests: 100 });
+    expect(cloudflareConfig({ pollSeconds: "10" }, {}).pollSeconds).toBe(30); // raised to the minimum
+    expect(cloudflareConfig({ pollSeconds: "x" }, {}).pollSeconds).toBe(120);
+    expect(cloudflareConfig({ pollMinutes: "10" }, {}).pollSeconds).toBe(600); // the old key, as an alias
+  });
+
+  test("the tick's delay: the interval, doubled per rate-limited tick in a row, capped at 15 minutes", () => {
+    expect(pollDelayMs(120, 0)).toBe(120_000);
+    expect(pollDelayMs(120, 1)).toBe(240_000);
+    expect(pollDelayMs(120, 3)).toBe(960_000 > MAX_BACKOFF_MS ? MAX_BACKOFF_MS : 960_000);
+    expect(pollDelayMs(30, 10)).toBe(MAX_BACKOFF_MS);
+    expect(pollDelayMs(1800, 2)).toBe(1_800_000); // an interval longer than the cap is kept
   });
 
   test("audit: seen, own writes, deploy actors and other zones are left out; DNS gets its own topic and the zone's place", () => {
@@ -150,6 +165,52 @@ describe("pure decisions", () => {
 describe("the poll loop", () => {
   const adapter = (o: { now: () => Date; own?: { at: number; targets: string[] }[] }) =>
     cloudflareAdapter(conn({ deployActors: "github", errorRatePct: "5", minRequests: "100" }), { env: {}, base: base(), now: o.now, ownWrites: async () => o.own ?? [] });
+
+  test("a burst of deploys: at most MAX_DEPLOYMENT_READS deployment reads a tick, the rest on the next; each deploy once", async () => {
+    let now = new Date(T0);
+    const f = fakeCtx();
+    const a = adapter({ now: () => now }) as CloudflareAdapter;
+    const names = Array.from({ length: 15 }, (_, i) => `w${String(i).padStart(2, "0")}`);
+    scripts = names.map((n) => ({ id: n, created_on: "2026-01-01T00:00:00Z", modified_on: "2026-10-01T00:00:00Z" }));
+    await a.start(f.ctx);
+    await a.poll(); // baseline
+    scripts = names.map((n) => ({ id: n, created_on: "2026-01-01T00:00:00Z", modified_on: "2026-10-24T12:01:00Z" }));
+    for (const n of names) deployments[n] = [{ id: `dep-${n}`, created_on: "2026-10-24T12:01:00Z", author_email: "ci@example.com", source: "wrangler" }];
+    const reads = () => calls.filter((c) => c.endsWith("/deployments")).length;
+    now = new Date(T0 + 120_000); calls = [];
+    await a.poll();
+    expect(reads()).toBe(MAX_DEPLOYMENT_READS);
+    expect(calls.length).toBeLessThanOrEqual(MAX_DEPLOYMENT_READS + 4); // audit, Workers, domains, GraphQL
+    now = new Date(T0 + 240_000); calls = [];
+    await a.poll();
+    expect(reads()).toBe(5);
+    now = new Date(T0 + 360_000); calls = [];
+    await a.poll();
+    expect(reads()).toBe(0);
+    const lines = f.ingested.filter((e) => e.topic === "ext.cloudflare.deploy").flatMap((e) => e.text.split("\n").filter((l) => l.startsWith("- ")));
+    expect(lines.length).toBe(15);
+    expect(new Set(lines).size).toBe(15);
+    await a.stop();
+  });
+
+  test("a 429 ends the tick: later steps wait for the next tick, and the result says rate limited", async () => {
+    let now = new Date(T0);
+    const f = fakeCtx();
+    const a = adapter({ now: () => now }) as CloudflareAdapter;
+    await a.start(f.ctx);
+    await a.poll(); // baseline
+    limited.add(`/accounts/${ACCT}/workers/scripts`);
+    now = new Date(T0 + 120_000); calls = [];
+    const r = await a.poll();
+    expect(r.rateLimited).toBe(true);
+    expect(calls.some((c) => c.endsWith("/workers/domains") || c === "/graphql")).toBe(false);
+    expect(f.statuses.at(-1)!.detail).toContain("workers: Cloudflare GET");
+    limited.clear(); calls = [];
+    now = new Date(T0 + 240_000);
+    expect((await a.poll()).rateLimited).toBeUndefined();
+    expect(calls.some((c) => c === "/graphql")).toBe(true);
+    await a.stop();
+  });
 
   test("baseline, then one envelope per topic; no repeat; a restart replays nothing; health names a missing permission", async () => {
     let now = new Date(T0);
@@ -275,7 +336,7 @@ describe("with Postgres", () => {
     expect(subs.map((s) => [s.topicPattern, s.targetKind, s.digestSeconds ?? 0])).toEqual(DEFAULT_SUBSCRIPTIONS.map((d) => [d.topic, "orchestrator", d.digestSeconds ?? 0]));
     // An edit adds nothing back: a subscription you removed stays removed.
     await store.removeSubscription(subs[0]!.id);
-    await admin.saveIntegration({ id: "cf", kind: "cloudflare", name: "Cloudflare", instance: "local", secretRef: "", config: { accountId: ACCT, pollMinutes: "60" } });
+    await admin.saveIntegration({ id: "cf", kind: "cloudflare", name: "Cloudflare", instance: "local", secretRef: "", config: { accountId: ACCT, pollSeconds: "3600" } });
     expect((await store.subscriptions()).length).toBe(DEFAULT_SUBSCRIPTIONS.length - 1);
 
     expect(registry.runningIds()).toEqual(["cf"]);
