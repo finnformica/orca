@@ -92,11 +92,9 @@ test("S1: nothing chosen — the base is empty, a choice stored by the old Setti
   const stop = subscribeTurns("r", "b", { step() {}, turn() {}, resync() {} });
   expect(opened().at(-1)!.url).toBe("/api/events");
   stop();
-  // The shell: an older home server (no /api/servers answer) and one server: the sidebar's own
-  // button still shows (it also carries the instance scope), but its menu has no server section.
+  // The shell: an older home server (no /api/servers answer) and one server: no menu.
   await mount();
-  expect(q('[data-slot="server-menu"]')).not.toBeNull();
-  expect(await openMenu()).toEqual([]);
+  expect(q('[data-slot="server-menu"]')).toBeNull();
 });
 
 test("S2: on with a server chosen — fetch, uploads, images and the event stream all use its base", async () => {
@@ -233,7 +231,7 @@ const openMenu = async () => {
   return [...document.querySelectorAll<HTMLElement>("[data-server]")];
 };
 
-test("S6: the sidebar menu — repos-selector look, current checked, status dot and name, offline disabled, Add server and the env hint", async () => {
+test("S6: the sidebar's server button — mark, dot, \"Orca | name\" — opens the server menu: current checked, status dot and name, offline disabled, Add server and the env hint, no instance section", async () => {
   setup();
   rememberServer({ name: "orca-personal-box", url: "http://orca-personal-box:8787" });
   rememberServer({ name: "lab", url: "http://lab-box:8787" });
@@ -241,14 +239,19 @@ test("S6: the sidebar menu — repos-selector look, current checked, status dot 
   await mount();
   await act(async () => { await flush(); await flush(); await flush(); });
   const trigger = q('[data-slot="server-menu"]')!;
-  expect(trigger.textContent).toBe("cloud"); // the home server's own name
-  expect(trigger.className).toContain("hover:bg-accent"); // the repos selector's trigger, not a tinted pill
-  // It lives in the sidebar now, never the top bar (#3: the top bar's own menu is gone).
-  const sidebar = q('[data-slot="sidebar"]')!;
-  expect(sidebar.contains(trigger)).toBe(true);
-  const bar = q('[data-slot="topbar"]')!;
-  expect(bar.querySelector('[data-slot="server-menu"]')).toBeNull();
+  expect(trigger.textContent).toBe("Orca|cloud"); // the home server's own name, as the page title reads
+  expect(trigger.className).toContain("hover:bg-accent"); // a plain trigger, not a tinted pill
+  expect(trigger.querySelector('[data-slot="round-mark"]')).not.toBeNull(); // the orca mark…
+  expect(trigger.querySelector("[data-health]")!.getAttribute("data-health")).toBe("online"); // …with the status dot
+  expect(trigger.querySelector(".lucide-chevrons-up-down")).not.toBeNull();
+  expect(trigger.querySelector('[data-slot="server-swatch"]')).toBeNull(); // the rows carry the colour tiles
+  expect(q('[data-slot="sidebar"]')!.contains(trigger)).toBe(true);
+  expect(q('[data-slot="topbar"]')!.querySelector('[data-slot="server-menu"], [data-slot="topbar-server-menu"]')).toBeNull(); // desktop: the sidebar only
   const items = await openMenu();
+  // The server list only: the instance and the server are the same thing, so no Instance section.
+  const menu = document.querySelector('[role="menu"]')!;
+  expect(menu.textContent).not.toContain("Instance");
+  expect(menu.textContent).not.toContain("All instances");
   expect(items.map((i) => i.getAttribute("aria-label"))).toEqual(["cloud, online", "personal, online", "lab, offline"]);
   expect(items.map((i) => i.querySelector("[data-health]")!.getAttribute("data-health"))).toEqual(["online", "online", "offline"]);
   expect(items[0]!.getAttribute("aria-checked")).toBe("true");
@@ -267,7 +270,7 @@ test("S6: the sidebar menu — repos-selector look, current checked, status dot 
   expect(reloads).toBe(1);
 });
 
-test("S6l: a phone's top bar has the SAME server menu — name, status dot and chevron, no colour tile — and it switches the server", async () => {
+test("S6l: a phone's top bar has the SAME server button and menu as the sidebar, in place of its bare mark, and it switches the server", async () => {
   const realMatchMedia = window.matchMedia;
   window.matchMedia = ((query: string) => ({ matches: query === NARROW_QUERY, media: query, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
   try {
@@ -279,19 +282,18 @@ test("S6l: a phone's top bar has the SAME server menu — name, status dot and c
     await act(async () => { await flush(); await flush(); await flush(); });
     const bar = q('[data-slot="topbar"]')!;
     const trigger = bar.querySelector<HTMLElement>('[data-slot="topbar-server-menu"]')!;
-    expect(trigger).not.toBeNull();
-    expect(trigger.textContent).toBe("cloud");
+    expect(trigger.textContent).toBe("Orca|cloud");
     expect(trigger.getAttribute("aria-label")).toBe("Server: cloud, online. Switch server");
+    expect(trigger.querySelector('[data-slot="round-mark"]')).not.toBeNull();
     expect(trigger.querySelector("[data-health]")!.getAttribute("data-health")).toBe("online");
     expect(trigger.querySelector(".lucide-chevrons-up-down")).not.toBeNull();
-    expect(trigger.querySelector('[data-slot="server-swatch"]')).toBeNull(); // the whole app takes the server colour
-    expect(trigger.className).toContain("text-server-fg");
-    expect(bar.querySelector('[data-slot="topbar-identity"]')).toBeNull(); // the plain label is gone
+    expect(bar.querySelector('[data-slot="topbar-mark"]')).toBeNull(); // the button carries the mark
+    expect(bar.querySelector('[data-slot="topbar-identity"]')).toBeNull(); // …and the name
     await act(async () => { trigger.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerType: "touch" })); await flush(); await flush(); });
     const items = [...document.querySelectorAll<HTMLElement>("[data-server]")];
     expect(items.map((i) => i.getAttribute("aria-label"))).toEqual(["cloud, online", "personal, online", "lab, offline"]);
     expect(items[0]!.getAttribute("aria-checked")).toBe("true");
-    expect(items[0]!.querySelector('[data-slot="server-swatch"]')).not.toBeNull(); // the rows keep their tiles
+    expect(document.querySelector('[role="menu"]')!.textContent).not.toContain("Instance");
     expect(document.querySelector('[data-slot="add-server"]')!.textContent).toContain("Add server");
     await act(async () => { items[1]!.click(); await flush(); });
     expect(JSON.parse(localStorage.getItem(CHOICE_KEY)!)).toEqual({ name: "personal", url: "http://orca-personal-box:8787" });
@@ -320,10 +322,12 @@ test("S6e: the ACTIVE server's identity — title, accent, favicon and sidebar n
   expect(decodeURIComponent(icon.href)).toContain(`fill="${markBg("#1f9d55")}"`); // on a very dark green circle
   expect(document.documentElement.style.getPropertyValue("--server-mark-bg")).toBe(markBg("#1f9d55"));
   expect(document.getElementById("orca-server-theme")!.textContent).toBe(themeCss("#1f9d55")); // the theme's tones
-  // The sidebar's trigger: just the name beside the colour tile and status dot, not "Orca |
-  // Personal" — the page title keeps that form (checked above); the trigger reads like the
-  // screenshot's "Personal ●".
-  expect(q('[data-slot="server-label"]')!.textContent).toBe("Personal");
+  expect(q('[data-slot="server-identity"]')!.textContent).toBe("Personal"); // beside the mark, top left
+  // It reads like the page title: "Orca | Personal", with the pipe hidden from a screen reader.
+  const brand = q('[data-slot="brand-name"]')!;
+  expect(brand.textContent).toBe("Orca|Personal");
+  expect(brand.querySelector('[data-slot="brand-sep"]')!.getAttribute("aria-hidden")).toBe("true");
+  expect(q('[data-slot="server-menu"]')!.textContent).toBe("Orca|Personal"); // the trigger is that brand
   const items = await openMenu();
   expect(items.map((i) => i.getAttribute("aria-label"))).toEqual(["Work, online", "Personal, online"]);
   expect(items.map((i) => i.getAttribute("data-server"))).toEqual(["cloud", "personal"]); // still matched by host name
@@ -450,8 +454,7 @@ test("S6h: a Neutral server has the old look — no theme sheet, no accent, the 
   expect(document.getElementById("orca-server-theme")).toBeNull();
   expect(decodeURIComponent(icon.href)).toContain('fill="#000000"');
   expect(decodeURIComponent(icon.href)).toContain('<path fill="#ffffff"');
-  // The trigger carries no colour tile (the app's own theme already reads neutral); the menu's own
-  // row still does.
+  // The trigger carries no colour tile; the menu's own row does.
   expect(q('[data-slot="server-menu"] [data-slot="server-swatch"]')).toBeNull();
   const items = await openMenu();
   expect(items[0]!.querySelector<HTMLElement>('[data-slot="server-swatch"]')!.getAttribute("style")).toContain("linear-gradient");
@@ -466,7 +469,7 @@ test("S6f: after a switch the menu shows the active server's cached identity bef
   network((u) => { if (u.startsWith("http://orca-personal-box")) throw new TypeError("Failed to fetch"); return undefined; });
   await mount();
   await act(async () => { await flush(); await flush(); });
-  expect(q('[data-slot="server-label"]')!.textContent).toBe("Personal"); // not its host name, on the trigger
+  expect(q('[data-slot="server-menu"] [data-slot="server-identity"]')!.textContent).toBe("Personal"); // not its host name
   const items = await openMenu();
   const current = items.find((i) => i.getAttribute("aria-checked") === "true")!;
   expect(current.querySelector<HTMLElement>('[data-slot="server-swatch"]')!.getAttribute("style")).toMatch(/#1f9d55|rgb\(31, 157, 85\)/);
@@ -494,12 +497,12 @@ test("S6k: with no Tailscale user (local dev, a tagged device, an older server) 
   expect(profile.querySelector("svg.lucide-circle-user")).not.toBeNull();
 });
 
-test("S6b: with the Tailscale API and one server there is no server section, and no hint when the API is set", async () => {
+test("S6b: with the Tailscale API and one server there is no menu, and no hint when the API is set", async () => {
   setup();
   network((u) => (u === "/api/servers" ? json({ ...HOME, tailscaleApi: true, source: "tailscale" }) : undefined));
   await mount();
   await act(async () => { await flush(); await flush(); });
-  expect(await openMenu()).toEqual([]); // the sidebar's own button still shows; its menu has no server rows
+  expect(q('[data-slot="server-menu"]')).toBeNull();
   act(() => root?.unmount());
   container?.remove();
   _resetServerList();

@@ -128,24 +128,20 @@ describe("console shell", () => {
     expect(cls.filter((c) => /^bg-background\/|^backdrop-blur/.test(c))).toEqual([]);
   });
 
-  test("the sidebar: server menu, Find, the pages, and the active one marked", async () => {
+  test("the sidebar: Orca mark + server button, Find, the pages, and the active one marked", async () => {
     await mount();
     const sidebar = container!.querySelector('[data-slot="sidebar"]')!;
-    // A compact button, top left, carrying the server's name and status dot — no colour tile (the
-    // whole app already takes the server's theme colour) — not a link to Overview, and no subtext
-    // under the name. Clicking it opens ONE menu: the server list (nothing here, with one server and
-    // no answer from /api/servers) then the instance scope, whatever the instance count.
-    const switcher = sidebar.querySelector<HTMLButtonElement>('[data-slot="server-menu"]')!;
-    expect(switcher.tagName).toBe("BUTTON");
-    expect(switcher.getAttribute("aria-haspopup")).toBe("menu");
-    expect(switcher.querySelector('[data-slot="server-swatch"]')).toBeNull(); // no colour tile on the trigger
-    expect(switcher.querySelector('[data-health]')).not.toBeNull();
-    await pointerdown(switcher);
-    expect(switcher.getAttribute("aria-expanded")).toBe("true");
-    const menu = document.body.querySelector('[role="menu"]')!;
-    expect([...menu.querySelectorAll('[role="menuitemradio"]')].map((i) => i.textContent?.trim())).toEqual(["All instances", "cloud", "laptop (this machine)"]);
-    await key(menu, "Escape");
-    expect(document.body.querySelector('[role="menu"]')).toBeNull();
+    expect(sidebar.querySelector("svg")).not.toBeNull(); // the orca mark
+    expect(sidebar.textContent).toContain("Orca");
+    // Top left: the mark with the server's status dot — not a link to Overview, and no subtext under
+    // the name. With one server and no /api/servers answer there is nothing to switch to, so it opens
+    // no menu (serverSwitch.test.tsx covers the menu), and there is no instance menu here any more.
+    const brand = sidebar.querySelector<HTMLElement>('[data-slot="server-brand"]')!;
+    expect(brand.tagName).toBe("DIV");
+    expect(brand.querySelector('[data-health]')).not.toBeNull();
+    expect(brand.querySelector('[data-slot="round-mark"]')).not.toBeNull();
+    expect(brand.closest("[aria-haspopup]") === null).toBe(true);
+    expect(sidebar.querySelector('[data-slot="server-menu"], [data-slot="instance-switcher"]') === null).toBe(true);
     expect(sidebar.querySelector('input[aria-label="Find agents"]')).not.toBeNull();
     const items = [...sidebar.querySelectorAll('nav[aria-label="Main"] button')].map(navLabel);
     expect(items).toEqual(["Overview", "Agents", "Board", "Inbox", "Previews", "Integrations", "Handoffs", "Settings"]);
@@ -159,7 +155,7 @@ describe("console shell", () => {
     }
   });
 
-  test("the instance switcher scopes the pages to one machine, and remembers it", async () => {
+  test("the instance scope scopes the pages to one machine, and remembers it", async () => {
     await mount();
     getDefaultStore().set(instanceScopeAtom, "cloud");
     await act(flush);
@@ -224,10 +220,10 @@ describe("console shell", () => {
     expect(container!.querySelector('button[aria-label="Expand sidebar"]')).not.toBeNull();
   });
 
-  test("collapsed, the server menu trigger centres on the same axis as a nav icon; expanded, neither carries that class", async () => {
+  test("collapsed, the logo centres on the same axis as a nav icon; expanded, neither carries that class", async () => {
     await mount();
     const navButton = () => container!.querySelector<HTMLElement>('nav[aria-label="Main"] button')!;
-    const logoButton = () => container!.querySelector<HTMLElement>('[data-slot="server-menu"]')!;
+    const logoButton = () => container!.querySelector<HTMLElement>('[data-slot="round-mark"]')!.closest<HTMLElement>('[data-slot="server-brand"]')!;
     expect(navButton().className).not.toContain("justify-center"); // expanded: neither centres
     expect(logoButton().className).not.toContain("justify-center");
     await click(container!.querySelector('button[aria-label="Collapse sidebar"]')!);
