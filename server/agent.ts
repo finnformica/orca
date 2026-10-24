@@ -3,7 +3,7 @@
 // Keyed by an arbitrary string: worktree path for
 // feature/fix runs, `slack:…` for repo-level. The subprocess handle is kept so we can kill it.
 import { retryTitle } from "./title";
-import { autofixInstruction, backgroundResumeInstruction, handoffPrompt, isAutofix, isBackgroundResume, parseAgentOutcome, type UnfinishedTask, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn, type StopReason, type TurnCheck, type TurnSource } from "../shared/agent";
+import { autofixInstruction, backgroundResumeInstruction, handoffPrompt, idleExpired, isAutofix, isBackgroundResume, parseAgentOutcome, runStopLabel, type UnfinishedTask, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn, type RunStop, type StopReason, type TurnCheck, type TurnSource } from "../shared/agent";
 import { runCheck } from "./check";
 import { run, runCmd } from "./run";
 import { agentEnv, githubEnv } from "./env";
@@ -110,7 +110,11 @@ export type LaunchOptions = {
   resume?: string;
   history?: AgentTurn[];
   handoffFrom?: AgentProvider;
+  /** The hard ceiling for the whole run (`agentMaxRunMinutes`): a safety net, far above `idleMs`. */
   timeoutMs?: number;
+  /** Stop the run after this long with no progress (`agentIdleMinutes`): no new event on the CLI's
+   *  stream, and no heavy-queue job of the run queued or running. */
+  idleMs?: number;
   repo?: string; // with `branch`, identifies the workstream this run's turn is recorded against
   branch?: string; // recorded on the lease so restart recovery can match by branch
   model?: string; // the CLI's --model; unset means its own default
@@ -152,7 +156,7 @@ export type RunFinished = {
   status: db.TurnStatus; sessionId?: string; result?: string; structured?: AgentOutcome;
   check?: TurnCheck; meta?: RunMeta;
   /** How the process ended, uncollapsed: the orchestrator turns this into the reason a wake died. */
-  exit: { code: number; timedOut: boolean; budgetReached: boolean; stderr: string };
+  exit: { code: number; timedOut: boolean; budgetReached: boolean; stderr: string; stop?: RunStop };
   /** A queued follow-up (an autofix, a typed instruction) launched straight after: not idle yet. */
   continued: boolean;
 };
@@ -278,6 +282,14 @@ const DRAIN_GRACE_MS = 2_000;
 /** How long a run may wait on its own background tasks after its turn ended, and the least time its
  *  next turn gets when the agent timeout's clock starts again. Mutable so a test needn't wait. */
 export const backgroundWait = { ms: 30 * 60_000, floorMs: 10 * 60_000 };
+
+/** How often the idle watch looks at a run. Mutable so a test needn't wait. */
+export const idleWatch = { everyMs: 30_000 };
+/** Does this run hold or wait for a heavy-queue slot (`orca-run`)? That time is never idle. */
+const runInHeavyQueue = (runId: string): boolean => {
+  const v = heavy.slots().view();
+  return v.running.some((e) => e.runId === runId) || v.queued.some((e) => e.runId === runId);
+};
 
 /** The background tasks of a claude run, read off its stream (2026-10-23: six runs ended mid-push).
  *  `claude -p` does not exit while a `run_in_background` task runs: it waits, and its next turn
@@ -408,7 +420,7 @@ function codexSessionId(line: string): string | undefined {
 /** Read Codex JSONL without waiting for the process to finish. Codex chooses its own thread UUID
  *  (there is no Claude-style `--session-id` flag), but emits it first. Publishing it into `runs`
  *  immediately lets the next `/api/agents` poll persist and copy the exact resumable thread id. */
-async function readCodexOutput(key: string, proc: Bun.Subprocess<"ignore", "pipe", "pipe">, holder: { raw: string }, runId?: string, owner?: { repo?: string; branch?: string }): Promise<string> {
+async function readCodexOutput(key: string, proc: Bun.Subprocess<"ignore", "pipe", "pipe">, holder: { raw: string }, runId?: string, owner?: { repo?: string; branch?: string }, onEvent?: (event: unknown) => void): Promise<string> {
   const reader = proc.stdout.pipeThrough(new TextDecoderStream()).getReader();
   const out = outcomeLines("codex");
   let pending = "";
@@ -423,6 +435,7 @@ async function readCodexOutput(key: string, proc: Bun.Subprocess<"ignore", "pipe
       const event = parseLine(line);
       out.add(line, event);
       holder.raw = out.text();
+      if (event !== undefined) onEvent?.(event);
       const sessionId = codexSessionId(line);
       const current = runs.get(key);
       if (sessionId && current?.proc === proc && current.sessionId !== sessionId) {
@@ -440,7 +453,7 @@ async function readCodexOutput(key: string, proc: Bun.Subprocess<"ignore", "pipe
 
 /** Read Cursor's stream-json without waiting for exit, recording each step as it lands. Returns the
  *  part of the stream parseCursorOutput reads at exit (outcomeLines), never the whole of it. */
-async function readCursorOutput(proc: Bun.Subprocess<"ignore", "pipe", "pipe">, holder: { raw: string }, runId?: string, owner?: { repo?: string; branch?: string }): Promise<string> {
+async function readCursorOutput(proc: Bun.Subprocess<"ignore", "pipe", "pipe">, holder: { raw: string }, runId?: string, owner?: { repo?: string; branch?: string }, onEvent?: (event: unknown) => void): Promise<string> {
   const reader = proc.stdout.pipeThrough(new TextDecoderStream()).getReader();
   const state = { thinking: "" };
   const out = outcomeLines("cursor");
@@ -456,6 +469,7 @@ async function readCursorOutput(proc: Bun.Subprocess<"ignore", "pipe", "pipe">, 
       const event = parseLine(line);
       out.add(line, event);
       holder.raw = out.text();
+      if (event !== undefined) onEvent?.(event);
       if (!runId || event === undefined) continue;
       const written = await transcript.append(runId, cursorSteps(event, state));
       if (written.length && owner?.repo && owner.branch) {
@@ -858,18 +872,31 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
     // ORCA_RUN_ID / ORCA_REPO / ORCA_BRANCH: `orca-run` (server/heavy.ts) ties its slot to this run.
     { cwd, env: { ...agentEnv(githubEnv(cwd)), ...(scoped ? scopedEnv : {}), ...runIdentity(runId, options), ...options.env }, stdout: "pipe", stderr: "pipe" },
   );
-  let timedOut = false;
+  // Why Orca stopped the run itself, if it did: no progress for `idleMs`, or the hard ceiling.
+  let stop: RunStop | undefined;
+  const stopRun = (s: RunStop) => { if (stop || proc.exitCode !== null) return; stop = s; proc.kill(); };
   let timeout: ReturnType<typeof setTimeout> | undefined;
   let timeoutEndsAt = 0;
-  const armTimeout = (ms: number) => { timeoutEndsAt = Date.now() + ms; timeout = setTimeout(() => { timedOut = true; proc.kill(); }, ms); };
+  const armTimeout = (ms: number) => { timeoutEndsAt = Date.now() + ms; timeout = setTimeout(() => stopRun({ kind: "ceiling", minutes: (options.timeoutMs ?? ms) / 60_000 }), ms); };
   if (options.timeoutMs) armTimeout(options.timeoutMs);
-  // The agent timeout counts the agent's work, not its wait on its own background task (a push
+  // The hard ceiling counts the agent's work, not its wait on its own background task (a push
   // behind the pre-push gate, a build): there the turn is over and `backgroundWait` caps the wait.
   const bg = backgroundState();
   let leftAtPause: number | undefined; // the timeout's time left when the wait began; the clock is stopped
   let waitTimer: ReturnType<typeof setTimeout> | undefined;
   let waitCapped = false;
+  // The idle watch: every stream event is progress, and so is a heavy-queue job of this run (queued
+  // or running) or a wait on the CLI's own background task (`backgroundWait` caps that).
+  let lastProgressAt = startedAt;
+  const idleMs = options.idleMs;
+  const idleTimer = idleMs ? setInterval(() => {
+    const now = Date.now();
+    const busy = runInHeavyQueue(runId) || backgroundWaiting(bg);
+    if (busy) lastProgressAt = now;
+    if (idleExpired({ now, lastProgressAt, idleMs, busy })) stopRun({ kind: "idle", minutes: idleMs / 60_000 });
+  }, Math.min(idleWatch.everyMs, idleMs)) : undefined;
   const onStreamEvent = (event: unknown) => {
+    lastProgressAt = Date.now();
     trackBackground(bg, event);
     const waiting = backgroundWaiting(bg);
     if (waiting && !waitTimer) {
@@ -879,7 +906,7 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
       clearTimeout(waitTimer);
       waitTimer = undefined;
       // The next turn (the task's notification) gets what was left, never less than the floor.
-      if (leftAtPause !== undefined && !timedOut) armTimeout(Math.max(leftAtPause, backgroundWait.floorMs));
+      if (leftAtPause !== undefined && !stop) armTimeout(Math.max(leftAtPause, backgroundWait.floorMs));
       leftAtPause = undefined;
     }
   };
@@ -902,9 +929,9 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
     const outHolder = { raw: "" };
     const errHolder = { raw: "" };
     const reads = Promise.all([
-      provider === "codex" ? readCodexOutput(key, proc, outHolder, runId, { repo: options.repo, branch: options.branch })
+      provider === "codex" ? readCodexOutput(key, proc, outHolder, runId, { repo: options.repo, branch: options.branch }, onStreamEvent)
         : provider === "claude" ? readClaudeStream(runId, proc, outHolder, { repo: options.repo, branch: options.branch }, onStreamEvent)
-        : readCursorOutput(proc, outHolder, runId, { repo: options.repo, branch: options.branch }),
+        : readCursorOutput(proc, outHolder, runId, { repo: options.repo, branch: options.branch }, onStreamEvent),
       tailText(proc.stderr).then((t) => (errHolder.raw = t)),
     ]);
     const code = await proc.exited;
@@ -915,6 +942,7 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
     const err = errHolder.raw;
     if (timeout) clearTimeout(timeout);
     if (waitTimer) clearTimeout(waitTimer);
+    if (idleTimer) clearInterval(idleTimer);
     // A superseded (re-run) or stopped run must not clobber the live `runs` entry — but its output is
     // still real work that happened, so it's parsed and its turn is still completed in the DB. This
     // is exactly the history the old in-memory map lost when a fast follow-up overwrote its key.
@@ -947,9 +975,9 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
     const structured = result ? parseAgentOutcome(result) : undefined;
     const wasStopped = stoppedRuns.delete(runId);
     // Background tasks still running as the run ended: the wait cap stopped it, or the CLI exited
-    // with them. Not after a stop or the agent timeout — those end the run on purpose. The session
-    // is resumed with their output, once: a resumed run that ends the same way is a failure.
-    const leftBehind = !wasStopped && !timedOut && bg.turnEnded ? await unfinishedTasks(bg) : [];
+    // with them. Not after a stop, the idle watch or the hard ceiling — those end the run on purpose.
+    // The session is resumed with their output, once: a resumed run that ends the same way is a failure.
+    const leftBehind = !wasStopped && !stop && bg.turnEnded ? await unfinishedTasks(bg) : [];
     const resumeTasks = leftBehind.length > 0 && Boolean(options.repo && options.branch) && options.queue !== false
       && primary.held() && !isBackgroundResume(options.instruction);
     const capFailed = waitCapped && !resumeTasks;
@@ -973,8 +1001,12 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
       const why = waitCapped ? `still ran ${waitMinutes} minutes after the turn ended, and Orca stopped ${leftBehind.length === 1 ? "it" : "them"}` : "did not finish before the run ended";
       result = `${result ?? ""}\n\n> Orca: background task${leftBehind.length === 1 ? "" : "s"} ${names} ${why}. ${resumeTasks ? "Orca resumes the session with the output." : "Run it again in the foreground."}`.trimStart();
     }
+    // Orca's own stop is named, never a bare "exit 143": the label leads the error and the reply.
+    const stopLabel = stop ? runStopLabel(stop) : undefined;
+    if (stopLabel && !wasStopped && !ok && result) result = `${result}\n\n> Orca: ${stopLabel}. The work so far stands in the worktree.`;
     const rawError = capFailed
       ? `background task still ran ${waitMinutes} minutes after the turn ended: ${(leftBehind[0]?.command ?? leftBehind[0]?.description ?? "").slice(0, 200)}`
+      : stopLabel ? `${stopLabel} (exit ${code}). The work so far stands in the worktree.`
       : (err.trim() || result || `exit ${code}`).slice(0, 300);
     // A process of THIS run was OOM-killed (its scope says so) but the agent went on, or failed some
     // other way: a build, or a git push hook. Name it, so a push that never happened is not silent.
@@ -1004,7 +1036,7 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
       inputTokens: meta?.inputTokens, outputTokens: meta?.outputTokens,
       cacheReadTokens: meta?.cacheReadTokens, cacheCreationTokens: meta?.cacheCreationTokens,
       evidenceChars: options.evidenceChars, costUsd: meta?.costUsd,
-      errorKind: ok ? undefined : oomKilled ? "oom" : capFailed ? "background-wait" : budgetReached ? "budget" : timedOut ? "timeout" : code !== 0 ? "nonzero-exit" : "agent-error",
+      errorKind: ok ? undefined : oomKilled ? "oom" : capFailed ? "background-wait" : budgetReached ? "budget" : stop?.kind === "idle" ? "idle" : stop ? "timeout" : code !== 0 ? "nonzero-exit" : "agent-error",
       repo: options.repo,
     });
     // The verification gate: a run that committed gets the repo's check command run over it, and
@@ -1047,7 +1079,7 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
       await runFinished?.({
         key, cwd, runId, options, status: wasStopped ? "stopped" : ok ? "done" : "error",
         sessionId: resolvedSessionId, result: result ?? error, structured, check, meta, continued,
-        exit: { code, timedOut, budgetReached, stderr: err.trim().slice(-300) },
+        exit: { code, timedOut: stop !== undefined, budgetReached, stderr: err.trim().slice(-300), ...(stop && !wasStopped ? { stop } : {}) },
       });
     } catch (e) {
       db.logUnlessDown("orca: run-finished hook failed")(e); // a listener must never break the run it heard about

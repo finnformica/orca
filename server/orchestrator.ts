@@ -39,7 +39,7 @@ import { CLOUDFLARE_ACCOUNT_ENV, CLOUDFLARE_TOKEN_ENV, cloudflareTool, cloudflar
 import { recordOwnWrite as recordCloudflareWrite } from "./integrations/adapters/cloudflare";
 import { slackTool } from "./slackTool";
 import * as policy from "./integrations/policy";
-import { featuresOf, runsHere, type OrcaConfig, type RepoConfig } from "./config";
+import { featuresOf, runLimits, runsHere, type OrcaConfig, type RepoConfig } from "./config";
 import {
   MODEL_LADDER, NO_REPLY_PLACEHOLDER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, boardText, briefProblems, continuation, isWorkerEvent, isWorkerProblem, onlyCleanReports,
   handoffRef, joinMessages, ladderStep, mergedPrIsHistory, nextFailStreak, orchStatusText, orchStatusUpdate, verifiedMark, verifiedState, orchestratorPrompt, sessionHint, sweepText, turnSource, wakeExitReason, wakeProgress, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
@@ -192,7 +192,7 @@ export function compact(cfg: OrcaConfig): Promise<{ runId: string }> {
       provider: "claude", resume: b.sessionId, repo: ORCHESTRATOR_REPO, branch: ORCHESTRATOR_BRANCH,
       instruction: "/compact", action: "compact", queue: false, model: modelOf(cfg, b), source: "human", // your button
       mcpAllow: "all", // its cwd's `.mcp.json` is yours (minus any browser server)
-      timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
+      ...runLimits(cfg),
     });
     return { runId };
   });
@@ -245,7 +245,7 @@ export async function onRunFinished(cfg: OrcaConfig, run: agent.RunFinished): Pr
   const unpushed = await git.unpushedHere(run.cwd);
   const text = workerEvent({
     repo, branch, title: e.title as string | undefined, runId: run.runId, status: run.status,
-    outcome: run.structured, response: run.result, check: run.check, denied: run.meta?.permissionDenials, unpushed,
+    outcome: run.structured, response: run.result, check: run.check, denied: run.meta?.permissionDenials, unpushed, stop: run.exit.stop,
   }) + (opened ? `\n${opened}` : "") + (step ? `\n${step}` : "");
   await report(cfg, text, run.key);
 }
@@ -257,7 +257,8 @@ export async function onRunFinished(cfg: OrcaConfig, run: agent.RunFinished): Pr
 async function ladder(cfg: OrcaConfig, repoName: string, branch: string, e: db.Fields, run: agent.RunFinished): Promise<string | undefined> {
   const prev = e.failStreak as FailStreak | undefined;
   const failed = run.status === "error" || run.check?.ok === false;
-  const streak = run.status === "stopped" ? prev : nextFailStreak(prev, run.options.model ?? (e.preferredModel as string | undefined), failed);
+  // A run you stopped, or one Orca stopped (no progress, the hard ceiling), is not a model failure.
+  const streak = run.status === "stopped" || run.exit.stop ? prev : nextFailStreak(prev, run.options.model ?? (e.preferredModel as string | undefined), failed);
   if (JSON.stringify(streak) !== JSON.stringify(prev)) await db.patchEnrichment(repoName, branch, { failStreak: streak ?? null });
   if (run.continued) return undefined;
   const repo = cfg.repos.find((r) => r.name === repoName);
@@ -324,6 +325,7 @@ export async function deliverReport(cfg: OrcaConfig, text: string, key?: string)
 function wakeExit(cfg: OrcaConfig, run: agent.RunFinished): WakeExit | undefined {
   if (run.status === "stopped") return undefined;
   if (run.exit.budgetReached) return { kind: "budget", budgetUsd: run.options.maxBudgetUsd ?? budgetOf(cfg) ?? 0 };
+  if (run.exit.stop) return { kind: run.exit.stop.kind === "idle" ? "idle" : "timeout", minutes: run.exit.stop.minutes };
   if (run.exit.timedOut) return { kind: "timeout", minutes: (run.options.timeoutMs ?? 0) / 60_000 };
   if (run.status === "error") return { kind: "error", code: run.exit.code, stderr: run.exit.stderr || (run.result ?? "").slice(-300) };
   if (run.result?.trim() === NO_REPLY_PLACEHOLDER) return { kind: "no-reply" };
@@ -461,7 +463,7 @@ async function wake(cfg: OrcaConfig, fresh: string[], grant?: Grant, freshReplyT
       source: turnSource(messages),
       model: modelOf(cfg, b), maxBudgetUsd: budgetOf(cfg),
       mcpAllow: "all", // its cwd's `.mcp.json` is yours (minus any browser server)
-      timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
+      ...runLimits(cfg),
       // Everything Claude Code has in a terminal (bypassPermissions), as the user asked: a manager
       // who can find things out, run things and fix the machine. `orchestratorShell: false` keeps
       // it to `orca`, reading, the web and read-only subagents — nothing that can change this machine.
