@@ -23,6 +23,7 @@ import { IDENTITY_COLORS, colorFromName, markBg, markColor, themeCss } from "../
 import { getDefaultStore } from "jotai";
 import { paletteOpenAtom } from "@/lib/atoms";
 import { apiFake } from "./apiFake";
+import { NARROW_QUERY } from "@/lib/viewport";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 type FakeSource = { url: string; close(): void };
@@ -264,6 +265,40 @@ test("S6: the sidebar menu — repos-selector look, current checked, status dot 
   await act(async () => { items[1]!.click(); await flush(); });
   expect(JSON.parse(localStorage.getItem(CHOICE_KEY)!)).toEqual({ name: "personal", url: "http://orca-personal-box:8787" });
   expect(reloads).toBe(1);
+});
+
+test("S6l: a phone's top bar has the SAME server menu — name, status dot and chevron, no colour tile — and it switches the server", async () => {
+  const realMatchMedia = window.matchMedia;
+  window.matchMedia = ((query: string) => ({ matches: query === NARROW_QUERY, media: query, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
+  try {
+    setup();
+    rememberServer({ name: "orca-personal-box", url: "http://orca-personal-box:8787" });
+    rememberServer({ name: "lab", url: "http://lab-box:8787" });
+    network();
+    await mount();
+    await act(async () => { await flush(); await flush(); await flush(); });
+    const bar = q('[data-slot="topbar"]')!;
+    const trigger = bar.querySelector<HTMLElement>('[data-slot="topbar-server-menu"]')!;
+    expect(trigger).not.toBeNull();
+    expect(trigger.textContent).toBe("cloud");
+    expect(trigger.getAttribute("aria-label")).toBe("Server: cloud, online. Switch server");
+    expect(trigger.querySelector("[data-health]")!.getAttribute("data-health")).toBe("online");
+    expect(trigger.querySelector(".lucide-chevrons-up-down")).not.toBeNull();
+    expect(trigger.querySelector('[data-slot="server-swatch"]')).toBeNull(); // the whole app takes the server colour
+    expect(trigger.className).toContain("text-server-fg");
+    expect(bar.querySelector('[data-slot="topbar-identity"]')).toBeNull(); // the plain label is gone
+    await act(async () => { trigger.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerType: "touch" })); await flush(); await flush(); });
+    const items = [...document.querySelectorAll<HTMLElement>("[data-server]")];
+    expect(items.map((i) => i.getAttribute("aria-label"))).toEqual(["cloud, online", "personal, online", "lab, offline"]);
+    expect(items[0]!.getAttribute("aria-checked")).toBe("true");
+    expect(items[0]!.querySelector('[data-slot="server-swatch"]')).not.toBeNull(); // the rows keep their tiles
+    expect(document.querySelector('[data-slot="add-server"]')!.textContent).toContain("Add server");
+    await act(async () => { items[1]!.click(); await flush(); });
+    expect(JSON.parse(localStorage.getItem(CHOICE_KEY)!)).toEqual({ name: "personal", url: "http://orca-personal-box:8787" });
+    expect(reloads).toBe(1);
+  } finally {
+    window.matchMedia = realMatchMedia;
+  }
 });
 
 test("S6e: the ACTIVE server's identity — title, accent, favicon and sidebar name — and each menu row's name and colour", async () => {

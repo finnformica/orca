@@ -1,4 +1,4 @@
-// The server switcher (the sidebar's server menu, desktop; on a phone there is none — see Shell.tsx):
+// The server switcher (the sidebar's server menu on a desktop, the top bar's on a phone — Shell.tsx):
 // several fully separate Orca servers — a work box,
 // a personal one — that never talk to each other; only this browser talks to each. The app is
 // always served by its HOME server (the origin that loaded the page); every API call and the event

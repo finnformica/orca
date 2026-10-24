@@ -144,7 +144,6 @@ export function Shell({ crumbs, sidebarActions, children }: {
   useShellFallbacks();
   const activity = useOrchestratorActivity(); // the ONE subscriber feeding every launcher's indicator
   const route = useRoute();
-  const identity = useServerIdentity(); // the ACTIVE server's name and colour (lib/identity.ts applies them)
   const narrow = useNarrow();
   const [shellEl, setShellEl] = useState<HTMLElement | null>(null);
   useDockMotion(shellEl);
@@ -197,9 +196,9 @@ export function Shell({ crumbs, sidebarActions, children }: {
           )}
         >
           <button type="button" data-slot="topbar-mark" onClick={() => navigate("/")} aria-label="Orca — go to overview" className="flex size-8 shrink-0 items-center justify-center md:hidden"><RoundMark /></button>
-          {/* The phone has no sidebar: the server's name goes beside the mark. The server menu
-              itself is the sidebar's (desktop only) — this is the identity, not a switcher. */}
-          {identity && <span data-slot="topbar-identity" className="text-server-fg truncate text-sm font-medium md:hidden">{identity.label}</span>}
+          {/* The phone has no sidebar: the sidebar's own server menu goes beside the mark (the same
+              trigger and dropdown, in its header look). Desktop never renders it here. */}
+          {narrow && <SidebarServerMenu collapsed={false} place="header" />}
           <RepoSwitcher />
           {/* A phone keeps the page name: the crumbs never shrink under 4.5rem (they truncate), and the
               server and repo menus shrink first. */}
@@ -343,7 +342,8 @@ export const BrandName = ({ label, labelClass, labelSlot = "server-identity", cl
 /** The phone's bottom bar (below md only; the active page and New agent in the server's theme): what a thumb needs — Overview, Agents, New agent, the
  *  orchestrator and Settings, New agent centred — at the foot of the screen, above the home indicator.
  *  Everything else the old hamburger drawer exposed (Previews, Repos, Usage, Find, the instance
- *  switcher) now lives in Settings — see MobileNav in views/Pages.tsx. */
+ *  switcher) now lives in Settings — see MobileNav in views/Pages.tsx. The server switcher is the
+ *  top bar's server menu (`SidebarServerMenu place="header"`). */
 function BottomBar({ activity }: { activity: { running: boolean; unread: boolean } }) {
   const route = useRoute();
   const [, setAddNew] = useAtom(addNewOpenAtom);
@@ -398,7 +398,9 @@ function useShellFallbacks() {
 // machine) that this button opened on its own before #441. They are kept together, in one place,
 // rather than splitting "where do things run" back across the sidebar and the top bar — the instance
 // section has nowhere else on desktop that is not itself a second menu.
-function SidebarServerMenu({ collapsed }: { collapsed: boolean }) {
+// On a phone the top bar renders this SAME menu (`place="header"`): the trigger keeps the name, the
+// dot and the chevron in the top bar's server colour, and the dropdown is unchanged.
+function SidebarServerMenu({ collapsed, place = "sidebar" }: { collapsed: boolean; place?: "sidebar" | "header" }) {
   const [scope, setScope] = useAtom(instanceScopeAtom);
   useRepos(); // config (and with it the instance list) lands after first paint
   const choices = instanceChoices();
@@ -410,7 +412,10 @@ function SidebarServerMenu({ collapsed }: { collapsed: boolean }) {
   return (
     <DropdownMenu onOpenChange={(open) => { if (open) checkServers(true); }}>
       <DropdownMenuTrigger asChild>
-        <button type="button" data-slot="server-menu" className={cn("hover:bg-accent flex min-w-0 flex-1 items-center gap-2 rounded-md p-1", collapsed && "md:justify-center")}
+        <button type="button" data-slot={place === "header" ? "topbar-server-menu" : "server-menu"}
+          className={place === "header"
+            ? "hover:bg-accent text-server-fg flex h-8 min-w-0 shrink items-center gap-1.5 rounded-md px-2"
+            : cn("hover:bg-accent flex min-w-0 flex-1 items-center gap-2 rounded-md p-1", collapsed && "md:justify-center")}
           aria-label={`Server: ${label}, ${healthText(current.health)}. Switch server`}>
           {collapsed ? (
             <span className="relative inline-flex shrink-0">
