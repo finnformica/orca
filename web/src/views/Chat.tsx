@@ -487,8 +487,13 @@ function UserBubble({ text, files, clamp, footer, pending, slot = "chat-user", t
       {/* Each child keeps its own width on the right: a queued message's long label must not widen
           its bubble past a sent one's. */}
       <div data-slot="user-bubble-column" className="flex max-w-[85%] flex-col items-end">
-        {/* Pending: the message and its files fade; the queued label below stays readable. */}
-        {text && <div data-slot={textSlot} className={cn("bg-accent text-foreground rounded-lg px-3 py-2", pending && "opacity-60")}>
+        {/* Pending: the message and its files fade; the queued label below stays readable.
+            max-w-full: without it, a long blockquote holding an unbreakable code line (Quote on a
+            reply with a fenced block) made this box shrink-to-fit the code's own width instead of
+            the column's cap — the bubble grew past the chat column and its start ran under
+            whatever sits beside it. The cap lets the code's own horizontal scroll (Snippet.tsx)
+            take over instead, and prose text wraps normally again. */}
+        {text && <div data-slot={textSlot} className={cn("bg-accent text-foreground max-w-full rounded-lg px-3 py-2", pending && "opacity-60")}>
           <Clamp on={clamp} cut="max-h-[9rem]">
             <ChatMarkdown tone="text-foreground" breaks>{text}</ChatMarkdown>
           </Clamp>
