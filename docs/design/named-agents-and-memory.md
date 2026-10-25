@@ -587,13 +587,14 @@ sets three:
 | A reply in a thread an agent opened | orchestrator | that agent (`thread_link` → its branch) |
 | A reply in a thread linked to a workstream | workstream | workstream (no change) |
 | A worker **problem** report (failed, stopped, check failed, merge blocked) | orchestrator, at once | `chief`, at once |
-| A **clean** worker report | orchestrator, batched | `assistant`, batched; it tells `chief` only what needs it |
+| A **clean** worker report | orchestrator, batched | `agents.cleanReportsTo`, batched: `chief` by default (PR B as built) |
 | Orca events (`orca.pr.*`, `orca.preview.*`) on a subscription | orchestrator | the subscription's agent; old rows mean `chief` |
 | A fired scheduled wake | — | the agent named on it |
 | `orca ask <agent>` | — | that agent |
 
 The move of clean reports to the Assistant is the main load cut for the Chief of Staff. It is a
-switch in PR B (`agents.cleanReportsTo`, default `assistant`), so Finn can put it back.
+switch in PR B (`agents.cleanReportsTo`). As built, the default is `chief`: Finn has not chosen to
+move them yet. `"cleanReportsTo": "assistant"` in the app config moves them.
 
 ### 7.5 Escalation
 
@@ -856,6 +857,43 @@ The code changed these points of the plan. PR B builds on the code, not on the o
     from an outside wake keeps the outside grant.
   - `tests/integrations.test.ts`: `planDeliveries` with agent targets.
   - `tests/orchestratorPanel.test.tsx` (tabs) and `tests/integrationSettings.test.ts` (the Select).
+
+### PR B as built: changes to the plan
+
+The code changed these points of the plan. Each has its reason.
+
+- **Clean reports stay with the Chief of Staff by default.** `agents.cleanReportsTo` is `chief`
+  unless the app config sets `assistant`. Finn has not chosen to move them. A problem report always
+  goes to `chief` (`orchestrator.reportTarget`).
+- **The built-in agents need no row.** `server/agents.ts` merges `BUILTIN_AGENTS` (`shared/agents.ts`)
+  with the `agent` table. A row is written the first time a built-in agent's state changes. So the
+  Chief of Staff's wake path reads no new table, and `tests/orchestrator.test.ts` passes unchanged.
+- **One named step.** `20261025-team-agents` makes `agent`, adds `channel_link.agent` and widens the
+  `subscription.target_kind` CHECK with `agent`. A step's name must sort after the steps above it,
+  and `20261025-agent` sorts before `20261025-memory`.
+- **The model pin stays in the blob.** The composer's model picker writes `preferredModel` in each
+  agent's own workstream blob, as the orchestrator did. `agent.model` is the default of a user-added
+  agent. The Assistant's default is Sonnet (`ASSISTANT_DEFAULT_MODEL`).
+- **Every agent lives where the orchestrator lives.** `agent.instance` is in the table but not read
+  yet: one `orchestratorOn` keeps the one-waker rule and the route forwarding as they are.
+- **`--on agent:<name>` fires on the reply to the asker's own ask.** It matches the named agent's
+  next finished wake that carried a `[from <asker>]` message. A plain "next wake" fired on a wake
+  that never saw the ask.
+- **The name prefix is in the tool, not in each adapter.** `orca post` from an agent other than the
+  Chief of Staff starts with `**<Display name>**:` (`authoredPost`). The Chief of Staff's posts stay
+  as they were. One place covers every adapter. On an adapter that posts as the user (Slack), only
+  the Chief of Staff may post.
+- **An agent's own post carries its branch as scope.** A thread it opens is then linked to
+  `("@orca", <its branch>)`, so a reply comes back to it. A post about a workstream keeps the
+  workstream's scope.
+- **The routing helpers are in `shared/integrations.ts`.** `inboundAgent` and `agentOfBranch` live
+  there, because that module imports nothing; `shared/agents.ts` re-exports them.
+- **`orca ask` and `orca agent list|state` are read verbs for a grant.** The message keeps the
+  sender's grant, so the hop gains nothing. A `notify` wake still runs no verb.
+- **`orca agent add` has an API, not a Settings form yet.** `POST /api/orchestrator/agents` and the
+  user's own chat with the Chief of Staff add an agent. A Settings form is a later step.
+- **Reflection runs for each agent.** The minute tick calls `maybeReflect` for each agent in turn.
+  An agent with no turns has nothing to read, so it never starts a pass.
 
 ### Out of scope
 
