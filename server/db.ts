@@ -2042,6 +2042,11 @@ export async function handoffOutputs(runIds: string[]): Promise<{ runId: string;
 }
 
 // ---- queued messages ----
+// A DISPATCHED row is not dead: a workstream turn the orchestrator started references the rows of
+// its wake by id (`turn.structured.origin.messageIds`, shared/agent.ts TurnOrigin), and the chat and
+// `orca read` join them to show the person's words. So dispatched rows are kept. Only undispatched
+// rows are ever deleted (cancel, drop). If a prune of old rows is ever added, it must skip every row
+// a turn's origin references.
 
 export type QueuedMessage = {
   id: number; repo: string; branch: string; worktreePath: string;
@@ -2138,6 +2143,16 @@ export async function claimQueuedMessage(repo: string, branch: string, onlyGrant
   });
 }
 
+/** The `queued_message` rows a turn's origin references, by id (dispatched or not), for the join
+ *  that shows their words (server/origin.ts). A missing id is simply not returned. */
+export async function originRows(ids: number[]): Promise<{ id: number; instruction: string; createdAt: number }[]> {
+  if (!ids.length) return [];
+  return withRetry(async (sql) => {
+    const rows = await sql`SELECT id, instruction, created_at FROM queued_message WHERE user_id = ${currentUser()} AND id IN ${sql(ids)}`;
+    return (rows as Record<string, unknown>[]).map((r) => ({ id: Number(r.id), instruction: String(r.instruction), createdAt: Number(r.created_at) }));
+  });
+}
+
 /** Put a claimed message back on the queue: its launch failed, so it was never sent. Without this
  *  a failed dispatch left it claimed, and the message was lost. */
 export async function releaseQueuedMessage(id: number): Promise<void> {
@@ -2146,14 +2161,16 @@ export async function releaseQueuedMessage(id: number): Promise<void> {
   });
 }
 
-/** Drop a queued message before it is sent (the user changed their mind). */
+/** Drop a queued message before it is sent (the user changed their mind). Undispatched only: a
+ *  dispatched row may be referenced by a turn's origin and must stay (see "queued messages" above). */
 export async function cancelQueuedMessage(id: number): Promise<void> {
   return withRetry(async (sql) => {
     await sql`DELETE FROM queued_message WHERE id = ${id} AND user_id = ${currentUser()} AND dispatched_at IS NULL`;
   });
 }
 
-/** Drop every undispatched message for a branch — so archiving a cancelled workstream can't be
+/** (Undispatched only: dispatched rows are referenced by turns' origins and must not be pruned.)
+ *  Drop every undispatched message for a branch — so archiving a cancelled workstream can't be
  *  resurrected by a message that was queued behind its running agent. */
 export async function dropQueuedMessages(repo: string, branch: string): Promise<void> {
   return withRetry(async (sql) => {

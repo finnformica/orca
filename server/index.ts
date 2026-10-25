@@ -48,6 +48,7 @@ import { flushMachineSamples, liveAnswer, machineReport, newestLive, sliceMaxGbH
 import { protectionsReport, withLiveState } from "./protections";
 import * as verbs from "./verbs";
 import * as repos from "./repos";
+import { linkOrigins } from "./origin";
 import { BusyError, checkGate, compact, launchOptions, launchQueued, newWorktree, placement, removeWorktree, startPreview } from "./verbs";
 import { ORCHESTRATOR_REPO, attachmentRefs, workstreamShots, mergeSafe, prDescriptionPrompt, sweepText, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
 import { AGENT_PROVIDERS, attachCommand, isAgentProvider, providerBinary, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn } from "../shared/agent";
@@ -1711,6 +1712,8 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (repo.name === ORCHESTRATOR_REPO && !degraded) await handoff.linkTurns(turns).catch(db.logUnlessDown("handoff links"));
     // The forms it asked (`orca ask-form`), linked the same way: the chat draws a form card for each.
     if (repo.name === ORCHESTRATOR_REPO && !degraded) await forms.linkTurns(turns).catch(db.logUnlessDown("form links"));
+    // The request origin of a turn the orchestrator started: its referenced messages, joined (server/origin.ts).
+    if (!degraded) await linkOrigins(turns).catch(db.logUnlessDown("origin links"));
     for (const t of turns) if (t.instruction !== undefined) t.prompt = "";
     const body = page ? { turns, older: page.older } : turns;
     return degraded ? degradedJson(body) : json(body);

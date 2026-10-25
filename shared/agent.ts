@@ -139,17 +139,22 @@ export function backgroundResumeInstruction(tasks: UnfinishedTask[], reason: "ca
 }
 export const isBackgroundResume = (instruction: string | undefined): boolean => Boolean(instruction?.startsWith(BACKGROUND_MARKER));
 
-/** Why a workstream turn exists: the person's words in the orchestrator wake that started it
- *  (`orca spawn` / `send` / `address`). For humans only: it is stored in `turn.structured.origin`,
- *  shown above the brief in the chat and by `orca read`, and never sent to the worker. */
+/** Why a workstream turn exists: the orchestrator wake that started it (`orca spawn` / `send` /
+ *  `address`) and the person's messages in that wake, by REFERENCE: `queued_message` ids, never a copy
+ *  of the text. Stored in `turn.structured.origin`; the chat and `orca read` join the rows to show the
+ *  words. For humans only: it is never sent to the worker. */
 export type TurnOrigin = {
-  runId: string; // the orchestrator wake's run id
-  at: number; // when that wake started
-  /** Each message of the wake that a person wrote, in order. `from` is absent for the user's own
-   *  chat; an outside sender has its adapter, name and place. `cut`: the text was shortened. */
-  messages: { text: string; cut?: true; from?: { adapter: string; sender?: string; place?: string } }[];
-  /** How many messages of the wake were worker reports or Orca events (left out above). */
-  skipped: number;
+  wakeRunId: string;
+  /** The `queued_message` rows of the wake that a person wrote (your chat, or an outside sender), in order. */
+  messageIds: number[];
+  /** How many messages of the wake were worker reports or Orca events (not referenced). */
+  otherCount: number;
+};
+/** One referenced message, joined from its `queued_message` row (`missing`: the row is gone). */
+export type OriginMessage = {
+  id: number; at?: number; text?: string; missing?: true;
+  /** An outside sender: its adapter, name and place. Absent for the user's own chat. */
+  from?: { adapter: string; sender?: string; place?: string };
 };
 
 export type AgentTurn = {
@@ -183,8 +188,10 @@ export type AgentTurn = {
   handoffs?: string[];
   /** Forms this turn asked (`orca ask-form`), by id — server-decorated (forms.linkTurns). */
   forms?: string[];
-  /** The orchestrator wake that started this turn and the person's words in it (read off `structured`). */
+  /** The orchestrator wake that started this turn and its person messages, by id (read off `structured`). */
   origin?: TurnOrigin;
+  /** `origin.messageIds` joined to their rows — server-decorated (`originMessages` in server/db.ts). */
+  originMessages?: OriginMessage[];
 };
 
 const OUTCOME_HEADINGS = ["outcome", "verification", "decisions", "remaining", "commits"] as const;
