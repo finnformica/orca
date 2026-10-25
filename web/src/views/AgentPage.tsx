@@ -4,8 +4,10 @@
 // Source: branch → base and the latest commit) on Overview; the conversation lives on its own Chat
 // tab — exactly the viewport below the header and tabs, no card, no page scroll.
 import type { ReactNode } from "react";
-import { AlertTriangle, ExternalLink, GitBranch, GitCommitHorizontal, GitPullRequest } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ExternalLink, GitBranch, GitCommitHorizontal, GitPullRequest } from "lucide-react";
 import type { ChangeSummary } from "../../../server/git";
+import { navigate } from "@/lib/route";
+import { Button } from "@/components/ui/button";
 import { baseBranch, instanceChoices, modelFor, thisInstance, type Row } from "../store";
 import { agentFailure, ago, formatDuration, prPill, rowDuration, rowInstance, rowTone } from "../workstream";
 import { modelLabel } from "../../../shared/models";
@@ -75,14 +77,22 @@ export function DetailsCard({ row, summary, actions, extra }: { row: Row; summar
  *  key actions at the right — the tabs sit directly under it, in the same sticky block. Below md,
  *  it splits into two rows instead — the title alone (squeezed beside the status dot and every
  *  action icon, it wrapped one word per line on a phone), then status + actions. Everything else
- *  (created, model, instance, source, preview) lives on the Overview tab's Details card. */
+ *  (created, model, instance, source, preview) lives on the Overview tab's Details card.
+ *  A phone shows this page with NO top bar (Shell's `phoneBarePage`), so the title row starts with
+ *  Back to the Agents list — the breadcrumb that led here is gone with the bar. Its 44px touch
+ *  target overhangs the 24px row (negative margins) rather than making the row taller. */
 export function AgentHeader({ repo, title, status, source, actions }: { repo: string; title: ReactNode; status?: ReactNode; source?: ReactNode; actions?: ReactNode }) {
   return (
     <div data-slot="agent-header" className="flex min-w-0 flex-col gap-1 md:min-h-9 md:flex-row md:items-center md:gap-x-3 md:gap-y-0">
-      <h1 className="text-heading flex min-w-0 items-center gap-1.5 text-base font-semibold tracking-tight">
-        <span className="text-muted-foreground hidden shrink-0 font-normal sm:inline">{repo} /</span>
-        <span className="min-w-0 truncate">{title}</span>
-      </h1>
+      <div className="flex min-w-0 items-center gap-1 md:contents">
+        <Button size="icon" variant="ghost" data-slot="agent-back" className="-ml-2 size-8 shrink-0 max-md:-my-2.5 md:hidden" aria-label="Back to Agents" onClick={() => navigate("/agents")}>
+          <ArrowLeft className="size-4" />
+        </Button>
+        <h1 className="text-heading flex min-w-0 items-center gap-1.5 text-base font-semibold tracking-tight">
+          <span className="text-muted-foreground hidden shrink-0 font-normal sm:inline">{repo} /</span>
+          <span className="min-w-0 truncate">{title}</span>
+        </h1>
+      </div>
       <div className="flex min-w-0 items-center gap-x-3 md:contents">
         {status && <span data-slot="agent-header-status" className="flex shrink-0 items-center gap-1.5 text-xs">{status}</span>}
         {source && <span data-slot="agent-header-source" className="text-muted-foreground hidden min-w-0 items-center gap-1 text-xs md:flex">{source}</span>}
@@ -114,15 +124,18 @@ export const HeaderSource = ({ branch, prNumber, prUrl }: { branch: string; prNu
  *  sized to exactly the viewport below the page's sticky header (`CHAT_FILL_HEIGHT`, 100dvh-based so
  *  it also works on a phone and clears the PWA safe areas). The transcript scrolls inside it; the
  *  composer stays pinned at its foot. Full-bleed like the header (-mx), so the log's and composer's
- *  divider lines run to the column's edges, and on desktop it takes `main`'s bottom padding too
- *  (-mb-6), so the composer sits near the bottom of the viewport.
+ *  divider lines run to the column's edges, and it takes `main`'s bottom padding too (-mb), so the
+ *  composer sits at the bottom of the viewport — on a phone exactly on the bottom bar's top edge
+ *  (its 3.1875rem + max(6px, the safe-area inset), as the orchestrator page), where it once left a
+ *  gap of `main`'s padding above the bar.
  *
- *  What it subtracts: the top bar (3.5rem) — plus, on a phone, `main`'s 5.5rem bottom padding (the
- *  bottom bar) — and the sticky header's live height (--stick). `main`'s top padding is NOT
+ *  What it subtracts: on desktop the top bar (3.5rem); on a phone the bottom bar instead (the top
+ *  bar is hidden there, Shell's `phoneBarePage`, and the sticky header's own notch inset is inside
+ *  --stick) — and the sticky header's live height (--stick). `main`'s top padding is NOT
  *  subtracted: `STICKY_HEADER` pulls itself up over it (-mt-6), and the Tabs root's gap is zeroed
- *  (`AGENT_TABS`), so the header sits flush under the top bar and the conversation right under it. */
+ *  (`AGENT_TABS`), so the header sits flush at the top and the conversation right under it. */
 const CHAT_FILL_HEIGHT =
-  "h-[calc(var(--vvh,100dvh)-9rem-env(safe-area-inset-top)-env(safe-area-inset-bottom)-var(--stick,0px))] " +
+  "h-[calc(var(--vvh,100dvh)-3.1875rem-max(0.375rem,env(safe-area-inset-bottom))-var(--stick,0px))] max-md:-mb-[calc(5.5rem+env(safe-area-inset-bottom))] " +
   "md:h-[calc(var(--vvh,100dvh)-3.5rem-env(safe-area-inset-top)-var(--stick,0px))]";
 
 /** The agent page's Tabs root: no gap — the header's own padding and each tab's top padding space it. */

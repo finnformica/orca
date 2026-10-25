@@ -190,11 +190,15 @@ export function Shell({ crumbs, sidebarActions, children }: {
         {/* Opaque, not a translucent blur: scrolled content (a long diff, the PR comments) showed through it.
             The header always clears the notch: the update bar floats over it. */}
         {/* On a desktop the top bar is part of the card (neutral); on a phone it is the themed frame. */}
+        {/* A phone's conversation pages (the orchestrator, an agent's page) have no top bar: the chat
+            gets its 56px, and each page's own header carries Back (Finn: the chat got too little of
+            the screen). The bottom bar stays, so every page is still one tap away. */}
         <header
           data-slot="topbar" data-chrome={narrow ? "" : undefined}
           className={cn(
             "bg-background sticky top-0 z-30 flex h-14 items-center gap-3 border-b px-4 md:px-6 max-md:gap-2 max-md:px-[max(1rem,env(safe-area-inset-left))]",
             "max-md:h-[calc(3.5rem+env(safe-area-inset-top))] max-md:pt-[env(safe-area-inset-top)]",
+            phoneBarePage(route) && "max-md:hidden",
           )}
         >
           {/* The phone has no sidebar: the sidebar's own server button stands in for the mark when
@@ -243,6 +247,10 @@ export function Shell({ crumbs, sidebarActions, children }: {
 /** An agent page's Chat tab: its composer fills the viewport's foot, so the quick-ask pill (which
  *  floats there) would sit on top of it — the tab is a conversation already, the pill is hidden. */
 export const chatTab = (route: Route) => (route.name === "pr" || route.name === "local") && route.sub === "chat";
+
+/** The pages a phone shows WITHOUT the top bar: the orchestrator and an agent's page. Each has its
+ *  own header with a Back button, and the bottom bar keeps the navigation. Desktop never reads it. */
+export const phoneBarePage = (route: Route) => route.name === "orchestrator" || route.name === "pr" || route.name === "local";
 
 /** "/" then a page name, Vercel's top-bar breadcrumb. */
 export const Crumb = ({ children, to }: { children: ReactNode; to?: string }) => (

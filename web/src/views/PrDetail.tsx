@@ -27,7 +27,9 @@ import { FilesChanged } from "./FilesChanged";
  *  padding, and pulled up over `main`'s top padding (-mt-6) so it sits flush under the top bar — every
  *  rem it doesn't take is the Chat tab's (`CHAT_FILL_HEIGHT`). Shared so the PR page and the
  *  local-session page can't drift apart. */
-export const STICKY_HEADER = "bg-background sticky top-14 z-20 -mx-4 -mt-6 flex flex-col gap-1 border-b px-4 py-2 md:-mx-6 md:px-6";
+// A phone has no top bar on this page (Shell's `phoneBarePage`): the header sticks at the screen's
+// top and pads itself clear of the notch; --stick then carries that inset for the tabs' content.
+export const STICKY_HEADER = "bg-background sticky top-14 z-20 -mx-4 -mt-6 flex flex-col gap-1 border-b px-4 py-2 md:-mx-6 md:px-6 max-md:top-0 max-md:pt-[calc(0.5rem+env(safe-area-inset-top))]";
 
 /** The tab row under the header: shorter than the default, and pulled left by a trigger's own
  *  padding and border (px-3 + 1px) so the "Overview" label lines up with the repo name above it. */

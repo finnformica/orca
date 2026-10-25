@@ -136,7 +136,7 @@ export function InboxPage() {
   if (open && narrow) return threadView(true);
   return (
     <div className="space-y-5">
-      <h1 className="text-2xl font-semibold tracking-tight">Inbox</h1>
+      <h1 className="text-2xl font-semibold tracking-tight max-md:hidden">Inbox</h1>
       {open ? (
         <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
           {list}
