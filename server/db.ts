@@ -1077,6 +1077,72 @@ export const MIGRATIONS: MigrationStep[] = [
         ADD CONSTRAINT integration_events_check CHECK (events IN ('trigger','record','off'));
     `,
   },
+  {
+    name: "20261025-memory",
+    idempotent: true,
+    // The agents' memory (server/memory.ts, docs/design/named-agents-and-memory.md §2). `memory` is
+    // each memory's current state; `memory_revision` is every state, append-only (no code updates or
+    // deletes a row); `memory_link` joins two memories with a free relation word. `owner` is the agent
+    // column: an agent name ('chief') or 'shared'. `tags_text` is the tags joined by spaces, written
+    // with them, because a generated column may only use IMMUTABLE functions and array_to_string is not.
+    sql: `
+      CREATE TABLE IF NOT EXISTS memory (
+        id BIGSERIAL PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        owner TEXT NOT NULL,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        tags TEXT[] NOT NULL DEFAULT '{}',
+        tags_text TEXT NOT NULL DEFAULT '',
+        importance SMALLINT NOT NULL DEFAULT 5 CHECK (importance BETWEEN 1 AND 10),
+        pinned BOOLEAN NOT NULL DEFAULT false,
+        source TEXT NOT NULL,
+        trust TEXT NOT NULL CHECK (trust IN ('trusted','untrusted')),
+        state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active','archived','forgotten')),
+        revision INTEGER NOT NULL DEFAULT 1,
+        created_by TEXT NOT NULL,
+        updated_by TEXT NOT NULL,
+        created_at BIGINT NOT NULL,
+        updated_at BIGINT NOT NULL,
+        recall_count INTEGER NOT NULL DEFAULT 0,
+        last_recalled_at BIGINT,
+        search tsvector GENERATED ALWAYS AS (
+          setweight(to_tsvector('english', title), 'A') ||
+          setweight(to_tsvector('english', tags_text), 'B') ||
+          setweight(to_tsvector('english', body), 'C')) STORED
+      );
+      CREATE INDEX IF NOT EXISTS memory_search ON memory USING GIN (search);
+      CREATE INDEX IF NOT EXISTS memory_owner ON memory (user_id, owner, state);
+      CREATE INDEX IF NOT EXISTS memory_recent ON memory (user_id, updated_at DESC);
+      CREATE TABLE IF NOT EXISTS memory_revision (
+        id BIGSERIAL PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        memory_id BIGINT NOT NULL REFERENCES memory(id),
+        revision INTEGER NOT NULL,
+        title TEXT NOT NULL, body TEXT NOT NULL, tags TEXT[] NOT NULL,
+        importance SMALLINT NOT NULL, pinned BOOLEAN NOT NULL,
+        source TEXT NOT NULL, trust TEXT NOT NULL, state TEXT NOT NULL, owner TEXT NOT NULL,
+        by TEXT NOT NULL,
+        reason TEXT,
+        run_id TEXT,
+        at BIGINT NOT NULL,
+        UNIQUE (memory_id, revision)
+      );
+      CREATE INDEX IF NOT EXISTS memory_revision_recent ON memory_revision (user_id, at DESC);
+      CREATE INDEX IF NOT EXISTS memory_revision_by ON memory_revision (user_id, by, at);
+      CREATE TABLE IF NOT EXISTS memory_link (
+        user_id TEXT NOT NULL,
+        from_id BIGINT NOT NULL REFERENCES memory(id),
+        to_id BIGINT NOT NULL REFERENCES memory(id),
+        relation TEXT NOT NULL,
+        by TEXT NOT NULL,
+        at BIGINT NOT NULL,
+        removed_at BIGINT,
+        PRIMARY KEY (user_id, from_id, to_id, relation)
+      );
+      CREATE INDEX IF NOT EXISTS memory_link_to ON memory_link (user_id, to_id);
+    `,
+  },
 ];
 
 export type MigrationMismatch = { id: number; recorded: string; expected: string; idempotent: boolean };

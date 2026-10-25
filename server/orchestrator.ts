@@ -30,6 +30,7 @@ import * as repos from "./repos";
 import * as handoff from "./handoff";
 import * as forms from "./forms";
 import * as secrets from "./secrets";
+import * as memory from "./memory";
 import { selfServer } from "./servers";
 import { stateDir } from "./state";
 import { API_PORT } from "./ports";
@@ -47,6 +48,7 @@ import {
   machineText, type BoardRow, type FailStreak, type MachineReport, type OrchStatus, type VerifiedMark, type WakeExit,
 } from "../web/src/workstream";
 import { activityLines, type AgentTurn } from "../shared/agent";
+import { CHIEF, provenance, reportWorkstream } from "../shared/memory";
 import { providerOfModel } from "../shared/models";
 import { attachmentIdOf, attachmentRefusal, catchAllPostRefusal, deleteRefusal, grantKey, grantRefusal, outboundRefusal, repoScoped, type Grant, type ReplyTo } from "../shared/integrations";
 import * as integrationStore from "./integrations/store";
@@ -474,6 +476,8 @@ async function wake(cfg: OrcaConfig, fresh: string[], grant?: Grant, freshReplyT
         // a worktree's bin/ that may be deleted under it (incident 2026-10-14).
         ORCA_URL: `http://127.0.0.1:${API_PORT}`,
         PATH: `${primary.mainBin()}:${process.env.PATH ?? ""}`,
+        // Who calls `orca` (bin/orca sends it): the owner of the memories it writes.
+        ORCA_AGENT: CHIEF,
       },
     });
     await patch({ sessionId: receipt.sessionId, handling: { runId: receipt.runId, instance: db.instanceName(), messages }, cutOff: null, cutOffProgress: null });
@@ -1038,7 +1042,11 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       await patch({ notes: text });
       return "Notes saved.";
     }
-    default: throw new Error(`unknown command "${verb}". Commands: board, machine, spawn, send, address, archive, stop [--drop-queue], sweep [--confirm], merge --when-green, preview [--status | --push-to-template [--confirm]], status, chats, read, notes, handoff, cloudflare, slack, gmail`);
+    case "memory": {
+      const name = typeof args._agent === "string" && args._agent ? args._agent : CHIEF;
+      return memory.memoryTool(name, words, args, () => memoryActor(name, b));
+    }
+    default: throw new Error(`unknown command "${verb}". Commands: board, machine, spawn, send, address, archive, stop [--drop-queue], sweep [--confirm], merge --when-green, preview [--status | --push-to-template [--confirm]], status, chats, read, notes, memory, handoff, cloudflare, slack, gmail`);
   }
 }
 
@@ -1047,6 +1055,25 @@ const many = (v: unknown): string[] => (v === undefined ? [] : (Array.isArray(v)
 
 /** `orca handoff`: a pack of context for another Orca server (server/handoff.ts). It only PREPARES:
  *  the user sends it from the Handoffs page with a click; nothing here sends anything. */
+/** Who writes a memory from this wake, and with what trust (shared/memory.ts `provenance`): read off
+ *  the wake in flight — its grant, the messages it handles, the tool calls it made so far, and the
+ *  workstreams an outside sender steered. The server decides it; the agent cannot claim trust. */
+async function memoryActor(name: string, b: Blob): Promise<memory.Actor & { kind: "agent" }> {
+  const runId = b.handling?.runId;
+  const messages = b.handling?.messages ?? [];
+  const steps = runId ? await agent.runSteps(runId).catch(() => []) : [];
+  const scoped = new Set<string>();
+  for (const m of messages) {
+    const ws = reportWorkstream(m);
+    if (ws && ((await db.enrichment(ws.repo))[ws.branch] ?? {}).grantScope) scoped.add(`${ws.repo}::${ws.branch}`);
+  }
+  const prov = provenance({
+    agent: name, runId, grantLevel: b.wakeGrant?.level, messages, scopedWorkstreams: scoped,
+    steps: steps.filter((s) => s.kind === "tool").map((s) => ({ name: s.name, command: typeof (s.input as { command?: unknown } | undefined)?.command === "string" ? (s.input as { command: string }).command : undefined })),
+  });
+  return { kind: "agent", agent: name, runId, prov };
+}
+
 async function handoffVerb(cfg: OrcaConfig, words: string[], args: ToolArgs): Promise<string> {
   const sub = words[0];
   if (sub === "list") {
