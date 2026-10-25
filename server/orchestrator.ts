@@ -42,7 +42,7 @@ import { gmailTool } from "./gmailTool";
 import * as policy from "./integrations/policy";
 import { featuresOf, runLimits, runsHere, type OrcaConfig, type RepoConfig } from "./config";
 import {
-  MODEL_LADDER, NO_REPLY_PLACEHOLDER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, boardText, briefProblems, continuation, isWorkerEvent, isWorkerProblem, onlyCleanReports,
+  MODEL_LADDER, NO_REPLY_PLACEHOLDER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, boardText, briefProblems, continuation, isUserMessage, isWorkerProblem, wakeFromUser, onlyCleanReports,
   handoffRef, joinMessages, ladderStep, mergedPrIsHistory, nextFailStreak, orchStatusText, orchStatusUpdate, verifiedMark, verifiedState, orchestratorPrompt, sessionHint, sweepText, turnSource, wakeExitReason, wakeProgress, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
   machineText, type BoardRow, type FailStreak, type MachineReport, type OrchStatus, type VerifiedMark, type WakeExit,
 } from "../web/src/workstream";
@@ -421,7 +421,7 @@ async function drain(cfg: OrcaConfig): Promise<void> {
   const pending = await db.queuedMessages(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH);
   if (!pending.length || agent.isRunning(dir())) return;
   const wakes = (await blob()).wakes ?? 0;
-  const human = pending.some((m) => !isWorkerEvent(m.instruction));
+  const human = pending.some((m) => isUserMessage(m.instruction));
   if (!human && wakes >= MAX_WAKES) return; // paused
   // The same rule as for a fresh report: clean reports that piled up while it worked wait for the
   // batch too. Without this, its own exit re-delivered them one wake at a time — every report
@@ -454,7 +454,7 @@ async function wake(cfg: OrcaConfig, fresh: string[], grant?: Grant, freshReplyT
     const shell = cfg.orchestratorShell !== false && !grant;
     // The newest outside message is the one `orca post --reply` answers.
     const replyTo = freshReplyTo ?? [...claimed].reverse().find((m) => m.replyTo)?.replyTo;
-    const fromUser = !grant && messages.every((m) => !isWorkerEvent(m));
+    const fromUser = wakeFromUser(messages, grant);
     await patch({ wakeGrant: grant ?? null, wakeReplyTo: replyTo ?? null, wakeFromUser: fromUser || null }); // before the launch: its first `orca` call is checked
     const prompt = orchestratorPrompt({ fresh: !next.resume, notes: b.notes, board: boardText(await board(cfg)), messages, shell, cutOff: b.cutOff, cutOffProgress: b.cutOffProgress });
     const receipt = await agent.launch(dir(), dir(), prompt, {

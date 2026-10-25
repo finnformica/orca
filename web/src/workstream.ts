@@ -1287,6 +1287,14 @@ export function splitMessages(instruction: string): string[] {
   const parts = instruction.split("\n\n");
   return parts.some(isWorkerEvent) ? parts : [instruction];
 }
+/** A message the user wrote: not a worker report and not Orca's own event (`orca.*`: a PR's CI,
+ *  conflicts, a preview, a merge). Both of those are automated — Orca's, never the user's words. */
+export const isUserMessage = (text: string): boolean => !isWorkerEvent(text) && !isOrcaEvent(text);
+/** Is a wake the user's own (`wakeFromUser`, which lets a steer clear an outside grant)? Only with
+ *  no outside sender's grant and EVERY message the user's: a worker report or an Orca event may
+ *  carry outside text (a PR title, a Discord message in a report), so either keeps the grant. */
+export const wakeFromUser = (messages: string[], grant?: unknown): boolean =>
+  !grant && messages.length > 0 && messages.every(isUserMessage);
 /** Who a wake answers, from the messages it carried: worker reports and Orca's own events (a PR's
  *  CI or conflicts) alone → `agents`; anything you said (typed, quick-ask, the palette, a toast's
  *  Ask, the New-draft box) → `human`. */
@@ -1933,7 +1941,8 @@ function cutOffProgressSection(progress: string | undefined): string[] {
  *  restarts after a context reset); the notes and a fresh board go in EVERY time, because they are
  *  what makes the session disposable — everything it needs to carry on is outside its context. */
 export function orchestratorPrompt(input: { fresh: boolean; notes?: string; board: string; messages: string[]; shell?: boolean; cutOff?: string; cutOffProgress?: string }): string {
-  const human = input.messages.filter((m) => !isWorkerEvent(m)), reports = input.messages.filter(isWorkerEvent);
+  const human = input.messages.filter(isUserMessage), reports = input.messages.filter(isWorkerEvent);
+  const events = input.messages.filter((m) => !isWorkerEvent(m) && isOrcaEvent(m));
   return [
     ...(input.fresh ? [ORCHESTRATOR_ROLE, ""] : []),
     // Every wake, not just the first: the setting can change under a session that is being resumed.
@@ -1959,11 +1968,13 @@ export function orchestratorPrompt(input: { fresh: boolean; notes?: string; boar
     // The wake before this one died mid-turn: say so, or the user has to ask why it went quiet.
     ...(input.cutOff ? ["", "## Previous wake was cut off", `Your previous wake ${input.cutOff} before it finished its turn, so the user got no reply. What it was handling is below again. It may already have acted: check the board before you spawn or send (never start the same work twice), then finish the reply.`] : []),
     ...cutOffProgressSection(input.cutOffProgress),
-    // What the user said and what the workers reported, in separate labelled sections — the user
-    // first — so a report's text is never read as an instruction from them, nor theirs as a report.
+    // What the user said, what the workers reported and Orca's own events, in separate labelled
+    // sections — the user first — so automated text is never read as an instruction from them,
+    // nor theirs as automated.
     // Each message stays its own: several sent while you worked are separate messages, in order.
     ...(human.length ? ["", "## From the user", ...(human.length > 1 ? [`${human.length} separate messages, oldest first.`, ""] : []), joinMessages(human)] : []),
     ...(reports.length ? ["", "## Worker reports", "Automated, from Orca as your workers finish — not the user.", "", joinMessages(reports)] : []),
+    ...(events.length ? ["", "## Orca events", "Automated, from Orca as PRs, previews and merges change — not the user.", "", joinMessages(events)] : []),
     // The files those messages carried, by id: the paths above are on THIS machine, so a worker
     // elsewhere gets one only through `--attach <id>`.
     ...attachmentSection(input.messages),

@@ -20,8 +20,9 @@ import * as verbs from "../server/verbs";
 import { run } from "../server/run";
 import { parseConfigDocument, type OrcaConfig } from "../server/config";
 import type { AgentTurn } from "../shared/agent";
+import { ORCA_EVENT_MARKER, orcaEventText } from "../shared/integrations";
 import {
-  MESSAGE_BREAK, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, WORKER_EVENT_MARKER, boardText, continuation, isWorkerProblem, ladderStep, nextFailStreak, onlyCleanReports, orchestratorStatus, sessionHint, splitMessages, wakeExitReason,
+  MESSAGE_BREAK, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, WORKER_EVENT_MARKER, boardText, continuation, isUserMessage, isWorkerProblem, wakeFromUser, ladderStep, nextFailStreak, onlyCleanReports, orchestratorStatus, sessionHint, splitMessages, wakeExitReason,
   wakeProgress, wakeStoppedLine, workerEvent,
 } from "../web/src/workstream";
 import { installFakeGh, makeScratchRepo, setPrListFixture } from "./helpers";
@@ -1139,4 +1140,64 @@ test("O30: orca repo list / add — the orchestrator sets up a repo the board do
   } finally {
     for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   }
+});
+
+test("an Orca event is not the user's input: own prompt section, never wakeFromUser", async () => {
+  wire();
+  const ci = orcaEventText({ topic: "orca.pr.ci_failed", scope: { repo: "r", branch: "feat" }, title: "Add login", text: "Failing: ci", link: { pr: 7 } });
+  const conflicts = orcaEventText({ topic: "orca.pr.conflicts", scope: { repo: "r", branch: "feat" }, title: "Add login", text: "Has merge conflicts with its base." });
+  // Each launch N waits while `$ORCA_FAKE_HOLD.N` exists, so a test reads the flag of the wake that runs.
+  await fakeClaude(`n=$(ls "$ORCA_FAKE_LOG" | wc -l | tr -d ' ')
+while [ -f "$ORCA_FAKE_HOLD.$n" ]; do sleep 0.02; done
+${OK}`);
+  for (const n of [1, 2, 3]) await writeFile(`${hold}.${n}`, "");
+  const launched = async (n: number) => { for (let i = 0; i < 400 && (await launches()).length < n; i++) await new Promise((r) => setTimeout(r, 25)); };
+
+  // 1. An event alone: it wakes the orchestrator (a problem), but it is not the user's wake.
+  await orchestrator.deliverReport(cfg(), ci);
+  await launched(1);
+  expect((await orchBlob()).wakeFromUser ?? null).toBeNull();
+  // 2. While it works, the user speaks and another event comes: they drain into ONE mixed wake.
+  await orchestrator.message(cfg(), "fix it");
+  await orchestrator.deliverReport(cfg(), conflicts);
+  await rm(`${hold}.1`);
+  await launched(2);
+  // A mixed wake is not all the user's: the event may carry outside text, so a grant stays.
+  expect((await orchBlob()).wakeFromUser ?? null).toBeNull();
+  await rm(`${hold}.2`);
+  const [eventOnly, mixed] = await settled(orchTurns, 2);
+  // 3. The user alone: the wake is theirs.
+  await orchestrator.message(cfg(), "and now?");
+  await launched(3);
+  expect((await orchBlob()).wakeFromUser).toBe(true);
+  await rm(`${hold}.3`);
+  const [, , userOnly] = await settled(orchTurns, 3);
+
+  expect(eventOnly!.prompt).not.toContain("## From the user");
+  expect(eventOnly!.prompt).toContain(`## Orca events\nAutomated, from Orca as PRs, previews and merges change — not the user.\n\n${ci}`);
+  expect(eventOnly!.source).toBe("agents");
+  // The user's words stay the user's; the event goes under its own heading, after them.
+  const user = mixed!.prompt.indexOf("## From the user\nfix it"), events = mixed!.prompt.indexOf("## Orca events\n");
+  expect(user).toBeGreaterThan(-1);
+  expect(events).toBeGreaterThan(user);
+  expect(mixed!.prompt.slice(user, events)).not.toContain(ORCA_EVENT_MARKER);
+  expect(mixed!.prompt.slice(events)).toContain(conflicts);
+  expect(mixed!.source).toBe("human");
+  expect(userOnly!.prompt).toContain("## From the user\nand now?");
+  expect(userOnly!.prompt).not.toContain("## Orca events");
+  for (const n of [1, 2, 3]) await rm(`${hold}.${n}`, { force: true });
+});
+
+test("wakeFromUser: only a wake with no grant whose every message is the user's", () => {
+  const event = orcaEventText({ topic: "orca.pr.ci_failed", title: "Add login", text: "Failing: ci" });
+  const report = `${WORKER_EVENT_MARKER} r/feat "Feat" — done`;
+  expect(isUserMessage("fix it")).toBe(true);
+  expect(isUserMessage(event)).toBe(false);
+  expect(isUserMessage(report)).toBe(false);
+  expect(wakeFromUser(["fix it"])).toBe(true);
+  expect(wakeFromUser([event])).toBe(false);
+  expect(wakeFromUser(["fix it", event])).toBe(false);
+  expect(wakeFromUser(["fix it", report])).toBe(false);
+  expect(wakeFromUser(["fix it"], { level: "work" })).toBe(false);
+  expect(wakeFromUser([])).toBe(false);
 });
