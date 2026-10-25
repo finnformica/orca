@@ -2,7 +2,7 @@
 // so both the store and the e2e tests import it directly.
 
 import type { CiFailureEvidence, CiStatus, ConversationComment, Mergeable, ReviewSignal, ReviewStatus, ReviewThreadEvidence } from "../../server/gh";
-import { AUTOFIX_MARKER, OUTCOME_CONTRACT, runStopLabel, withOutcomeContract, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn, type RunStop, type TurnCheck, type TurnSource } from "../../shared/agent";
+import { AUTOFIX_MARKER, OUTCOME_CONTRACT, runStopLabel, withOutcomeContract, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn, type RunStop, type TurnCheck, type TurnOrigin, type TurnSource } from "../../shared/agent";
 import { AUTO_MODEL, MODELS, modelLabel, prettyModel } from "../../shared/models";
 import { SNIPPETS, WRITING_STYLE } from "../../shared/writingStyle";
 import { asksForInput } from "../../shared/notifications";
@@ -1300,6 +1300,54 @@ export const wakeFromUser = (messages: string[], grant?: unknown): boolean =>
  *  Ask, the New-draft box) → `human`. */
 export const turnSource = (messages: string[]): TurnSource =>
   messages.length > 0 && messages.every((m) => isWorkerEvent(m) || isOrcaEvent(m)) ? "agents" : "human";
+/** The longest message an origin keeps; past it the text is cut and marked (`cut`). */
+export const ORIGIN_MESSAGE_MAX = 2000;
+/** The origin of a turn the orchestrator starts: its wake and the words a person wrote in it. Worker
+ *  reports and Orca events are left out and counted (`skipped`). An outside message keeps only the
+ *  sender's own words, with its adapter, name and place; an attachment list is dropped. Pure. */
+export function turnOrigin(wake: { runId: string; at: number; messages: string[] }, max = ORIGIN_MESSAGE_MAX): TurnOrigin {
+  const messages: TurnOrigin["messages"] = [];
+  let skipped = 0;
+  for (const raw of wake.messages) {
+    if (!isUserMessage(raw)) { skipped++; continue; }
+    const outside = integrationMessage(raw);
+    const text = withoutAttachmentList(outside ? outside.text : raw).trim();
+    const cut = text.length > max;
+    messages.push({
+      text: cut ? text.slice(0, max).trimEnd() : text,
+      ...(cut ? { cut: true as const } : {}),
+      ...(outside ? { from: { adapter: outside.adapter, ...(outside.sender ? { sender: outside.sender } : {}), ...(outside.place ? { place: outside.place } : {}) } } : {}),
+    });
+  }
+  return { runId: wake.runId, at: wake.at, messages, skipped };
+}
+/** Who asked, for an origin's header: the outside sender ("Ana on discord #general"), else `you`
+ *  (the user's own chat; the web passes the signed-in name), else the orchestrator alone. Pure. */
+export function originAskedBy(origin: TurnOrigin, you = "you"): string {
+  const names = [...new Set(origin.messages.map((m) => m.from
+    ? `${m.from.sender ?? "an outside sender"} on ${m.from.adapter}${m.from.place ? ` ${m.from.place}` : ""}`
+    : you))];
+  return names.length ? names.join(", ") : "the orchestrator";
+}
+/** An origin's time for the chat: "25 Oct 15:20", in the viewer's time zone. */
+export const originTimeLabel = (at: number, timeZone?: string): string =>
+  new Date(at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: false, ...(timeZone ? { timeZone } : {}) }).replace(",", "");
+/** `N worker reports or Orca events not shown`, or "" when there were none. Pure. */
+export const originSkippedText = (origin: TurnOrigin): string =>
+  origin.skipped ? `${origin.skipped} worker report${origin.skipped === 1 ? "" : "s"} or Orca event${origin.skipped === 1 ? "" : "s"} not shown` : "";
+/** An origin as a quote block for `orca read`: who asked and when, the wake's run id, then each
+ *  message with every line prefixed `> `. Pure (the time is ISO, so it does not depend on a locale). */
+export function originQuote(origin: TurnOrigin): string {
+  const head = `> ${origin.messages.length ? "Asked by" : "Started by"} ${originAskedBy(origin, "the user")} · ${new Date(origin.at).toISOString().slice(0, 16).replace("T", " ")} UTC · orchestrator run ${origin.runId}`;
+  const body = origin.messages.flatMap((m) => [
+    ">",
+    ...(m.from && origin.messages.length > 1 ? [`> From ${originAskedBy({ ...origin, messages: [m] })}:`] : []),
+    ...m.text.split("\n").map((line) => `> ${line}`.trimEnd()),
+    ...(m.cut ? [`> … (cut at ${ORIGIN_MESSAGE_MAX} characters)`] : []),
+  ]);
+  const skipped = originSkippedText(origin);
+  return [head, ...body, ...(skipped ? [">", `> (${skipped})`] : [])].join("\n");
+}
 /** Reports that may wait: every part is a clean worker report. */
 export const onlyCleanReports = (messages: string[]): boolean =>
   messages.length > 0 && messages.every((m) => isWorkerEvent(m) && !isWorkerProblem(m));

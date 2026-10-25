@@ -139,6 +139,19 @@ export function backgroundResumeInstruction(tasks: UnfinishedTask[], reason: "ca
 }
 export const isBackgroundResume = (instruction: string | undefined): boolean => Boolean(instruction?.startsWith(BACKGROUND_MARKER));
 
+/** Why a workstream turn exists: the person's words in the orchestrator wake that started it
+ *  (`orca spawn` / `send` / `address`). For humans only: it is stored in `turn.structured.origin`,
+ *  shown above the brief in the chat and by `orca read`, and never sent to the worker. */
+export type TurnOrigin = {
+  runId: string; // the orchestrator wake's run id
+  at: number; // when that wake started
+  /** Each message of the wake that a person wrote, in order. `from` is absent for the user's own
+   *  chat; an outside sender has its adapter, name and place. `cut`: the text was shortened. */
+  messages: { text: string; cut?: true; from?: { adapter: string; sender?: string; place?: string } }[];
+  /** How many messages of the wake were worker reports or Orca events (left out above). */
+  skipped: number;
+};
+
 export type AgentTurn = {
   id: string;
   provider: AgentProvider;
@@ -170,6 +183,8 @@ export type AgentTurn = {
   handoffs?: string[];
   /** Forms this turn asked (`orca ask-form`), by id — server-decorated (forms.linkTurns). */
   forms?: string[];
+  /** The orchestrator wake that started this turn and the person's words in it (read off `structured`). */
+  origin?: TurnOrigin;
 };
 
 const OUTCOME_HEADINGS = ["outcome", "verification", "decisions", "remaining", "commits"] as const;

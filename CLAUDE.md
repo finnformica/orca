@@ -1120,6 +1120,12 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   on its board line every wake and on the user's card / Agents row (`OrchStatusNote`). The notes keep
   only the user's preferences and standing facts. The merge class is a label for the user; the
   merge queue still reads only `--small` and the repo's `mergePolicy`.
+- **Request origin on a worker's turn** (`turn.origin`): `spawn`, `send` and `address` inside a wake
+  store the wake's run id, its time and the person's words (your chat, or an outside sender's name
+  and place) in `turn.structured.origin` (`turnOrigin`: each message cut at 2000 characters; worker
+  reports and Orca events left out and counted). A queued send carries it in the row's `reply_to`
+  JSONB. The chat shows it above the brief, collapsed ("Asked by Finn · 25 Oct 15:20"); `orca read`
+  prints it as a quote block. It is for humans: the worker's prompt never contains it.
 - **Memory of past work** is the turn table: `orca chats "<terms>"` is Postgres full-text over every
   instruction and response, archived workstreams included; `orca read` loads one on demand
   (just-in-time retrieval, no embeddings, no index yet).

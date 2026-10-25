@@ -1277,12 +1277,12 @@ async function api(req: Request, url: URL): Promise<Response> {
     return json({ ...r, instance: db.instanceName() });
   }
   if (req.method === "POST" && p === "/api/workstreams/spawn") {
-    const ws = await verbs.createWorkstream(cfg, repo, { prompt: String(body.prompt ?? ""), title: body.title, model: body.model, fields: { orchestrated: true, ...(body.grantScope ? { grantScope: body.grantScope } : {}) } });
+    const ws = await verbs.createWorkstream(cfg, repo, { prompt: String(body.prompt ?? ""), title: body.title, model: body.model, fields: { orchestrated: true, ...(body.grantScope ? { grantScope: body.grantScope } : {}) }, origin: body.origin });
     return json({ ...ws, instance: db.instanceName() });
   }
   if (req.method === "POST" && p === "/api/workstreams/followup") {
     if (typeof body.model === "string") await db.patchEnrichment(repo.name, String(body.branch), { preferredModel: body.model, preferredProvider: providerOfModel(body.model) });
-    const r = await verbs.followUp(cfg, repo, String(body.branch), { instruction: String(body.instruction ?? "") });
+    const r = await verbs.followUp(cfg, repo, String(body.branch), { instruction: String(body.instruction ?? ""), origin: body.origin });
     await db.patchEnrichment(repo.name, String(body.branch), { orchestrated: true });
     return json({ ...r, instance: db.instanceName() });
   }
@@ -1301,7 +1301,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     return json(await prShots.attachPrShots(repo, String(body.branch), { pr: body.pr ? Number(body.pr) : undefined }));
   }
   if (req.method === "POST" && p === "/api/workstreams/address") {
-    const r = await verbs.addressPr(cfg, repo, String(body.branch));
+    const r = await verbs.addressPr(cfg, repo, String(body.branch), { origin: body.origin });
     await db.patchEnrichment(repo.name, String(body.branch), { orchestrated: true });
     return json({ ...r, instance: db.instanceName() });
   }

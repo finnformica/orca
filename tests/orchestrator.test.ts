@@ -1201,3 +1201,46 @@ test("wakeFromUser: only a wake with no grant whose every message is the user's"
   expect(wakeFromUser(["fix it"], { level: "work" })).toBe(false);
   expect(wakeFromUser([])).toBe(false);
 });
+
+test("spawn and send record the wake's origin on the worker's turn — the person's words only, never in the brief", async () => {
+  const words = "Please add a cache. " + "x".repeat(2100);
+  const claim = (runId: string, messages: string[]) =>
+    db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { handling: { runId, instance: db.instanceName(), messages } });
+  await claim("wake-1", [`${WORKER_EVENT_MARKER} r/other "Other" — done\nOutcome: Done.`, words, orcaEventText({ topic: "orca.pr.ci_failed", scope: { repo: "r", branch: "other" }, title: "CI failed", text: "on #7", link: { pr: 7 } })]);
+  await orchestrator.tool(cfg(), "spawn", brief);
+  const branch = Object.keys(await db.enrichment("r"))[0]!;
+  const [first] = await settled(() => db.turns("r", branch), 1);
+  // Kept through the finish, beside the outcome; the outcome itself is unchanged.
+  expect(first!.structured?.outcome).toBe("Done.");
+  expect(first!.origin).toMatchObject({ runId: "wake-1", skipped: 2, messages: [{ text: words.slice(0, 2000), cut: true }] });
+  expect(first!.origin!.messages).toHaveLength(1);
+  // The worker's prompt is the brief alone: the origin is for humans.
+  expect((await launches()).find((a) => a.includes("Add a response cache"))).not.toContain("Please add a cache");
+
+  // A send that runs at once, and one queued behind it: each turn gets ITS wake's origin.
+  await writeFile(hold, "");
+  await claim("wake-2", ["Also handle the empty case"]);
+  await orchestrator.tool(cfg(), "send", { repo: "r", branch, _: ["Handle", "empty"] });
+  await claim("wake-3", ["And add a test, please"]);
+  expect(await orchestrator.tool(cfg(), "send", { repo: "r", branch, _: ["Add", "a", "test"] })).toContain("Queued");
+  await rm(hold);
+  await settled(() => db.turns("r", branch), 2);
+  // The queued row carries its origin (in `reply_to`, no column of its own) to the turn it becomes.
+  const queued = (await db.claimQueuedMessage("r", branch))!;
+  expect([queued.origin?.runId, queued.replyTo]).toEqual(["wake-3", undefined]);
+  await verbs.launchQueued(cfg(), cfg().repos[0]!, queued);
+  const turns = await settled(() => db.turns("r", branch), 3);
+  expect(turns.map((t) => [t.instruction, t.origin?.runId, t.origin?.messages.map((m) => m.text)])).toEqual([
+    [first!.instruction, "wake-1", [words.slice(0, 2000)]],
+    ["Handle empty", "wake-2", ["Also handle the empty case"]],
+    ["Add a test", "wake-3", ["And add a test, please"]],
+  ]);
+
+  // `orca read` prints the origin as a quote block before the prompt.
+  const read = await orchestrator.tool(cfg(), "read", { run: turns[1]!.id });
+  expect(read).toMatch(/\n> Asked by the user · [^\n]* · orchestrator run wake-2\n>\n> Also handle the empty case\n❯ Handle empty/);
+  // Outside a wake there is no origin.
+  await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { handling: null });
+  await orchestrator.tool(cfg(), "send", { repo: "r", branch, _: ["No", "wake"] });
+  expect((await settled(() => db.turns("r", branch), 4))[3]!.origin).toBeUndefined();
+}, 30_000);

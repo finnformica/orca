@@ -44,9 +44,9 @@ import { featuresOf, runLimits, runsHere, type OrcaConfig, type RepoConfig } fro
 import {
   MODEL_LADDER, NO_REPLY_PLACEHOLDER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, boardText, briefProblems, continuation, isUserMessage, isWorkerProblem, wakeFromUser, onlyCleanReports,
   handoffRef, joinMessages, ladderStep, mergedPrIsHistory, nextFailStreak, orchStatusText, orchStatusUpdate, verifiedMark, verifiedState, orchestratorPrompt, sessionHint, sweepText, turnSource, wakeExitReason, wakeProgress, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
-  machineText, type BoardRow, type FailStreak, type MachineReport, type OrchStatus, type VerifiedMark, type WakeExit,
+  machineText, originQuote, turnOrigin, type BoardRow, type FailStreak, type MachineReport, type OrchStatus, type VerifiedMark, type WakeExit,
 } from "../web/src/workstream";
-import { activityLines, type AgentTurn } from "../shared/agent";
+import { activityLines, type AgentTurn, type TurnOrigin } from "../shared/agent";
 import { providerOfModel } from "../shared/models";
 import { attachmentIdOf, attachmentRefusal, catchAllPostRefusal, deleteRefusal, grantKey, grantRefusal, outboundRefusal, repoScoped, type Grant, type ReplyTo } from "../shared/integrations";
 import * as integrationStore from "./integrations/store";
@@ -659,6 +659,15 @@ async function grantOrigin(g: Grant): Promise<{ by?: string; via?: string }> {
   } catch { return {}; }
 }
 
+/** The wake in flight as the origin of a turn it starts (spawn / send / address): its run id, start
+ *  and the person's words it handled. Undefined outside a wake. For humans only, never the worker. */
+async function wakeOrigin(b: Blob): Promise<TurnOrigin | undefined> {
+  const h = b.handling;
+  if (!h || h.instance !== db.instanceName()) return undefined;
+  const at = (await db.turn(h.runId).catch(() => undefined))?.startedAt ?? Date.now();
+  return turnOrigin({ runId: h.runId, at, messages: h.messages });
+}
+
 /** Run one `orca <verb>` and return what it prints. Throws with a message the model can act on. */
 export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): Promise<string> {
   // The grant check (§3.7): a wake an outside sender caused may only use the verbs its grant allows.
@@ -821,10 +830,10 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       const title = typeof args.title === "string" ? args.title : undefined;
       const prompt = withAttachments(workerBrief(brief), await attachArgs(args));
       if (on !== db.instanceName()) {
-        const ws = await viaInstance(cfg, on, "/api/workstreams/spawn", { repo: repo.name, prompt, title, model: args.model, ...restricted });
+        const ws = await viaInstance(cfg, on, "/api/workstreams/spawn", { repo: repo.name, prompt, title, model: args.model, ...restricted, origin: await wakeOrigin(b) });
         return `Spawned ${repo.name}/${ws.branch} "${ws.title}" on ${on}. End your turn; you are woken when it finishes.`;
       }
-      const ws = await verbs.createWorkstream(cfg, repo, { prompt, title, model: String(args.model), fields: { orchestrated: true, ...restricted } });
+      const ws = await verbs.createWorkstream(cfg, repo, { prompt, title, model: String(args.model), fields: { orchestrated: true, ...restricted }, origin: await wakeOrigin(b) });
       return `Spawned ${repo.name}/${ws.branch} "${ws.title}"${cfg.instances ? ` on ${on}` : ""}. End your turn; you are woken when it finishes.`;
     }
     case "send": {
@@ -843,8 +852,8 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       if (Object.keys(steer).length) await db.patchEnrichment(repo.name, branch, steer);
       const home = await verbs.placement(repo, { branch });
       const { status } = home !== db.instanceName()
-        ? (await viaInstance(cfg, home, "/api/workstreams/followup", { repo: repo.name, branch, instruction: text }) as { status: string })
-        : await verbs.followUp(cfg, repo, branch, { instruction: text });
+        ? (await viaInstance(cfg, home, "/api/workstreams/followup", { repo: repo.name, branch, instruction: text, origin: await wakeOrigin(b) }) as { status: string })
+        : await verbs.followUp(cfg, repo, branch, { instruction: text, origin: await wakeOrigin(b) });
       await db.patchEnrichment(repo.name, branch, { orchestrated: true }); // now yours to hear back from
       return status === "queued" ? "Queued behind the run in flight; it is sent when that finishes." : `Sent to ${repo.name}/${branch}. End your turn; you are woken when it finishes.`;
     }
@@ -854,8 +863,8 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       if (Object.keys(steer).length) await db.patchEnrichment(repo.name, branch, steer);
       const home = await verbs.placement(repo, { branch });
       const { status, pr } = home !== db.instanceName()
-        ? (await viaInstance(cfg, home, "/api/workstreams/address", { repo: repo.name, branch }) as { status: string; pr: number })
-        : await verbs.addressPr(cfg, repo, branch);
+        ? (await viaInstance(cfg, home, "/api/workstreams/address", { repo: repo.name, branch, origin: await wakeOrigin(b) }) as { status: string; pr: number })
+        : await verbs.addressPr(cfg, repo, branch, { origin: await wakeOrigin(b) });
       await db.patchEnrichment(repo.name, branch, { orchestrated: true });
       if (status === "resolved") return `#${pr}'s only conflict was in its changelog: Orca merged the base, kept both sides' entries and pushed. Nothing else needed an agent, so none was started.`;
       return `${status === "queued" ? "Queued" : "Started"} Address PR for #${pr}. End your turn; you are woken when it finishes.`;
@@ -959,6 +968,7 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
         const activity = activityLines(await agent.runSteps(t.id).catch(() => []));
         return [
           `run ${t.id} — ${turnStatus(t)} (${when(t.startedAt)})`,
+          ...(t.origin ? [originQuote(t.origin)] : []),
           `❯ ${t.instruction ?? clip(t.prompt, 2000)}`,
           ...(activity.length ? ["", "Activity:", ...activity.map((a) => `- ${a}`)] : []),
           "", clip(t.response || "(no output)", 12_000),
@@ -968,7 +978,7 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       const id = Number(args.chat);
       if (!id) throw new Error("read needs --chat <id> (from `orca chats`) or --run <runId>");
       const turns = await db.conversationTurns(id);
-      return turns.map((t) => `run ${t.id} — ${turnStatus(t)} (${when(t.startedAt)})\n❯ ${clip(t.instruction ?? "", 500)}\n→ ${clip(answer(t), 1200)}`).join("\n\n") || `No conversation #${id}.`;
+      return turns.map((t) => `run ${t.id} — ${turnStatus(t)} (${when(t.startedAt)})\n${t.origin ? `${originQuote(t.origin)}\n` : ""}❯ ${clip(t.instruction ?? "", 500)}\n→ ${clip(answer(t), 1200)}`).join("\n\n") || `No conversation #${id}.`;
     }
     case "merge": return mergeVerb(cfg, args);
     case "status": {

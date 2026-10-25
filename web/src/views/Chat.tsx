@@ -13,10 +13,10 @@ import { cn, PipContext } from "@/lib/utils";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
-import type { AgentStep, AgentTurn } from "../../../shared/agent";
+import type { AgentStep, AgentTurn, TurnOrigin } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, previewsEnabled, refresh, setCardModel, type Row } from "../store";
-import { ORCHESTRATOR_REPO, RECENT_FULL, TAIL_WINDOW, reportShots, turnHandoffs, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, longMessage, newestMessages, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, formatDuration, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, undeliveredQueued, composerHistory, integrationPreview, integrationState, anchorShift, eagerFrom, estimateItemHeight, withNotices } from "../workstream";
+import { ORCHESTRATOR_REPO, RECENT_FULL, TAIL_WINDOW, reportShots, turnHandoffs, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, longMessage, newestMessages, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, formatDuration, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, undeliveredQueued, composerHistory, integrationPreview, integrationState, anchorShift, eagerFrom, estimateItemHeight, withNotices, originAskedBy, originSkippedText, originTimeLabel } from "../workstream";
 import { HandoffWidget } from "./Handoffs";
 import { FormCard } from "@/components/FormCard";
 import { stickToTail } from "@/lib/stickToTail";
@@ -37,6 +37,9 @@ import { snippetPre } from "@/components/Snippet";
 import { copyText } from "@/lib/dialogs";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tip";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { useServerIdentity } from "@/lib/identity";
+import { openOrchestrator } from "@/lib/orchestratorOpen";
 import { subscribeTurns } from "@/lib/events";
 import { onRefresh } from "@/lib/refresh";
 import { onOrchestratorDelivered, useOrchestratorOutbox } from "@/lib/orchestratorOutbox";
@@ -505,6 +508,42 @@ function UserBubble({ text, files, clamp, footer, pending, slot = "chat-user", t
   );
 }
 
+/** The origin of a turn the orchestrator started (`turn.origin`): "Asked by Finn · 25 Oct 15:20",
+ *  collapsed; it opens to each message the person wrote, quoted, and a link to the orchestrator's
+ *  turn. An outside sender shows with its name and channel. For humans only: the worker never sees it. */
+function TurnOriginQuote({ origin }: { origin: TurnOrigin }) {
+  const you = useServerIdentity()?.tailscaleUser?.name;
+  const label = `${origin.messages.length ? "Asked by" : "Started by"} ${originAskedBy(origin, you || "you")} · ${originTimeLabel(origin.at)}`;
+  const skipped = originSkippedText(origin);
+  const open = () => {
+    openOrchestrator();
+    // Best effort: the wake's turn, when the orchestrator's chat has it mounted.
+    setTimeout(() => document.querySelector(`[data-run-id="${CSS.escape(origin.runId)}"]`)?.scrollIntoView({ block: "center" }), 300);
+  };
+  return (
+    <div className="mb-2 flex justify-end">
+      <Accordion type="single" collapsible data-slot="turn-origin" className="w-full max-w-[85%] rounded-md border text-[12px]">
+        <AccordionItem value="origin" className="border-b-0">
+          <AccordionTrigger data-slot="turn-origin-label" className="text-muted-foreground hover:text-foreground gap-2 px-2.5 py-1.5 text-[12px] font-normal hover:no-underline">
+            <span className="flex min-w-0 items-center gap-1.5"><QuoteIcon className="size-3.5 shrink-0" /><span className="truncate">{label}</span></span>
+          </AccordionTrigger>
+          <AccordionContent className="space-y-2 border-t px-2.5 pt-2 pb-2">
+            {origin.messages.map((m, i) => (
+              <blockquote key={i} data-slot="turn-origin-message" className="border-l-2 pl-3">
+                {m.from && origin.messages.length > 1 && <div className="text-muted-foreground mb-0.5 text-[11px]">{originAskedBy({ ...origin, messages: [m] })}</div>}
+                <ChatMarkdown tone="text-foreground" breaks>{m.text}</ChatMarkdown>
+                {m.cut && <div className="text-muted-foreground mt-0.5 text-[11px]" data-slot="turn-origin-cut">… cut: the full message is in the orchestrator's chat</div>}
+              </blockquote>
+            ))}
+            {skipped && <div className="text-muted-foreground text-[11px]">{skipped}</div>}
+            <Button variant="link" size="sm" className="h-auto p-0 text-[12px]" data-slot="turn-origin-link" onClick={open}>Open the orchestrator's turn</Button>
+          </AccordionContent>
+        </AccordionItem>
+      </Accordion>
+    </div>
+  );
+}
+
 /** The orchestrator's wake messages that were worker reports, not something you typed: each shown
  *  as one muted system line (what finished, how), with the full report behind a toggle. Only when
  *  EVERY part of the instruction is a report — a wake that also carried your message stays a prompt. */
@@ -622,7 +661,9 @@ const ChatTurn = memo(function ChatTurn({ turn, loadStepsFor, compact, newestSai
   const filesOf = (text: string, i: number) => inline ? attachmentRefs(text) : i === said.length - 1 ? turn.attachments ?? [] : [];
   const time = clockOf(turn.startedAt);
   return (
-    <div className="mb-4" data-slot="chat-turn" data-failed={turn.failed || undefined}>
+    <div className="mb-4" data-slot="chat-turn" data-run-id={turn.id} data-failed={turn.failed || undefined}>
+      {/* Why the orchestrator started this turn: the person's words in its wake, above the brief. */}
+      {turn.origin && <TurnOriginQuote origin={turn.origin} />}
       {/* Worker reports that woke it, split out of what you said: a collapsed block of their own. */}
       {reports.length > 0 && (
         <WorkerBlock slot="turn-reports" className="mb-2"
