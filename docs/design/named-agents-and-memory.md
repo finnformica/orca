@@ -1,6 +1,6 @@
 # Named agents and memory
 
-Status: design. PR 1 of a series. Requested by Finn.
+Status: design. It is the first commit of PR A ("Memory for agents"). Requested by Finn.
 
 This document sets the plan for two things:
 
@@ -9,7 +9,7 @@ This document sets the plan for two things:
 - **Memory**: one generic store in Postgres. Agents write memories in their own words. They revise,
   link and forget them. The store keeps every revision.
 
-The later PRs follow this plan. Section 11 gives the series.
+Two PRs follow this plan. Section 11 gives them.
 
 ## 0. Why
 
@@ -68,7 +68,7 @@ Two well-known patterns shape the store:
 - No task board, no commitments table and no task states. A task is a memory.
 - No embeddings and no vector index. Postgres full-text search is the first step. Section 10 says
   when to add more.
-- No memory for one-off workers in this series, except PR 8 (last and lowest priority).
+- No memory for one-off workers and no repo memory. Worker learnings are out of scope for now.
 - No new chat runtime. A named agent's run is the same headless one-shot as today's orchestrator wake.
 - No change to the handover ladder. Memory is outside the session, like the notes are today.
 
@@ -90,7 +90,7 @@ The word **wake** already names one run of the orchestrator (`wake()`, `MAX_WAKE
 of self-set wakes is `scheduled_wake`, not `wake`. In this document, "a wake" is one run and "a
 scheduled wake" is a row that starts one later.
 
-### 2.2 `memory` (PR 2)
+### 2.2 `memory` (PR A)
 
 One row for each memory. The row holds the current state. `memory_revision` holds every state.
 
@@ -132,7 +132,7 @@ CREATE INDEX IF NOT EXISTS memory_recent ON memory (user_id, updated_at DESC);
 | `agent:<name>` | An agent wrote it from your chat, its own work or Orca's data. | trusted |
 | `outside:<channel>` | An agent wrote it in a wake that carried outside text. `<channel>` is the adapter and place, for example `outside:discord:<link id>`. | untrusted |
 | `worker:<repo>/<branch>` | An agent wrote it from a worker report (model output). | trusted (see 10.1) |
-| `migration:notes` | PR 2 made it from the notes blob. | trusted |
+| `migration:notes` | PR A made it from the notes blob. | trusted |
 
 The **server** sets `source` and `trust`, never the agent. The rules are in section 6.
 
@@ -140,10 +140,15 @@ The **server** sets `source` and `trust`, never the agent. The rules are in sect
 only when asked (`--all`). `forgotten` memories are in no prompt and no search. The row stays, so
 the user can revert a forget. Nothing is deleted, as for archived workstreams.
 
+`owner` is the **agent column**. PR A writes only `chief` and `shared`, but the column takes any
+agent name. `memory_revision.owner`, `memory_revision.by` and `scheduled_wake.agent` also carry an
+agent name. So PR B adds agents with no change to the memory tables. There is no foreign key to
+`agent` (PR B), because `owner` can also be `shared`. The code checks the name.
+
 There is no `kind` column. A memory is a decision, a fact, a preference, a task or a lesson only
 by its words and its tags. This is Finn's decision 2.
 
-### 2.3 `memory_revision` (PR 2)
+### 2.3 `memory_revision` (PR A)
 
 Append-only. One row for each change to a memory, the first write included. Code never runs
 `UPDATE` or `DELETE` on this table. A test greps `server/` to keep it so.
@@ -170,7 +175,7 @@ A write is one transaction: insert the revision, then update the `memory` row. A
 revision that copies an old one (`by = 'user'`, `reason = 'revert to r<N>'`). History never moves
 back.
 
-### 2.4 `memory_link` (PR 2)
+### 2.4 `memory_link` (PR A)
 
 A link joins two memories. The relation is a short free word that the agent chooses ("about",
 "replaces", "contradicts", "part of"). This keeps the store generic.
@@ -192,7 +197,7 @@ CREATE INDEX IF NOT EXISTS memory_link_to ON memory_link (user_id, to_id);
 A link can also point at things outside the store. That goes in the body as plain text:
 `repo#123`, a branch name, a run id. `orca read --run` already resolves a run id.
 
-### 2.5 `scheduled_wake` (PR 4)
+### 2.5 `scheduled_wake` (PR A)
 
 ```sql
 CREATE TABLE IF NOT EXISTS scheduled_wake (
@@ -215,10 +220,10 @@ CREATE INDEX IF NOT EXISTS scheduled_wake_due ON scheduled_wake (user_id, state,
 CREATE INDEX IF NOT EXISTS scheduled_wake_agent ON scheduled_wake (user_id, agent, state);
 ```
 
-### 2.6 `agent` (PR 6)
+### 2.6 `agent` (PR B)
 
 The definition of a named agent. Its run state (session id, the wake in flight, the wake count)
-stays in its workstream blob, as the orchestrator's does today. So PR 6 moves no runtime state.
+stays in its workstream blob, as the orchestrator's does today. So PR B moves no runtime state.
 
 ```sql
 CREATE TABLE IF NOT EXISTS agent (
@@ -241,26 +246,27 @@ CREATE UNIQUE INDEX IF NOT EXISTS agent_branch ON agent (user_id, branch) WHERE 
 ```
 
 The Chief of Staff keeps `branch = 'orchestrator'`. So its whole chat history, its session and its
-queue stay where they are. Its name is `chief` from PR 2 on, so memories written in PR 2 have the
+queue stay where they are. Its name is `chief` from PR A on, so memories written in PR A have the
 right owner and need no rename later.
 
-### 2.7 Changes to existing tables (PR 6, PR 7)
+### 2.7 Changes to existing tables (PR B)
 
-- `channel_link.agent TEXT` (PR 7): the named agent that takes inbound messages on this link. Null
+- `channel_link.agent TEXT` (PR B): the named agent that takes inbound messages on this link. Null
   means the default for the adapter (section 7.4).
-- `subscription.target_kind`: the value `agent` with `target_id = <name>` (PR 6). The old value
+- `subscription.target_kind`: the value `agent` with `target_id = <name>` (PR B). The old value
   `orchestrator` stays and means `agent:chief`. No row is rewritten.
-- `DeliveryTarget` (`shared/integrations.ts`): `{ kind: "agent"; name: string }` (PR 6). The old
+- `DeliveryTarget` (`shared/integrations.ts`): `{ kind: "agent"; name: string }` (PR B). The old
   `{ kind: "orchestrator" }` on a stored delivery row reads as `chief`.
 - `thread_link`: no change. A thread an agent opened maps to `("@orca", <agent branch>)`.
 
 ## 3. Agent tools
 
 Every verb goes through `bin/orca` → `POST /api/orchestrator/tool` → `orchestrator.tool`, like
-today. From PR 6 on, the request carries the calling agent's name (`ORCA_AGENT` in the run's env),
-so the server knows who writes. Output is plain text. Each verb takes `--json` for a script.
+today. The request carries the calling agent's name (`ORCA_AGENT` in the run's env), so the server
+knows who writes. PR A sets `ORCA_AGENT=chief` on the orchestrator's runs, and a request with no
+name means `chief`. So PR B adds agents with no change to the tool protocol. Output is plain text. Each verb takes `--json` for a script.
 
-### 3.1 Memory (PR 2)
+### 3.1 Memory (PR A)
 
 ```text
 orca memory recall "<query>" [--owner me|shared|<agent>|all] [--tag t]… [--all] [--limit 10]
@@ -291,7 +297,7 @@ Rules:
 - A pinned memory refuses `revise`, `forget` and `archive` from every agent (section 6).
 - `--reason` is required on every change, so the history reads as a log of why.
 
-### 3.2 Scheduled wakes (PR 4)
+### 3.2 Scheduled wakes (PR A)
 
 ```text
 orca wake --at "<time>" --note "<what to look at>" [--memory <id>] [--agent <name>]
@@ -302,7 +308,7 @@ orca wake cancel <id>
 
 - `--at` takes an ISO time or a relative time (`2h`, `tomorrow 09:00`, in the user's time zone from
   the app config). The minimum is 5 minutes from now. The maximum is 90 days.
-- `--on` takes one event pattern. PR 4 supports three:
+- `--on` takes one event pattern. PR A supports three:
   - `pr:<repo>#<n>` — any Orca event about that PR (`orca.pr.*`), or `pr:<repo>#<n>:merged` for one.
   - `worker:<repo>/<branch>` — that workstream's next worker report.
   - `topic:<topic pattern>[ place=<place>]` — any event with that topic, as a subscription matches it.
@@ -310,25 +316,25 @@ orca wake cancel <id>
 - An agent has at most 50 pending scheduled wakes. A new one past that is refused.
 - `list` shows pending wakes with id, time or event, note and memory.
 
-### 3.3 Agents (PR 6, PR 7)
+### 3.3 Agents (PR B)
 
 ```text
-orca ask <agent> "<message>" [--memory <id>]…     (PR 7)
-orca agent list                                    (PR 6)
-orca agent state <idle|working|waiting|blocked|done> [--note "<…>"]   (PR 6)
-orca agent add <name> --display "<Display name>" --role @file [--model m]   (PR 6, user only)
+orca ask <agent> "<message>" [--memory <id>]…     (PR B)
+orca agent list                                    (PR B)
+orca agent state <idle|working|waiting|blocked|done> [--note "<…>"]   (PR B)
+orca agent add <name> --display "<Display name>" --role @file [--model m]   (PR B, user only)
 ```
 
 - `orca ask` queues a message on the other agent's queue, tagged `[from <caller>]`. It is not the
   user's input (`isUserMessage` is false), so it does not reset the wake count. The other agent's
   reply does not come back by itself. The caller sets `orca wake --on agent:<name>` if it wants it
-  (a fourth pattern, added in PR 7).
+  (a fourth pattern, added in PR B).
 - `orca agent add` and agent removal are user-only verbs. An agent cannot make another agent.
   The Settings page and the user's own chat with the Chief of Staff can run them.
 
 ### 3.4 The notes verbs
 
-PR 2 makes `orca notes` print the notes as they were, with a line that says they moved to memory.
+PR A makes `orca notes` print the notes as they were, with a line that says they moved to memory.
 `orca notes set` is refused with the hint `use orca memory write`. The blob stays in place, read
 only, so nothing is lost.
 
@@ -343,7 +349,7 @@ Every wake prompt gets these, in this order, after `## Board`:
 
 1. `## Core memory` — the always-in-context set (4.2).
 2. `## Recalled for this wake` — search hits for the wake's messages (4.3).
-3. `## Scheduled wakes that fired` — each fired wake's note and memory id (PR 4).
+3. `## Scheduled wakes that fired` — each fired wake's note and memory id (PR A).
 4. `## Untrusted memories` — untrusted items from 1 and 2, moved here and fenced (section 6).
 
 Each item is one block:
@@ -408,7 +414,7 @@ The role text, and a short `## Memory` section on every wake, tell the agent:
 - A task is a memory. Set `orca wake` when it needs a look at a time or on an event.
 - Recall before you ask the user something that you were possibly told before.
 
-## 5. Reflection (PR 5)
+## 5. Reflection (PR A)
 
 A reflection is a wake of the agent with a different prompt. It has the same runtime, the same
 chat and the same tools. Its turn is tagged `source: "agents"` and folds like worker traffic.
@@ -472,7 +478,7 @@ The agent can also ask for one: `orca memory reflect`, at most once each 6 hours
     and `trust = untrusted`. The grant and the reply target are already on the blob (`wakeGrant`,
     `wakeReplyTo`), so the server knows.
   - A wake that carries outside text under the full grant (a Gmail or Slack read by the agent, an
-    Orca event that quotes a PR comment) is harder to see. PR 2 marks a memory untrusted when the
+    Orca event that quotes a PR comment) is harder to see. PR A marks a memory untrusted when the
     wake's messages hold an outside message (`withSource` meta line) or the run's steps include an
     outside read verb (`orca slack read`, `orca gmail read`, a `WebFetch`). The agent can also pass
     `--untrusted`. It can never pass `--trusted`.
@@ -486,12 +492,12 @@ The agent can also ask for one: `orca memory reflect`, at most once each 6 hours
   `grantRefusal`. An outside sender's `ask` wake can recall but not write. A `work` or `admin` wake
   can write, and the write is untrusted.
 
-## 7. Named-agent runtime (PR 6, PR 7)
+## 7. Named-agent runtime (PR B)
 
 ### 7.1 How `server/orchestrator.ts` becomes general
 
 Today the module has one agent baked in: `dir()`, `ORCHESTRATOR_REPO` / `ORCHESTRATOR_BRANCH`, and
-module-level `chain`, `messagesInChain` and `suspect`. PR 6 changes it like this:
+module-level `chain`, `messagesInChain` and `suspect`. PR B changes it like this:
 
 1. Add `type AgentRef = { name; branch; dir; def }`, loaded from the `agent` table, with the
    Chief of Staff as a built-in default when the table is empty.
@@ -500,7 +506,7 @@ module-level `chain`, `messagesInChain` and `suspect`. PR 6 changes it like this
 3. `dir(agent)` is `~/.orca/agents/<name>`. The Chief of Staff keeps `~/.orca/orchestrator`, so its
    `CLAUDE.md`, `.mcp.json` and Claude Code's auto-memory stay where they are.
 4. `orchestratorPrompt` takes the agent's role, tools and memory section. The Chief of Staff's role
-   is today's `ORCHESTRATOR_ROLE`. The Assistant's role is new (PR 7).
+   is today's `ORCHESTRATOR_ROLE`. The Assistant's role is new (PR B).
 5. `tool()` reads `ORCA_AGENT` from the request and checks the verb against the agent's `tools`.
    The Assistant has no `spawn`, `merge`, `sweep`, `move` or `repo add` (7.3).
 6. The old exports stay as thin wrappers over `chief`, so callers in `server/index.ts`,
@@ -536,7 +542,7 @@ sets three:
 
 ### 7.4 Which events go to which agent
 
-| Event | Before | After (PR 7) |
+| Event | Before | After (PR B) |
 | --- | --- | --- |
 | Your message in the Chief of Staff's chat, quick-ask, New-draft box | orchestrator | `chief` |
 | Your message in the Assistant's chat | — | `assistant` |
@@ -550,7 +556,7 @@ sets three:
 | `orca ask <agent>` | — | that agent |
 
 The move of clean reports to the Assistant is the main load cut for the Chief of Staff. It is a
-switch in PR 7 (`agents.cleanReportsTo`, default `assistant`), so Finn can put it back.
+switch in PR B (`agents.cleanReportsTo`, default `assistant`), so Finn can put it back.
 
 ### 7.5 Escalation
 
@@ -587,7 +593,7 @@ Everything else goes through the Chief of Staff, which asks the user only for ju
 - A person who writes `@chief` or `chief:` at the start of a message on a link whose grant is
   `work` or higher goes to `chief`. Other grants go to the link's agent only.
 
-## 8. Migration from the notes blob (PR 2)
+## 8. Migration from the notes blob (PR A)
 
 1. A named step makes `memory`, `memory_revision` and `memory_link`.
 2. On the first boot of the primary with the new code, `memory.migrateNotes()` runs once. It reads
@@ -606,7 +612,7 @@ Everything else goes through the Chief of Staff, which asks the user only for ju
 The `orchStatus` record (`orca status`) stays as it is. It is per-workstream state for the board,
 not memory.
 
-## 9. The Memory page (PR 3)
+## 9. The Memory page (PR A)
 
 A page at `/memory`, a nav item after Inbox (`G Y`; `G M` is Inbox). The page follows `docs/design/surfaces.md`. Every
 input is a shadcn component (`bun run check` runs `scripts/check-native-inputs.ts`).
@@ -644,7 +650,7 @@ API (all `DATABASE_ONLY`, so any instance answers): `GET /api/memory`, `GET /api
 - **Controls:** the server sets trust (section 6). Untrusted memories render fenced in their own
   section and never in the core's trusted list. Only the user marks a memory trusted. A merge with
   an untrusted part is untrusted. Grants still cap what the wake can do.
-- **Remaining risk:** a worker report is model output that can carry outside text. PR 2 keeps
+- **Remaining risk:** a worker report is model output that can carry outside text. PR A keeps
   `worker:` memories trusted, because a worker report is the Chief of Staff's main input. A worker
   whose workstream has a `grantScope` (an outside sender started or steered it) makes its report's
   memories untrusted.
@@ -665,7 +671,7 @@ API (all `DATABASE_ONLY`, so any instance answers): `GET /api/memory`, `GET /api
 - A reflection is at most one each 6 hours for each agent, with an 8 000-token input.
 - A scheduled wake is a full wake. The 50-pending limit and `MAX_WAKES` bound them.
 - The Assistant runs on Sonnet and takes the clean reports, so the Chief of Staff on Opus wakes
-  less. Watch `lastWakeUsd` per agent before and after PR 7.
+  less. Watch `lastWakeUsd` per agent before and after PR B.
 
 ### 10.4 Emergent behaviour, and how Finn sees it
 
@@ -683,7 +689,7 @@ Finn expects emergent behaviour. The design makes it visible, not blocked:
 ### 10.5 Other risks
 
 - **Full-text search misses synonyms.** Tags and titles in the agent's words help. If recall misses
-  often, PR 8 or later can add `pgvector` beside the GIN index. The `search` column stays.
+  often, a later PR can add `pgvector` beside the GIN index. The `search` column stays.
 - **Two agents, one memory.** `--base` makes the second writer read the first's change.
 - **Database down (degraded mode).** Memory reads fail fast with `DbUnavailable`. The prompt says
   "memory unavailable" and the wake runs. Memory writes are refused, not journalled: a write needs
@@ -691,121 +697,112 @@ Finn expects emergent behaviour. The design makes it visible, not blocked:
 
 ## 11. The PR series
 
-Each PR is a separate branch and needs Finn's merge. Each PR ships with its tests, run only for
-the files it touches. Each new table is a named migration step (section 2.1).
+There are two PRs, one for each core thing: memory, then named agents. Each PR needs Finn's
+merge. Each PR ships with its tests, run only for the files it touches. Each new table is a named
+migration step (section 2.1).
 
-### PR 1 — this design
+### PR A — Memory ("Memory for agents")
 
-- **Scope:** this document and a line in `docs/README.md`.
-- **Files:** `docs/design/named-agents-and-memory.md`, `docs/README.md`.
-- **Tests:** none (docs only).
+Built for the current orchestrator (`chief`). The memory tables already carry the agent column
+(section 2.2), so PR B needs no schema change to them.
 
-### PR 2 — memory store, tools and prompt for the current orchestrator
+- **Scope:**
+  - Tables `memory`, `memory_revision`, `memory_link` and `scheduled_wake`.
+  - The `orca memory` verbs: recall, show, write, revise, forget, archive, link, unlink, reflect.
+  - `ORCA_AGENT=chief` on the orchestrator's runs. A tool request with no name means `chief`.
+  - The prompt sections of section 4, which replace `## Your notes`: the core in its budget,
+    full-text recall, scheduled wakes that fired, the untrusted fence.
+  - Trust set by the server (section 6) and the limits of section 10.2.
+  - Self-set wakes: `orca wake --at / --on / list / cancel`. The minute tick fires a time wake. The
+    worker-report and Orca-event paths fire an event wake.
+  - The reflection turn (section 5), with the `reflect` grant and the 40-change cap.
+  - The Memory page (section 9) and its API.
+  - The move from the notes blob (section 8). `orca notes set` is refused.
+- **Commits, in order** (one review step each):
+  1. This design.
+  2. Store and verbs: tables, `server/memory.ts`, `orca memory`, trust, limits.
+  3. Prompt: the memory sections, the budget, the role text, the notes move.
+  4. Scheduled wakes: table, `orca wake`, the tick, the event match.
+  5. Reflection.
+  6. Memory page.
+- **Files:**
+  - `server/db.ts`: named steps `YYYYMMDD-memory` and `YYYYMMDD-scheduled-wake`, and the queries.
+  - New `server/memory.ts`: write, revise, forget, link, recall, core, limits, user-only pin,
+    trust and revert, `migrateNotes`, reflection candidates.
+  - New `server/scheduledWake.ts`: due wakes, event match, fire once.
+  - `server/orchestrator.ts`: the `memory` and `wake` verbs, the prompt input, the notes verbs,
+    the reflection wake, the event hook in `deliverReport`, `ORCA_AGENT`.
+  - `server/integrations/inbox.ts`: the Orca-event match for `--on`.
+  - `server/index.ts`: the API routes, the wake and reflection ticks.
+  - `shared/integrations.ts`: memory and wake verbs in `grantRefusal`, the `reflect` grant.
+  - `web/src/workstream.ts`: pure parts — `memorySection`, `coreScore`, `recallScore`,
+    `MEMORY_BUDGET`, `parseWakeAt`, `wakeMatches`, `reflectionDue`, `reflectionPrompt`, the page's
+    filters and revision diff, `ORCA_COMMANDS` and the role text.
+  - New `web/src/views/Memory.tsx`. `web/src/components/Shell.tsx` (nav item),
+    `web/src/lib/route.ts`, `web/src/lib/shortcuts.ts` (`G Y`).
+- **Tests:**
+  - `tests/memory.test.ts` (test database): write, a duplicate refused, revise with a stale
+    `--base` refused, forget, revert, revisions append-only, trust from a scoped wake, a pinned
+    memory refused to an agent, the rate limits, the notes move runs once.
+  - `tests/memoryPrompt.test.ts` (pure): budget, pinned first, cuts, the untrusted fence.
+  - `tests/scheduledWake.test.ts`: parse and match; a due wake fires once over two ticks; an event
+    wake fires on a matching report only; expiry; the 50 limit; a paused orchestrator holds it.
+  - `tests/reflection.test.ts`: when it is due; the grant refuses `spawn` and `post`; the cap; a
+    merge with an untrusted part stays untrusted; never while a message is queued.
+  - `tests/orchestrator.test.ts`: new cases — the prompt has the memory sections, `orca memory
+    write` from a wake, `orca notes set` refused, a fired wake's note reaches the prompt.
+  - `tests/memoryPage.test.tsx` and `tests/memoryApi.test.ts`: render, filter, pin and revert
+    through the API, pin refused to an agent.
+  - `tests/migrations.test.ts`: the new steps pass `checkSteps`. `bun run check` covers native
+    inputs, `tests/console.test.tsx` and `tests/surfaces.test.tsx`.
 
-- **Scope:** tables `memory`, `memory_revision`, `memory_link`. The `orca memory` verbs. The core
-  and recall sections in the orchestrator's prompt, replacing `## Your notes`. Trust set by the
-  server. The rate limits. The notes migration. `orca notes set` refused. The orchestrator's name
-  in memory is `chief`.
-- **Files:** `server/db.ts` (named step `YYYYMMDD-memory`, queries), new `server/memory.ts` (the
-  store: write, revise, forget, link, recall, core, migrateNotes, limits), `server/orchestrator.ts`
-  (the `memory` verb, the prompt input, the notes verbs), `web/src/workstream.ts` (`memorySection`,
-  `coreScore`, `recallScore`, `MEMORY_BUDGET`, `ORCA_COMMANDS`, the role text),
-  `shared/integrations.ts` (memory verbs in `grantRefusal`).
-- **Tests:** `tests/memory.test.ts` (store against the test database: write, revise with a stale
-  `--base`, forget, revert, append-only revisions, trust from a scoped wake, pinned refusal, the
-  rate limits, the notes migration once); `tests/memoryPrompt.test.ts` (pure: budget, pinned first,
-  cuts, the untrusted fence); `tests/orchestrator.test.ts` (a new case: a wake prompt has the core
-  and recall sections; `orca memory write` from a wake; `orca notes set` refused);
-  `tests/migrations.test.ts` (the new step passes `checkSteps`).
+### PR B — Named agents
 
-### PR 3 — Memory page
+- **Scope:**
+  - Table `agent` (section 2.6) and `channel_link.agent` (section 2.7).
+  - The runtime made general (section 7.1): `AgentRef` through `server/orchestrator.ts`, state
+    for each agent, `?agent=` on the routes. The Chief of Staff is the same workstream and the
+    same session as today's orchestrator.
+  - Visible state and `orca agent list / state / add` (section 7.2, 3.3).
+  - The Assistant: its definition, role text and verbs (section 7.3).
+  - Event routing (section 7.4): the `agent` delivery target and subscription kind, inbound
+    messages to the link's agent, thread replies to the agent that opened the thread, clean
+    worker reports to the Assistant behind `cleanReportsTo`.
+  - Escalation: `orca ask`, `--on agent:<name>`, the grant kept over the hop (section 7.5).
+  - Chat tabs (section 7.6) and channels by agent: the Agent Select, the `@chief` prefix, the
+    name prefix on posts (section 7.7).
+  - The Memory page's owner filter and core preview list every agent.
+- **Files:**
+  - `server/db.ts`: named steps `YYYYMMDD-agent` and `YYYYMMDD-channel-link-agent`.
+  - New `server/agents.ts`: load, defaults, the `tools` check.
+  - `server/orchestrator.ts`, `server/index.ts`, `server/integrations/inbox.ts`,
+    `server/integrations/dispatcher.ts`, `shared/integrations.ts` (`defaultInboundTarget`,
+    `planDeliveries`).
+  - `server/integrations/adapters/discord.ts` and `slack.ts`: the name prefix.
+  - `web/src/workstream.ts`: role texts, agent state. `web/src/components/Terminal.tsx` (tabs),
+    `web/src/lib/orchestratorOpen.ts`, `web/src/views/Integrations.tsx` (the Select).
+- **Tests:**
+  - `tests/orchestrator.test.ts` passes with no change. This is the north star of PR B: the Chief
+    of Staff behaves as the orchestrator did.
+  - New `tests/namedAgents.test.ts`: two agents have separate queues, wake counts and sessions;
+    the Assistant cannot run `spawn`; a stored `orchestrator` delivery reaches `chief`; an inbound
+    message goes to the link's agent; a thread reply goes to the agent that opened it; a clean
+    report goes to the Assistant and a problem report to the Chief of Staff; `orca ask chief`
+    from an outside wake keeps the outside grant.
+  - `tests/integrations.test.ts`: `planDeliveries` with agent targets.
+  - `tests/orchestratorPanel.test.tsx` (tabs) and `tests/integrationSettings.test.ts` (the Select).
 
-- **Scope:** section 9: list, filters, search, detail with history and diff, edit, pin, trust,
-  archive, forget, revert, activity tab, core preview. The API.
-- **Files:** `server/index.ts` (routes), `server/memory.ts` (user-only operations: pin, trust,
-  revert), new `web/src/views/Memory.tsx`, `web/src/components/Shell.tsx` (nav item),
-  `web/src/lib/route.ts`, `web/src/lib/shortcuts.ts` (`G Y`), `web/src/workstream.ts`
-  (pure list filters and the revision diff).
-- **Tests:** `tests/memoryPage.test.tsx` (render, filter, pin, revert through the API);
-  `tests/memoryApi.test.ts` (pin refused for an agent and allowed for the user, revert writes a new
-  revision); `tests/console.test.tsx` and `tests/surfaces.test.tsx` pick up the page;
-  `bun run check` covers native inputs.
+### Out of scope
 
-### PR 4 — scheduled wakes
+- Worker learnings to repo memory. Workers get no memory and no memory verbs.
+- Embeddings and `pgvector` (section 10.5).
 
-- **Scope:** table `scheduled_wake`. `orca wake --at / --on / list / cancel`. The minute tick fires
-  due time wakes. The event path fires `--on` wakes: worker reports in `deliverReport`, Orca events
-  in `integrations/inbox.ts`. The `## Scheduled wakes that fired` prompt section. A fired wake is a
-  self-wake for `MAX_WAKES`. The Memory page's detail lists a memory's wakes.
-- **Files:** `server/db.ts` (named step `YYYYMMDD-scheduled-wake`), new `server/scheduledWake.ts`,
-  `server/orchestrator.ts` (the verb, the prompt input, the hook in `deliverReport`),
-  `server/integrations/inbox.ts` (event match), `server/index.ts` (the tick),
-  `web/src/workstream.ts` (pure: parse `--at`, match `--on`, the prompt section).
-- **Tests:** `tests/scheduledWake.test.ts` (pure parse and match; a due wake fires once across two
-  ticks; an event wake fires on a matching worker report and not on another; expiry; the 50 limit;
-  a paused orchestrator holds it); a new case in `tests/orchestrator.test.ts` (the fired note
-  reaches the prompt).
+### Why two PRs
 
-### PR 5 — reflection
-
-- **Scope:** section 5: the trigger in the minute tick, the reflection prompt, the `reflect` grant,
-  the 40-change cap, `orca memory reflect`, the summary as the turn's reply.
-- **Files:** `server/orchestrator.ts` (a reflection wake), `server/memory.ts` (candidate queries),
-  `shared/integrations.ts` (`reflect` in `GRANT_ALLOWS`), `web/src/workstream.ts`
-  (`reflectionDue`, `reflectionPrompt`), `server/index.ts` (the tick).
-- **Tests:** `tests/reflection.test.ts` (pure: when it is due; the prompt holds the candidates;
-  the grant refuses `spawn` and `post`; the cap refuses the 41st change; a merge with an untrusted
-  part stays untrusted; it never runs while a message is queued).
-
-### PR 6 — named-agent runtime (the orchestrator becomes the Chief of Staff)
-
-- **Scope:** table `agent`. Section 7.1 and 7.2. `AgentRef` through `server/orchestrator.ts`.
-  `ORCA_AGENT` in the run's env. `orca agent list / state / add`. `DeliveryTarget` and
-  `subscription` kind `agent`. `?agent=` on the routes. Chat tabs (7.6) with only `chief` present.
-  The Chief of Staff is the same workstream and the same session.
-- **Files:** `server/db.ts` (named step `YYYYMMDD-agent`), `server/orchestrator.ts`, new
-  `server/agents.ts` (load, defaults, the `tools` check), `server/integrations/inbox.ts`,
-  `server/integrations/dispatcher.ts`, `shared/integrations.ts`, `server/index.ts`,
-  `web/src/workstream.ts` (role text input, agent state), `web/src/components/Terminal.tsx` (tabs),
-  `web/src/lib/orchestratorOpen.ts`.
-- **Tests:** `tests/orchestrator.test.ts` must pass unchanged (the north star for this PR: the
-  Chief of Staff behaves as the orchestrator did). New `tests/namedAgents.test.ts` (two agents
-  have separate queues, wake counts and sessions; a second test agent cannot run `spawn`; a stored
-  `orchestrator` delivery reaches `chief`; `?agent=` routes). `tests/orchestratorPanel.test.tsx`
-  (tabs).
-
-### PR 7 — the Assistant and event routing
-
-- **Scope:** the Assistant's definition and role text. `orca ask`. `--on agent:<name>`.
-  `channel_link.agent` and the Settings Select. The routing table in 7.4, with the
-  `cleanReportsTo` switch. The `@chief` prefix. The name prefix on posts. Escalation keeps the grant.
-- **Files:** `server/db.ts` (named step `YYYYMMDD-channel-link-agent`), `server/agents.ts`,
-  `server/orchestrator.ts` (`ask`, report routing), `shared/integrations.ts`
-  (`defaultInboundTarget`, `planDeliveries`), `server/integrations/inbox.ts`,
-  `server/integrations/adapters/discord.ts` and `slack.ts` (the name prefix),
-  `web/src/views/Integrations.tsx` (the Select), `web/src/workstream.ts` (Assistant role text).
-- **Tests:** `tests/namedAgents.test.ts` (an inbound message goes to the link's agent; a thread
-  reply goes to the agent that opened it; a clean report goes to the Assistant and a problem report
-  to the Chief of Staff; `orca ask chief` from an outside wake keeps the outside grant);
-  `tests/integrations.test.ts` (`planDeliveries` with agent targets); `tests/integrationSettings.test.ts`
-  (the Select).
-
-### PR 8 — worker learnings to repo memory (last, low priority)
-
-- **Scope:** an owner `repo:<name>`. The Chief of Staff (not the worker) writes a lesson from a
-  worker report into it. A worker's brief gets the top repo memories (1 000 tokens) under
-  `## Repo memory`. Workers get no memory verbs.
-- **Files:** `server/memory.ts`, `server/verbs.ts` (`workerBrief` input), `web/src/workstream.ts`.
-- **Tests:** `tests/memory.test.ts` (the repo owner), `tests/workflow.test.ts` (a new W-case: a
-  spawned worker's prompt has the repo memory section).
-
-### Changes to the proposed series, and why
-
-- **The table is `scheduled_wake`, not `wake`.** "Wake" names one run in the code (section 2.1).
-- **The `agent` table comes in PR 6, not PR 2.** PR 2 needs only an owner name. The Chief of Staff
-  is `chief` from PR 2, so no memory row changes in PR 6.
-- **PR 6 moves no run state.** Each agent is a workstream under `@orca`, as the orchestrator is
-  now. So turns, the queue, Stop, the chat, `thread_link` and recovery work for it unchanged.
-- **The Assistant gets clean worker reports in PR 7** behind a switch. This is the main cut in the
-  Chief of Staff's load, so it belongs with the Assistant, not with the runtime.
-- The order is otherwise as proposed. The Chief of Staff's memory comes first (Finn's decision 6).
+- Finn asked for two PRs, one for each core thing. Each is one feature to try and to revert.
+- Memory is useful with one agent. PR A fixes the forgotten decisions and dropped tasks of today's
+  orchestrator on its own.
+- The cut is clean. Each agent is a workstream under `@orca`, and the memory tables already carry
+  the agent name. So PR B adds no column to them and moves no run state.
+- The table of self-set wakes is `scheduled_wake`, not `wake`. "Wake" names one run in the code
+  (section 2.1).
