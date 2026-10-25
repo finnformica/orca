@@ -222,6 +222,8 @@ const deliverWake = async (text: string) => orchestrator.report(await loadConfig
 setInterval(() => {
   if (!primary.held()) return;
   void scheduledWake.tick(deliverWake).catch(db.logUnlessDown("orca: scheduled wake pass failed"));
+  // A reflection on the orchestrator's memory when one is due (shared/memory.ts reflectionDue).
+  void loadConfig().then((cfg) => orchestrator.maybeReflect(cfg)).catch(db.logUnlessDown("orca: reflection pass failed"));
 }, 60_000).unref();
 onNewEvent((e) => { void scheduledWake.onEvent(e, deliverWake).catch(db.logUnlessDown("orca: scheduled wake match failed")); });
 // The heavy-command queue (server/heavy.ts): take back a slot past its max run time or whose

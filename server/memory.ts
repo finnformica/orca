@@ -6,7 +6,7 @@
 // The server, not the agent, decides a memory's source and trust (`provenance`).
 import * as db from "./db";
 import {
-  CHIEF, MEMORY_BUDGET, MEMORY_LIMITS, SHARED, changedProvenance, cleanTags, fitRecall, importanceOf, mayWrite, memoryBlock, memoryProblems, memorySection,
+  CHIEF, MEMORY_BUDGET, REFLECTION, coreScore, similarPairs, type ReflectionInput, MEMORY_LIMITS, SHARED, changedProvenance, cleanTags, fitRecall, importanceOf, mayWrite, memoryBlock, memoryProblems, memorySection,
   normTitle, notesMovedNotice, recallScore, revisionLine, selectCore, splitNotes,
   type CoreSelection, type FiredWake, type Memory, type MemoryLink, type MemoryRevision, type MemoryState, type NotesPart, type Provenance, type Trust,
 } from "../shared/memory";
@@ -21,7 +21,7 @@ export class MemoryError extends Error {
 
 /** Who makes a change. An agent's change carries its wake's provenance; the user's is trusted. */
 export type Actor =
-  | { kind: "agent"; agent: string; runId?: string; prov: Provenance }
+  | { kind: "agent"; agent: string; runId?: string; prov: Provenance; /** Changes allowed in this wake (a reflection: 40). */ maxPerWake?: number }
   | { kind: "user" }
   | { kind: "migration" };
 
@@ -64,13 +64,13 @@ const cleanReason = (reason: unknown): string | undefined => {
 };
 
 /** The rate limits of an agent (§10.2): changes in this wake, and in 24 hours. */
-async function checkRate(agent: string, runId: string | undefined, now: number): Promise<void> {
+async function checkRate(agent: string, runId: string | undefined, now: number, perWake = MEMORY_LIMITS.perWake): Promise<void> {
   const by = `agent:${agent}`;
   const [row] = await db.withRetry((sql) => sql`
     SELECT count(*) FILTER (WHERE at > ${now - 86_400_000}) AS day,
            count(*) FILTER (WHERE run_id IS NOT NULL AND run_id = ${runId ?? null}) AS wake
     FROM memory_revision WHERE user_id = ${user()} AND by = ${by} AND at > ${now - 86_400_000}`) as { day: string; wake: string }[];
-  if (runId && Number(row?.wake ?? 0) >= MEMORY_LIMITS.perWake) throw new MemoryError(`refused: ${MEMORY_LIMITS.perWake} memory changes in one wake is the limit. Keep the rest for the next wake.`, 429);
+  if (runId && Number(row?.wake ?? 0) >= perWake) throw new MemoryError(`refused: ${perWake} memory changes in one wake is the limit. Keep the rest for the next wake.`, 429);
   if (Number(row?.day ?? 0) >= MEMORY_LIMITS.perDay) throw new MemoryError(`refused: ${MEMORY_LIMITS.perDay} memory changes in 24 hours is the limit. The user sees this on the Memory page.`, 429);
 }
 
@@ -86,7 +86,7 @@ export async function write(input: WriteInput, actor: Actor, now = Date.now()): 
   const owner = input.owner.trim() || SHARED;
   if (actor.kind === "agent") {
     if (!mayWrite(actor.agent, owner)) throw new MemoryError(`refused: an agent writes only its own memories ("${actor.agent}") and shared ones, not "${owner}"`, 403);
-    await checkRate(actor.agent, actor.runId, now);
+    await checkRate(actor.agent, actor.runId, now, actor.maxPerWake);
   }
   const norm = normTitle(input.title);
   const same = await db.withRetry((sql) => sql`
@@ -125,7 +125,7 @@ async function change(id: number, actor: Actor, opts: { reason?: string; base?: 
   const reason = cleanReason(opts.reason);
   if (actor.kind === "agent") {
     if (!reason) throw new MemoryError("--reason is required: say why, in one line");
-    await checkRate(actor.agent, actor.runId, now);
+    await checkRate(actor.agent, actor.runId, now, actor.maxPerWake);
   }
   const by = byOf(actor);
   return db.withRetry(async (sql) => {
@@ -229,6 +229,62 @@ export async function revisions(id: number): Promise<MemoryRevision[]> {
   return rows.map(toRevision);
 }
 
+// ── Merge ──────────────────────────────────────────────────────────────────────────────────
+
+/** Merge memories into one: write the new memory, link each source to it as "merged into", archive
+ *  the sources — one transaction. The new one is untrusted when any source is (or the wake is): a
+ *  merge cannot wash outside text into a trusted memory. Sources must be the agent's to change. */
+export async function merge(ids: number[], input: Omit<WriteInput, "owner"> & { owner?: string }, actor: Actor, now = Date.now()): Promise<Memory> {
+  const unique = [...new Set(ids)];
+  if (unique.length < 2) throw new MemoryError("merge needs at least two memory ids");
+  const tags = cleanTags(input.tags);
+  const problems = memoryProblems({ title: input.title, body: input.body, tags, importance: input.importance }, { needAll: true });
+  if (problems.length) throw new MemoryError(`invalid merge: ${problems.join("; ")}`);
+  const reason = cleanReason(input.reason);
+  if (actor.kind === "agent") {
+    if (!reason) throw new MemoryError("--reason is required: say why, in one line");
+    await checkRate(actor.agent, actor.runId, now, actor.maxPerWake);
+  }
+  const by = byOf(actor);
+  const runId = actor.kind === "agent" ? actor.runId : undefined;
+  return db.withRetry(async (sql) => {
+    let out: Memory | undefined;
+    await sql.begin(async (tx: Bun.SQL) => {
+      const rows = await tx`SELECT ${tx.unsafe(COLS)} FROM memory WHERE user_id = ${user()} AND id = ANY(${tx.array(unique, "INT8")}) FOR UPDATE` as Row[];
+      const sources = rows.map(toMemory);
+      const missing = unique.filter((id) => !sources.some((m) => m.id === id));
+      if (missing.length) throw new MemoryError(`no memory ${missing.map((id) => `m${id}`).join(", ")}`, 404);
+      if (actor.kind === "agent") {
+        const pinned = sources.find((m) => m.pinned);
+        if (pinned) throw new MemoryError(`refused: m${pinned.id} is pinned by the user, so it is read-only to agents`, 403);
+        const foreign = sources.find((m) => !mayWrite(actor.agent, m.owner));
+        if (foreign) throw new MemoryError(`refused: m${foreign.id} belongs to "${foreign.owner}"`, 403);
+      }
+      const owner = input.owner?.trim() || (actor.kind === "agent" ? (sources.every((m) => m.owner === SHARED) ? SHARED : actor.agent) : sources[0]!.owner);
+      const outside = sources.find((m) => m.trust === "untrusted");
+      const base: Provenance = actor.kind === "agent" ? actor.prov : { source: "user", trust: "trusted" };
+      const prov = changedProvenance(base, outside ? { source: outside.source, trust: "untrusted" } : base);
+      const [row] = await tx`
+        INSERT INTO memory (user_id, owner, title, body, tags, tags_text, importance, source, trust, created_by, updated_by, created_at, updated_at)
+        VALUES (${user()}, ${owner}, ${input.title.trim()}, ${input.body.trim()}, ${tx.array(tags, "TEXT")}, ${tags.join(" ")},
+          ${input.importance ?? Math.max(...sources.map((m) => m.importance))}, ${prov.source}, ${prov.trust}, ${by}, ${by}, ${now}, ${now})
+        RETURNING ${tx.unsafe(COLS)}` as Row[];
+      out = toMemory(row!);
+      await insertRevision(tx, out, by, reason ?? `merged ${unique.map((id) => `m${id}`).join(", ")}`, runId);
+      for (const m of sources) {
+        await tx`INSERT INTO memory_link (user_id, from_id, to_id, relation, by, at) VALUES (${user()}, ${m.id}, ${out.id}, 'merged into', ${by}, ${now})
+          ON CONFLICT (user_id, from_id, to_id, relation) DO UPDATE SET removed_at = NULL`;
+        if (m.state === "active") {
+          const next: Memory = { ...m, state: "archived", revision: m.revision + 1, updatedBy: by, updatedAt: now };
+          await tx`UPDATE memory SET state = 'archived', revision = ${next.revision}, updated_by = ${by}, updated_at = ${now} WHERE user_id = ${user()} AND id = ${m.id}`;
+          await insertRevision(tx, next, by, `merged into m${out.id}`, runId);
+        }
+      }
+    });
+    return out!;
+  });
+}
+
 // ── Links ──────────────────────────────────────────────────────────────────────────────────────
 
 export async function link(fromId: number, toId: number, relation: string, actor: Actor, now = Date.now()): Promise<MemoryLink> {
@@ -330,6 +386,8 @@ export const MEMORY_USAGE = [
   'orca memory archive <id> --base <revision> --reason "<why>"',
   'orca memory link <from> <to> --as "<relation>"',
   'orca memory unlink <from> <to> --as "<relation>"',
+  'orca memory merge <id> <id>… --title "<title>" --body "<body>" [--tag t]… --reason "<why>"',
+  "orca memory reflect   (ask for a reflection: at most one each 6 hours)",
 ].join("\n");
 
 /** `orca memory <sub> …` for an agent. `actor` is built lazily: only a change needs the wake read. */
@@ -381,6 +439,11 @@ export async function memoryTool(agent: string, words: string[], args: Record<st
       const rel = text(args.as) ?? "";
       const l = await link(id(rest[0], "from id"), id(rest[1], "to id"), rel, await actor());
       return `Linked m${l.fromId} → m${l.toId} as "${l.relation}".`;
+    }
+    case "merge": {
+      const ids = rest.map((w) => id(w));
+      const m = await merge(ids, { title: text(args.title) ?? "", body: text(args.body) ?? "", tags: list(args.tag), importance: importanceOf(args.importance), reason: text(args.reason) }, await actor());
+      return `Merged ${ids.map((i) => `m${i}`).join(", ")} into m${m.id}${m.trust === "untrusted" ? " (untrusted: a source was)" : ""}. The old ones are archived and linked to it.`;
     }
     case "unlink": {
       const ok = await unlink(id(rest[0], "from id"), id(rest[1], "to id"), text(args.as) ?? "");
@@ -454,4 +517,31 @@ export async function migrateNotes(o: { confirm?: boolean } = {}, now = Date.now
   }
   await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { notesMigratedAt: now, notesMoveNotice: notesMovedNotice(written.length) });
   return { parts, written: written.map((m) => ({ id: m.id, title: m.title })), skipped, dryRun: false };
+}
+
+// ── Reflection (§5) ────────────────────────────────────────────────────────────────────────────
+
+/** Memory changes by `agent` since `since` (every revision it made). */
+export async function changesSince(agent: string, since: number): Promise<number> {
+  const [row] = await db.withRetry((sql) => sql`
+    SELECT count(*) AS n FROM memory_revision WHERE user_id = ${user()} AND by = ${`agent:${agent}`} AND at > ${since}`) as { n: string }[];
+  return Number(row?.n ?? 0);
+}
+
+/** What a reflection reads: memories changed since the last one, the least used of its own, and
+ *  pairs whose words overlap most. */
+export async function reflectionInput(agent: string, since: number, lastSummary: string | undefined, now = Date.now()): Promise<ReflectionInput> {
+  const changed = await db.withRetry((sql) => sql`
+    SELECT ${sql.unsafe(COLS)} FROM memory WHERE user_id = ${user()} AND updated_at > ${since} AND state <> 'forgotten'
+      AND (owner = ${agent} OR owner = ${SHARED}) ORDER BY updated_at DESC LIMIT 60`) as Row[];
+  const mine = await db.withRetry((sql) => sql`
+    SELECT ${sql.unsafe(COLS)}, tsvector_to_array(search) AS lexemes FROM memory
+    WHERE user_id = ${user()} AND state = 'active' AND (owner = ${agent} OR owner = ${SHARED}) ORDER BY updated_at DESC LIMIT 300`) as (Row & { lexemes: string[] })[];
+  const all = mine.map((r) => ({ memory: toMemory(r), lexemes: r.lexemes ?? [] }));
+  const byId = new Map(all.map((x) => [x.memory.id, x.memory]));
+  const lowest = all.map((x) => x.memory).filter((m) => !m.pinned && m.owner === agent)
+    .sort((a, b) => coreScore(a, now) - coreScore(b, now)).slice(0, REFLECTION.lowest);
+  const pairs = similarPairs(all.filter((x) => !x.memory.pinned).map((x) => ({ id: x.memory.id, lexemes: x.lexemes })))
+    .map(([a, b, overlap]) => ({ a: byId.get(a)!, b: byId.get(b)!, overlap }));
+  return { agent, changed: changed.map(toMemory), lowest, pairs, ...(lastSummary ? { lastSummary } : {}) };
 }

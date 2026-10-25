@@ -49,7 +49,8 @@ import {
   machineText, type BoardRow, type FailStreak, type MachineReport, type OrchStatus, type VerifiedMark, type WakeExit,
 } from "../web/src/workstream";
 import { activityLines, type AgentTurn } from "../shared/agent";
-import { CHIEF, provenance, reportWorkstream } from "../shared/memory";
+import { CHIEF, REFLECTION, REFLECTION_MARKER, provenance, reflectionDue, reflectionPrompt, reflectionRefusal, reportWorkstream } from "../shared/memory";
+import { WRITING_STYLE } from "../shared/writingStyle";
 import { isScheduledWake, parseScheduledWake } from "../shared/scheduledWake";
 import { providerOfModel } from "../shared/models";
 import { attachmentIdOf, attachmentRefusal, catchAllPostRefusal, deleteRefusal, grantKey, grantRefusal, outboundRefusal, repoScoped, type Grant, type ReplyTo } from "../shared/integrations";
@@ -103,6 +104,12 @@ type Blob = {
   notesMigratedAt?: number;
   /** A one-time line for the next wake after the move; cleared once a wake carries it. */
   notesMoveNotice?: string | null;
+  /** "reflect" while a reflection runs (server-side verb allow-list, shared/memory.ts REFLECT_VERBS). */
+  wakeMode?: "reflect" | null;
+  /** The last reflection: when it ENDED (its own changes are before it), its run and its summary. */
+  lastReflection?: { at: number; runId: string; summary?: string } | null;
+  /** The agent asked for a reflection (`orca memory reflect`); the minute tick starts it when idle. */
+  reflectRequested?: number | null;
 };
 /** The model it runs on: its pin, else Opus. Its judgement — what to delegate, how to brief, which
  *  model a task deserves — is what the workers' quality rests on, so it gets a strong model; Fable
@@ -214,7 +221,11 @@ export function compact(cfg: OrcaConfig): Promise<{ runId: string }> {
 export async function stop(cfg: OrcaConfig): Promise<string | undefined> {
   const runId = await agent.interrupt(dir(), { queue: false });
   await serial(async () => {
-    if (runId && (await blob()).handling?.runId === runId) await patch({ handling: null, wakeGrant: null, wakeReplyTo: null, wakeFromUser: null, died: null });
+    const b = await blob();
+    if (runId && b.handling?.runId === runId) {
+      await patch({ handling: null, wakeGrant: null, wakeReplyTo: null, wakeFromUser: null, died: null, wakeMode: null,
+        ...(b.wakeMode === "reflect" ? { lastReflection: { at: Date.now(), runId, summary: "(stopped by the user)" } } : {}) });
+    }
     // Only the primary drains (as the run-finished hook does), and a failed drain never fails Stop.
     if (primary.held()) await drain(cfg).catch(db.logUnlessDown("orca: orchestrator drain after stop failed"));
   });
@@ -239,6 +250,9 @@ export async function onRunFinished(cfg: OrcaConfig, run: agent.RunFinished): Pr
       if (exit) await died(run.runId, exit, run.meta?.costUsd);
       // Only its own claim: a message of yours may have launched the next wake already.
       else if ((await blob()).handling?.runId === run.runId) await patch({ handling: null, wakeGrant: null, wakeReplyTo: null, wakeFromUser: null, died: null });
+      // A reflection's end, even a failed one, so a broken one cannot re-run every minute. `at` is
+      // NOW: its own changes are before it and do not make the next one due.
+      if (run.options.action === "reflect") await patch({ wakeMode: null, lastReflection: { at: Date.now(), runId: run.runId, summary: (run.result ?? "").slice(0, 4000) } });
       await drain(cfg);
     });
     return;
@@ -358,7 +372,7 @@ async function died(runId: string, exit: WakeExit, costUsd?: number): Promise<vo
   await db.failTurn(runId, wakeStoppedLine({ reason, toolCalls, costUsd, retried: retry.length, dropped: messages.length - retry.length }));
   // What it had done is read off the steps it recorded as it went — they outlive the process — so the
   // next wake neither repeats a spawn/merge nor leaves the user without the reply it had started.
-  await patch({ handling: null, wakeGrant: null, wakeReplyTo: null, wakeFromUser: null, died: retry, cutOff: retry.length ? reason : null, cutOffProgress: wakeProgress(steps) || null });
+  await patch({ handling: null, wakeGrant: null, wakeReplyTo: null, wakeFromUser: null, wakeMode: null, died: retry, cutOff: retry.length ? reason : null, cutOffProgress: wakeProgress(steps) || null });
 }
 
 /** Startup: a wake that was in flight when the previous bridge stopped has nobody to report its
@@ -465,7 +479,7 @@ async function wake(cfg: OrcaConfig, fresh: string[], grant?: Grant, freshReplyT
     // The newest outside message is the one `orca post --reply` answers.
     const replyTo = freshReplyTo ?? [...claimed].reverse().find((m) => m.replyTo)?.replyTo;
     const fromUser = wakeFromUser(messages, grant);
-    await patch({ wakeGrant: grant ?? null, wakeReplyTo: replyTo ?? null, wakeFromUser: fromUser || null }); // before the launch: its first `orca` call is checked
+    await patch({ wakeGrant: grant ?? null, wakeReplyTo: replyTo ?? null, wakeFromUser: fromUser || null, wakeMode: null }); // before the launch: its first `orca` call is checked
     // Memory (server/memory.ts): the core, the hits for these messages. The notes ride along only
     // until the user moves them into memory.
     const fired = messages.filter(isScheduledWake).map(parseScheduledWake).filter((f) => f !== undefined);
@@ -693,6 +707,8 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
   }
   const refusal = grantRefusal(wakeGrant, verb, args);
   if (refusal) throw new Error(refusal);
+  // A reflection may only read and tidy memory and wakes: no spawn, send, merge, post or ask-user.
+  if (b.wakeMode === "reflect") { const r = reflectionRefusal(verb, args._ ?? []); if (r) throw new Error(r); }
   // A workstream an outside sender's wake starts or steers runs in scoped mode (verbs.permissionFor,
   // agent.scopedRules), whatever its repo says — sticky on its enrichment, with who started it for
   // the card. Your own chat steering it (every message yours) clears it again.
@@ -1067,6 +1083,7 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
     }
     case "memory": {
       const name = typeof args._agent === "string" && args._agent ? args._agent : CHIEF;
+      if (words[0] === "reflect") return requestReflection(b);
       return memory.memoryTool(name, words, args, () => memoryActor(name, b));
     }
     default: throw new Error(`unknown command "${verb}". Commands: board, machine, spawn, send, address, archive, stop [--drop-queue], sweep [--confirm], merge --when-green, preview [--status | --push-to-template [--confirm]], status, chats, read, notes, memory, wake, handoff, cloudflare, slack, gmail`);
@@ -1094,7 +1111,61 @@ async function memoryActor(name: string, b: Blob): Promise<memory.Actor & { kind
     agent: name, runId, grantLevel: b.wakeGrant?.level, messages, scopedWorkstreams: scoped,
     steps: steps.filter((s) => s.kind === "tool").map((s) => ({ name: s.name, command: typeof (s.input as { command?: unknown } | undefined)?.command === "string" ? (s.input as { command: string }).command : undefined })),
   });
-  return { kind: "agent", agent: name, runId, prov };
+  return { kind: "agent", agent: name, runId, prov, ...(b.wakeMode === "reflect" ? { maxPerWake: REFLECTION.maxChanges } : {}) };
+}
+
+/** `orca memory reflect`: ask for a reflection. At most one each 6 hours; it starts when idle. */
+async function requestReflection(b: Blob, now = Date.now()): Promise<string> {
+  const last = b.lastReflection?.at;
+  if (last !== undefined && now - last < REFLECTION.minGapMs) {
+    return `Not now: the last reflection ended ${Math.round((now - last) / 60_000)} minutes ago, and they are at least 6 hours apart.`;
+  }
+  await patch({ reflectRequested: now });
+  return "Asked. Orca starts a reflection when you are idle (after this wake), within a minute.";
+}
+
+/** The minute tick (index.ts): start a reflection when one is due (shared/memory.ts reflectionDue).
+ *  Only where the orchestrator lives, only on the primary. Returns the run id, if it started one. */
+export function maybeReflect(cfg: OrcaConfig, now = Date.now()): Promise<string | undefined> {
+  if (!primary.held()) return Promise.resolve(undefined);
+  if (cfg.orchestratorOn && cfg.orchestratorOn !== db.instanceName()) return Promise.resolve(undefined);
+  return serial(async () => {
+    const b = await blob();
+    const idle = !agent.isRunning(dir());
+    if (!idle) return undefined;
+    const queued = (await db.queuedMessages(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH)).length;
+    const lastAt = b.lastReflection?.at;
+    const changes = await memory.changesSince(CHIEF, lastAt ?? 0);
+    if (!reflectionDue({ changes, lastAt, requested: Boolean(b.reflectRequested), idle, queued, paused: (b.wakes ?? 0) >= MAX_WAKES }, now)) return undefined;
+    return reflect(cfg, b, now);
+  });
+}
+
+/** Launch a reflection: a run of the same session with the reflection prompt. It does not count as
+ *  a wake for MAX_WAKES, nor reset the count; its reply is its summary. */
+async function reflect(cfg: OrcaConfig, b: Blob, now: number): Promise<string> {
+  const input = await memory.reflectionInput(CHIEF, b.lastReflection?.at ?? 0, b.lastReflection?.summary, now);
+  const next = continuation({
+    provider: "claude", from: b.sessionId ? "claude" : undefined, sessionId: b.sessionId, contextPct: b.contextPct,
+    transcript: await db.turns(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH),
+  });
+  await patch({ wakeMode: "reflect", wakeGrant: null, wakeReplyTo: null, wakeFromUser: null, reflectRequested: null });
+  try {
+    const receipt = await agent.launch(dir(), dir(), reflectionPrompt(input, WRITING_STYLE), {
+      ...next, provider: "claude", repo: ORCHESTRATOR_REPO, branch: ORCHESTRATOR_BRANCH,
+      instruction: `${REFLECTION_MARKER} ${input.changed.length} changed, ${input.lowest.length} least used, ${input.pairs.length} possible duplicates`,
+      action: "reflect", queue: false, source: "agents",
+      model: modelOf(cfg, b), maxBudgetUsd: budgetOf(cfg), ...runLimits(cfg),
+      // No shell: the `orca` command (checked server-side against REFLECT_VERBS) and reading.
+      permissionMode: "ask" as const, allowedTools: ["Bash(orca *)", "Read", "Grep", "Glob"],
+      env: { ORCA_URL: `http://127.0.0.1:${API_PORT}`, PATH: `${primary.mainBin()}:${process.env.PATH ?? ""}`, ORCA_AGENT: CHIEF },
+    });
+    await patch({ sessionId: receipt.sessionId, handling: { runId: receipt.runId, instance: db.instanceName(), messages: [] } });
+    return receipt.runId;
+  } catch (e) {
+    await patch({ wakeMode: null }).catch(() => {});
+    throw e;
+  }
 }
 
 async function handoffVerb(cfg: OrcaConfig, words: string[], args: ToolArgs): Promise<string> {

@@ -469,6 +469,27 @@ test("O5w: a wake it set itself fires a wake of its own: the note under Schedule
   expect((await orchBlob()).wakes).toBe(1); // a self-wake: MAX_WAKES counts it
 });
 
+test("O5r: after 15 memory changes a reflection runs as its own turn: no wake counted, then not again for 6 hours", async () => {
+  wire();
+  for (let i = 0; i < 15; i++) await orchestrator.tool(cfg(), "memory", { _: ["write"], title: `Fact ${i}`, body: `Fact number ${i} about the deploy window.` });
+  const runId = await orchestrator.maybeReflect(cfg());
+  expect(runId).toBeString();
+  const [turn] = await settled(orchTurns, 1);
+  expect(turn!.instruction).toMatch(/^\[reflection\] 15 changed, \d+ least used, \d+ possible duplicates$/);
+  expect(turn!.prompt).toContain("## Changed since your last reflection\n[m");
+  expect(turn!.prompt).not.toMatch(/^## Board$/m); // not a wake: no board, no messages
+  expect(turn!.source).toBe("agents");
+  const b = await orchBlob();
+  expect(b).toMatchObject({ lastReflection: { runId, summary: "## Outcome\nDone." } });
+  expect(b.wakeMode).toBeUndefined();
+  expect(b.wakes ?? 0).toBe(0); // a reflection is no wake
+  expect(await orchestrator.maybeReflect(cfg())).toBeUndefined(); // 6 hours apart
+  // Its claude ran with no shell: only `orca`, reading and searching.
+  const argv = (await launches())[0]!;
+  expect(argv).toContain("Bash(orca *)");
+  expect(argv).not.toContain("bypassPermissions");
+});
+
 test("O9: its model can be changed mid-conversation — Claude only, and the session carries over", async () => {
   wire();
   // Nothing pinned → Opus, whatever the workers' default is.

@@ -357,3 +357,117 @@ export function splitNotes(notes: string): NotesPart[] {
 
 export const notesMovedNotice = (n: number): string =>
   `Your notes moved into memory as ${n} item${n === 1 ? "" : "s"} tagged from-notes. Revise, merge and link them in your own words.`;
+
+// ── Reflection (§5): a wake that tidies the agent's own memory ───────────────────────────────────
+
+export const REFLECTION_MARKER = "[reflection]";
+export const isReflection = (text: string): boolean => text.startsWith(REFLECTION_MARKER);
+
+const HOUR = 3_600_000;
+export const REFLECTION = {
+  /** Memory changes by the agent since the last reflection that make one due. */
+  changes: 15,
+  /** Or this long since the last reflection, with at least one change. */
+  everyMs: 24 * HOUR,
+  /** Never two closer than this, asked for or not. */
+  minGapMs: 6 * HOUR,
+  /** Memory changes one reflection may make. */
+  maxChanges: 40,
+  inputTokens: 8000,
+  lowest: 30,
+  pairs: 20,
+  /** Lexeme overlap (Jaccard) that makes two memories a possible duplicate. */
+  pairMin: 0.35,
+};
+
+/** The verbs a reflection wake may run: reads, memory and its own wakes. No spawn, send, merge,
+ *  post or ask-user — the server refuses anything else while one runs. */
+export const REFLECT_VERBS = ["board", "chats", "read", "channels", "machine", "notes", "memory", "wake"] as const;
+
+export function reflectionRefusal(verb: string, words: unknown[] = []): string | undefined {
+  const sub = String(words[0] ?? "");
+  if (verb === "memory" && sub === "reflect") return "refused: this IS a reflection";
+  if (verb === "notes" && sub === "set") return "refused: a reflection does not change the notes";
+  if ((REFLECT_VERBS as readonly string[]).includes(verb)) return undefined;
+  return `refused: a reflection may only read and tidy memory and wakes (${REFLECT_VERBS.join(", ")}), not "${verb}"`;
+}
+
+export type ReflectionState = {
+  /** Memory changes by the agent since the last reflection. */
+  changes: number;
+  lastAt?: number;
+  /** The agent asked for one (`orca memory reflect`). */
+  requested?: boolean;
+  idle: boolean;
+  queued: number;
+  paused: boolean;
+};
+
+/** Is a reflection due now? Never while the agent works, has a message waiting or is paused; never
+ *  within 6 hours of the last one; then on request, after 15 changes, or after a day with a change. */
+export function reflectionDue(s: ReflectionState, now: number): boolean {
+  if (!s.idle || s.queued > 0 || s.paused) return false;
+  if (s.lastAt !== undefined && now - s.lastAt < REFLECTION.minGapMs) return false;
+  if (s.requested) return true;
+  if (s.changes >= REFLECTION.changes) return true;
+  return s.changes > 0 && (s.lastAt === undefined || now - s.lastAt >= REFLECTION.everyMs);
+}
+
+/** Pairs of memories whose words overlap most: candidates to merge. Pure (Jaccard over lexemes). */
+export function similarPairs(items: { id: number; lexemes: string[] }[], max = REFLECTION.pairs, min = REFLECTION.pairMin): [number, number, number][] {
+  const sets = items.map((i) => ({ id: i.id, set: new Set(i.lexemes) }));
+  const out: [number, number, number][] = [];
+  for (let a = 0; a < sets.length; a++) {
+    for (let b = a + 1; b < sets.length; b++) {
+      const x = sets[a]!, y = sets[b]!;
+      if (!x.set.size || !y.set.size) continue;
+      let both = 0;
+      for (const w of x.set) if (y.set.has(w)) both++;
+      const j = both / (x.set.size + y.set.size - both);
+      if (j >= min) out.push([x.id, y.id, Math.round(j * 100) / 100]);
+    }
+  }
+  return out.sort((p, q) => q[2] - p[2]).slice(0, max);
+}
+
+export type ReflectionInput = {
+  agent: string;
+  changed: Memory[];
+  lowest: Memory[];
+  pairs: { a: Memory; b: Memory; overlap: number }[];
+  lastSummary?: string;
+};
+
+/** The reflection wake's prompt. Inside its 8000-token budget: what changed in full, the least
+ *  used cut, the duplicate pairs by title, the last summary. */
+export function reflectionPrompt(input: ReflectionInput, writingStyle: string): string {
+  const fit = (blocks: string[], tokens: number): string[] => {
+    const out: string[] = [];
+    let used = 0;
+    for (const b of blocks) { const t = tokensOf(b) + 1; if (used + t > tokens) { out.push(`(${blocks.length - out.length} more not shown)`); break; } out.push(b); used += t; }
+    return out;
+  };
+  const budget = REFLECTION.inputTokens;
+  return [
+    `${REFLECTION_MARKER} A reflection on your memory. No user message and no worker report woke you: Orca did, because your memory changed.`,
+    "",
+    "## What to do",
+    "Read the memories below. Make your memory smaller, clearer and more correct:",
+    "- Merge memories that say the same thing: `orca memory merge <id> <id>… --title … --body … --reason …` (it archives the old ones and links them).",
+    "- Rewrite a memory that is unclear or out of date (`orca memory revise`). Archive what you no longer need. Forget what is wrong.",
+    "- Write a lesson when a pattern repeats: a memory tagged `lesson`, linked to the memories it came from.",
+    "- Set or cancel your own scheduled wakes for a task that is stale.",
+    `You may change at most ${REFLECTION.maxChanges} memories. Pinned memories and other agents' own memories are read-only.`,
+    "You cannot spawn, send, merge, post or ask the user in a reflection. A merge with an untrusted memory stays untrusted.",
+    "End with a summary of at most 10 lines: what you changed and why. Nothing else.",
+    "", writingStyle,
+    "", "## Changed since your last reflection",
+    ...(input.changed.length ? fit(input.changed.map((m) => memoryBlock(m)), budget * 0.5) : ["(none)"]),
+    "", "## Least used (candidates to archive)",
+    ...(input.lowest.length ? fit(input.lowest.map((m) => memoryBlock(m, { bodyChars: 200, cutNote: true })), budget * 0.25) : ["(none)"]),
+    "", "## Possible duplicates (candidates to merge)",
+    ...(input.pairs.length ? fit(input.pairs.map((p) => `- m${p.a.id} "${p.a.title}" ~ m${p.b.id} "${p.b.title}" (overlap ${p.overlap})`), budget * 0.12) : ["(none)"]),
+    "", "## Your last reflection",
+    input.lastSummary ? input.lastSummary.slice(0, 4000) : "(this is the first one)",
+  ].join("\n");
+}
