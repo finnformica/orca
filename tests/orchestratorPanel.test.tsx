@@ -527,3 +527,51 @@ test("the PiP window never reads its own narrow width as a phone for the compose
     expect(sendInPip.querySelector("span")!.className).not.toContain("max-md:");
   } finally { void pip; }
 });
+
+test("named agents: a tab per agent with its state dot, the Chief of Staff first; a tab is the same chat over its own branch", async () => {
+  const now = Date.now();
+  apiFake.turnsData.set("@orca::orchestrator", [{ id: "run-c", provider: "claude", instruction: "ship it", prompt: "p", response: "Spawned r/ship.", startedAt: now - 1000, finishedAt: now }]);
+  apiFake.turnsData.set("@orca::assistant", [{ id: "run-a", provider: "claude", instruction: "triage #ops", prompt: "p", response: "Two questions, one for the chief.", startedAt: now - 500, finishedAt: now }]);
+  apiFake.extraAgents = [{ agent: "assistant", displayName: "Assistant", branch: "assistant", state: "waiting", stateNote: "waiting on Finn: merge order", running: false, paused: false, notes: "", model: "claude-sonnet-5-5", key: "/state/agents/assistant", queued: 1 }];
+  await mount(<Entry />);
+  await click(launcher());
+  await afterSlide();
+  const tabs = () => [...panel()!.querySelectorAll<HTMLElement>('[data-slot="agent-tab"]')];
+  expect(tabs().map((t) => t.textContent)).toEqual(["Chief of Staff", "Assistant"]);
+  expect(tabs()[0]!.dataset.state).toBe("active"); // the default
+  expect(tabs()[1]!.querySelector('[data-slot="status-dot"]')!.getAttribute("data-tone")).toBe("warning"); // waiting
+  expect(panel()!.textContent).toContain("Spawned r/ship.");
+  expect(panel()!.querySelector('[data-slot="agent-chat"]')).toBeNull(); // mounted only when chosen
+
+  // Radix tabs switch on mousedown.
+  await act(async () => { tabs()[1]!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 })); await flush(); await flush(); });
+  await afterSlide();
+  const chat = panel()!.querySelector<HTMLElement>('[data-slot="agent-chat"][data-agent="assistant"]')!;
+  expect(chat.hidden).toBe(false);
+  expect(chat.textContent).toContain("Two questions, one for the chief.");
+  // The header carries that agent's name, state, note and queue.
+  expect(panel()!.querySelector("#orchestrator-title")!.textContent).toBe("Assistant");
+  expect(panel()!.querySelector('[data-slot="agent-status"]')!.textContent).toBe("Waiting: waiting on Finn: merge order · 1 queued");
+  // Its composer sends to ITS queue, not the Chief of Staff's.
+  const textarea = chat.querySelector("textarea")!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, "A then B");
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await flush();
+  });
+  await act(async () => { textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); await flush(); await flush(); });
+  expect(apiFake.orchestratorMessages).toEqual([{ text: "A then B", attachments: [], agent: "assistant" }]);
+
+  // Ask Orca (and O, and the quick-ask pill: every open path) opens the Chief of Staff again.
+  await click(closeButton());
+  await click(launcher());
+  expect(tabs()[0]!.dataset.state).toBe("active");
+  expect(panel()!.querySelector<HTMLElement>('[data-slot="agent-chat"][data-agent="assistant"]')!.hidden).toBe(true);
+});
+
+test("with only the Chief of Staff (an older bridge, or no other agent) there is no tab row", async () => {
+  await mount(<Entry />);
+  await click(launcher());
+  await afterSlide();
+  expect(panel()!.querySelector('[data-slot="agent-tabs"]')).toBeNull();
+});

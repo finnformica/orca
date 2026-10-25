@@ -88,7 +88,7 @@ export function MemoryPage() {
         </TabsContent>
         <TabsContent value="activity" className="pt-3">{tab === "activity" && <Activity reload={reload} onOpen={(id) => go({}, tab, id)} />}</TabsContent>
         <TabsContent value="reflection" className="pt-3">{tab === "reflection" && <Reflections reload={reload} onOpen={(id) => go({}, tab, id)} />}</TabsContent>
-        <TabsContent value="core" className="pt-3">{tab === "core" && <Core reload={reload} onOpen={(id) => go({}, tab, id)} />}</TabsContent>
+        <TabsContent value="core" className="pt-3">{tab === "core" && <Core reload={reload} agents={(data?.owners ?? ["chief"]).filter((o) => o !== "shared")} onOpen={(id) => go({}, tab, id)} />}</TabsContent>
       </Tabs>
       {open !== undefined && <MemoryDialog id={open} onClose={() => go({}, tab, undefined)} onOpen={(id) => go({}, tab, id)} onChanged={refresh} />}
       {creating && <NewMemory owners={data?.owners ?? ["shared", "chief"]} onClose={() => setCreating(false)} onCreated={(m) => { setCreating(false); refresh(); go({}, "memories", m.id); }} />}
@@ -253,12 +253,22 @@ function PassRow({ p, onOpen }: { p: ReflectionPass; onOpen: (id: number) => voi
   );
 }
 
-function Core({ reload, onOpen }: { reload: number; onOpen: (id: number) => void }) {
+/** The core one agent gets on every wake (§9), for each agent: a Select picks which. */
+function Core({ reload, agents, onOpen }: { reload: number; agents: string[]; onOpen: (id: number) => void }) {
   const [core, setCore] = useState<MemoryCore | null>(null);
-  useEffect(() => { api.memoryCore("chief").then(setCore).catch((e) => failed("Load core", e)); }, [reload]);
+  const [agent, setAgent] = useState("chief");
+  useEffect(() => { setCore(null); api.memoryCore(agent).then(setCore).catch((e) => failed("Load core", e)); }, [reload, agent]);
   return (
-    <VCard slot="memory-core" title="What the orchestrator gets on every wake"
-      aside={core && <span className="text-muted-foreground text-xs tabular-nums" data-slot="memory-core-tokens">{core.tokens} of {core.budget} tokens</span>} bodyClass="divide-y">
+    <VCard slot="memory-core" title={`What ${agent} gets on every wake`}
+      aside={<span className="flex items-center gap-2">
+        {agents.length > 1 && (
+          <Select value={agent} onValueChange={setAgent}>
+            <SelectTrigger size="sm" aria-label="Agent" data-slot="memory-core-agent" className="w-32"><SelectValue /></SelectTrigger>
+            <SelectContent>{agents.map((a) => <SelectItem key={a} value={a}>{a}</SelectItem>)}</SelectContent>
+          </Select>
+        )}
+        {core && <span className="text-muted-foreground text-xs tabular-nums" data-slot="memory-core-tokens">{core.tokens} of {core.budget} tokens</span>}
+      </span>} bodyClass="divide-y">
       {core && core.pinnedTokens > core.pinnedWarn && (
         <div data-slot="memory-pinned-warning" className="bg-amber-500/10 px-4 py-2 text-sm text-amber-700 dark:text-amber-400">
           Pinned memories use {core.pinnedTokens} tokens, more than {core.pinnedWarn}. They leave less room for the rest.

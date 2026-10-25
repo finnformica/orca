@@ -5,16 +5,18 @@ import { ArrowLeft, Bot, PictureInPicture2, PanelBottomClose, X } from "lucide-r
 import { subscribeTurns, syncEvents } from "@/lib/events";
 import { ChatPanel } from "@/views/Chat";
 import type { ChatControlsProps, CompactControl } from "@/components/ChatControls";
-import { api } from "../api";
+import { api, type AgentStatus } from "../api";
 import { useWorkstreams, type Row } from "../store";
-import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, orchestratorStatus } from "../workstream";
+import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, agentStateTone, agentStatusText, orchestratorStatus } from "../workstream";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { StatusDot } from "@/components/console";
 import { PanelHeader, SidePanel, usePanelWidth, useSlideSettled, type SwipeProps } from "@/components/SidePanel";
 import { PipContext, PortalContainer, cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Shortcut } from "@/components/ui/kbd";
 import { Tip } from "@/components/ui/tip";
 import { poll } from "@/lib/poll";
-import { type OrchestratorPrefill, orchestratorActivityAtom, orchestratorOpenAtom, orchestratorPrefillAtom, orchestratorWidthAtom } from "@/lib/atoms";
+import { type OrchestratorPrefill, orchestratorActivityAtom, orchestratorOpenAtom, orchestratorPrefillAtom, orchestratorTabAtom, orchestratorWidthAtom } from "@/lib/atoms";
 import { useCoarse, useNarrow } from "@/lib/viewport";
 import { openOrchestrator } from "@/lib/orchestratorOpen";
 import { sendToOrchestrator } from "@/lib/orchestratorOutbox";
@@ -100,14 +102,22 @@ export function useOrchestratorActivity(): { running: boolean; unread: boolean }
   const viewingRef = useRef(viewing);
   viewingRef.current = viewing;
   useEffect(() => {
+    // Every named agent (§7.6): running while any agent's wake runs; unread once any finished unseen.
+    // One status read of all of them per `turn` event on any agent's conversation.
     let live = true;
-    const read = (finished: boolean) => api.orchestrator().then((s) => {
+    const unsubscribers: (() => void)[] = [];
+    const read = (finished: boolean) => api.orchestratorAgents().then(({ agents }) => {
       if (!live) return;
-      setActivity((a) => ({ running: s.running, unread: a.unread || (finished && !s.running && !viewingRef.current) }));
-    }).catch(() => {});
-    void read(false);
-    const unsubscribe = subscribeTurns(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { turn: () => void read(true), step: () => {}, resync: () => void read(false) });
-    return () => { live = false; unsubscribe(); };
+      const running = agents.some((a) => a.running);
+      setActivity((a) => ({ running, unread: a.unread || (finished && !running && !viewingRef.current) }));
+      return agents;
+    }).catch(() => undefined);
+    void read(false).then((agents) => {
+      if (!live) return;
+      const branches = agents?.length ? agents.map((a) => a.branch ?? ORCHESTRATOR_BRANCH) : [ORCHESTRATOR_BRANCH];
+      for (const branch of new Set(branches)) unsubscribers.push(subscribeTurns(ORCHESTRATOR_REPO, branch, { turn: () => void read(true), step: () => {}, resync: () => void read(false) }));
+    });
+    return () => { live = false; for (const u of unsubscribers) u(); };
   }, []);
   useEffect(() => { if (viewing) setActivity((a) => (a.unread ? { ...a, unread: false } : a)); }, [viewing]);
   return activity;
@@ -177,12 +187,13 @@ function OrchestratorStatusLine({ state }: { state: { running: boolean; startedA
  *  routed page, the quick-ask box), so a model change or a context reading is the same in each.
  *  `compact` is for a box with no turn stream of its own (quick ask): pending from the request until
  *  the status shows the orchestrator idle again. The chat panel tracks its own, by the turn. */
-export type OrchestratorState = { key: string; running: boolean; paused: boolean; model: string; contextPct?: number; lastWakeUsd?: number; hint?: string; startedAt?: number; queued?: number };
-export function useOrchestratorState(active: boolean, win: Window = window) {
+export type OrchestratorState = AgentStatus;
+/** `agent`: a named agent's tab (none = the Chief of Staff, the orchestrator as it always was). */
+export function useOrchestratorState(active: boolean, win: Window = window, agent?: string) {
   const [state, setState] = useState<OrchestratorState | null>(null);
   // Stable (useCallback / useMemo): the panel passes these to its chat, which is memoized — a new
   // object each render re-rendered the whole long thread on every open and close of the panel.
-  const load = useCallback(() => api.orchestrator().then(setState).catch(() => {}), []);
+  const load = useCallback(() => api.orchestrator(agent).then(setState).catch(() => {}), [agent]);
   useEffect(() => {
     if (!active) return;
     return poll(load, 2000, win);
@@ -190,7 +201,7 @@ export function useOrchestratorState(active: boolean, win: Window = window) {
   const model = state?.model ?? ORCHESTRATOR_DEFAULT_MODEL, contextPct = state?.contextPct;
   const controls: ChatControlsProps = useMemo(() => ({
     model, only: "claude", contextPct,
-    onModel: (m: string) => { setState((s) => (s ? { ...s, model: m } : s)); void api.orchestratorModel(m).then(load); },
+    onModel: (m: string) => { setState((s) => (s ? { ...s, model: m } : s)); void api.orchestratorModel(m, agent).then(load); },
   }), [model, contextPct, load]);
   const [compacting, setCompacting] = useState<"sent" | "started" | null>(null);
   const [compactError, setCompactError] = useState<string>();
@@ -200,7 +211,7 @@ export function useOrchestratorState(active: boolean, win: Window = window) {
     onCompact: async () => {
       setCompactError(undefined);
       setCompacting("sent");
-      try { await api.compact(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH); setCompacting("started"); await load(); }
+      try { await api.compact(ORCHESTRATOR_REPO, state?.branch ?? ORCHESTRATOR_BRANCH); setCompacting("started"); await load(); }
       catch (e) { setCompacting(null); setCompactError(e instanceof Error ? e.message : String(e)); }
     },
   };
@@ -241,7 +252,15 @@ export function OrchestratorPanel() {
   // a hidden tab's timers get throttled (to once a minute after a while).
   // It starts after the slide: its first answer re-renders the header, which must not land in the
   // slide's frames.
-  const { state, load, controls } = useOrchestratorState(useSlideSettled(open), pip ?? window);
+  const settled = useSlideSettled(open);
+  const { state, load, controls } = useOrchestratorState(settled, pip ?? window);
+  // The named agents' tabs (§7.6): the Chief of Staff first and the default. A tab row shows only once
+  // there is more than one agent. Another agent's chat mounts the first time its tab is chosen.
+  const [tab, setTab] = useAtom(orchestratorTabAtom);
+  const team = useAgentList(settled, pip ?? window);
+  const current = team.find((a) => a.agent === tab && a.agent !== "chief");
+  const [seen, setSeen] = useState<string[]>([]);
+  if (current && !seen.includes(current.agent!)) setSeen([...seen, current.agent!]);
   // Closing drops the pending ask, so a later open can't re-apply it to a freshly mounted composer.
   useEffect(() => { if (!open) { pip?.close(); setPrefill(null); } }, [open]);
   // An ask while popped out lands in the PiP window's composer; bring that window forward.
@@ -306,8 +325,8 @@ export function OrchestratorPanel() {
       slot="orchestrator-handle" swipe={swipe} touch={coarse && !pip}
       icon={<Bot className="size-3.5" />} titleId="orchestrator-title"
       // Paused = it has woken itself as many times as it may without hearing from you.
-      title={state?.paused ? "Orca · paused until you reply" : "Orca"}
-      status={<OrchestratorStatusLine state={state} />}
+      title={current ? current.displayName ?? current.agent! : state?.paused ? "Orca · paused until you reply" : "Orca"}
+      status={current ? <AgentStatusLine agent={current} /> : <OrchestratorStatusLine state={state} />}
       actions={<>
         {pip ? (
           <Button size="icon" variant="ghost" className="size-7" aria-label="Return to tab" onClick={() => pip.close()}>
@@ -330,11 +349,19 @@ export function OrchestratorPanel() {
   );
   // The conversation fills the panel edge to edge, in the chat styling that follows the page's theme.
   const chat = (
-    <div className="min-h-0 flex-1">
-      {/* Mounted at once, not after the status read: the composer must exist to take focus in the
-          same commit that opens the panel, or the first keystrokes go nowhere. */}
-      <OrchestratorChat row={row} prefill={prefill} controls={controls} load={load} />
-    </div>
+    <>
+      {team.length > 1 && <AgentTabs team={team} tab={current ? current.agent! : "chief"} onTab={setTab} />}
+      <div className="min-h-0 flex-1" hidden={Boolean(current)}>
+        {/* Mounted at once, not after the status read: the composer must exist to take focus in the
+            same commit that opens the panel, or the first keystrokes go nowhere. */}
+        <OrchestratorChat row={row} prefill={prefill} controls={controls} load={load} />
+      </div>
+      {team.filter((a) => a.agent !== "chief" && seen.includes(a.agent!)).map((a) => (
+        <div key={a.agent} className="min-h-0 flex-1" hidden={current?.agent !== a.agent} data-slot="agent-chat" data-agent={a.agent}>
+          <AgentChat agent={a.agent!} displayName={a.displayName ?? a.agent!} branch={a.branch ?? a.agent!} active={current?.agent === a.agent} win={pip ?? window} />
+        </div>
+      ))}
+    </>
   );
   const panelClass = "bg-background text-foreground flex flex-col overflow-hidden";
   const onKeyDown = (e: React.KeyboardEvent) => { if (e.key === "Escape" && !pip) { e.stopPropagation(); setOpen(false); } };
@@ -360,6 +387,63 @@ export function OrchestratorPanel() {
     </div>
   );
 }
+
+/** Every named agent's status, polled every 5 s while `active` (the panel open). The Chief of Staff
+ *  alone until the first answer, so a bridge without named agents shows no tab row. */
+export function useAgentList(active: boolean, win: Window = window): AgentStatus[] {
+  const [team, setTeam] = useState<AgentStatus[]>([]);
+  useEffect(() => {
+    if (!active) return;
+    return poll(() => api.orchestratorAgents().then((r) => setTeam(r.agents)).catch(() => {}), 5000, win);
+  }, [active, win]);
+  return team;
+}
+
+/** The tab row (shadcn Tabs): one tab per agent with its state dot, the Chief of Staff first. */
+function AgentTabs({ team, tab, onTab }: { team: AgentStatus[]; tab: string; onTab: (name: string) => void }) {
+  return (
+    <Tabs value={tab} onValueChange={onTab} className="shrink-0 gap-0 border-b px-2 py-1.5" data-slot="agent-tabs">
+      <TabsList className="h-7">
+        {team.map((a) => (
+          <TabsTrigger key={a.agent} value={a.agent ?? "chief"} className="h-7 flex-none px-2.5 text-xs" data-slot="agent-tab" data-agent={a.agent}>
+            <StatusDot tone={agentStateTone(a.state)} className={cn("size-1.5", a.state === "working" && "animate-pulse")} />
+            {a.displayName ?? a.agent}
+          </TabsTrigger>
+        ))}
+      </TabsList>
+    </Tabs>
+  );
+}
+
+/** The header line of another agent's tab: its state, the note it set, what is queued. */
+function AgentStatusLine({ agent }: { agent: AgentStatus }) {
+  return (
+    <div className="text-muted-foreground flex min-w-0 items-center gap-1.5 text-[11px]" data-slot="agent-status">
+      <span className="truncate">{agentStatusText(agent)}</span>
+    </div>
+  );
+}
+
+/** Another named agent's conversation: the same ChatPanel over its own workstream (`@orca`, its
+ *  branch), its replies under its name, its messages to its own queue. Nothing forks the chat. */
+const AgentChat = memo(function AgentChat({ agent, displayName, branch, active, win }: { agent: string; displayName: string; branch: string; active: boolean; win: Window }) {
+  const { state, load, controls } = useOrchestratorState(active, win, agent);
+  const key = state?.key, running = !!state?.running;
+  const row: Row = useMemo(() => ({
+    repo: ORCHESTRATOR_REPO, hasRemote: false, branch, title: displayName, prompt: "", lane: "LOCAL",
+    worktreePath: key, agentStatus: running ? "running" : "idle",
+  }), [branch, displayName, key, running]);
+  return (
+    <ChatPanel
+      row={row} author={displayName} controls={controls}
+      send={async (text, images) => {
+        const refs = images.length ? await api.uploadAttachments(images) : [];
+        await api.orchestratorMessage(text, refs, agent);
+        await load();
+      }}
+    />
+  );
+});
 
 // Desktop (where the route still works if visited directly): the viewport below the top bar, this
 // page's own h-12 header and the shell's main padding. Narrow: the WHOLE page (header + chat) bleeds

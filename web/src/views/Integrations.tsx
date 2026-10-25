@@ -25,7 +25,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Empty, Pill, SectionTitle, StatusDot, VCard } from "@/components/console";
 import {
   SUBSCRIPTION_PRESETS, connectOriginProblem, deadTargetLabel, filterText, healthLine, healthTone, identityLabel, identityProblem, instanceText, newPersonId as personId, integrationProblem, linkProblem, parseFilter, targetLabel,
-  type IntegrationCard, type InstanceOption, type IntegrationsOverview, type LinkRow, type Pairing, type PersonRow,
+  type IntegrationCard, type InstanceOption, type IntegrationsOverview, type LinkRow, type Pairing, type PersonRow, type AgentOption, agentLabel, linkAgentValue,
 } from "../../../shared/integrationSettings";
 import { ACCESS_LABEL, ACCESS_VALUES, AUTO_INSTANCE, CATCH_ALL, EVENTS_LABEL, EVENTS_VALUES, LEVEL_LABEL, LINK_LEVELS as LEVELS, STORED_SECRET_PREFIX, effectiveNotify, isAutomatic, repoScoped, storedSecretName, type AdapterMeta, type EventsMode, type LinkLevel } from "../../../shared/integrations";
 
@@ -37,7 +37,7 @@ const PAIRING_LEVELS = LINK_LEVELS.filter((l) => l.value !== "admin");
 // A link's two switches, on the row and in the link dialog. Both on by default.
 const NOTIFY_SWITCHES = [
   { key: "notifyMe", label: "Notify me", slot: "link-notify-me", hint: "Each message shows in the bell, the Inbox and the chat. Turn it off for a busy place." },
-  { key: "notifyAgent", label: "Notify agent", slot: "link-notify-agent", hint: "Each message wakes the orchestrator. A paired person keeps their level; an unknown sender is read-only: the agent tells you and does not reply." },
+  { key: "notifyAgent", label: "Notify agent", slot: "link-notify-agent", hint: "Each message wakes the link's agent (the Agent menu; the Assistant by default). A paired person keeps their level; an unknown sender is read-only: the agent tells you and does not reply." },
 ] as const;
 const LEVEL_TONE = { notify: "default", ask: "blue", work: "green", admin: "purple" } as const;
 // The account policy (docs/integrations/POLICY.md), one line each in the select.
@@ -254,7 +254,7 @@ function IntegrationCardView({ card: c, data, onChange }: { card: IntegrationCar
       {links.length === 0
         ? <div className="text-muted-foreground flex items-center justify-between gap-2 px-4 py-3 text-xs">No {meta?.place ?? "link"}s linked. Orca listens only where a link says so.
             <Button variant="ghost" size="sm" onClick={() => setLinkOpen("new")}><Plus />Add</Button></div>
-        : <ul data-slot="integration-links" className="divide-y">{links.map((l) => <LinkRowView key={l.id} link={l} events={c.events} onEdit={() => setLinkOpen(l)} onChange={onChange} />)}</ul>}
+        : <ul data-slot="integration-links" className="divide-y">{links.map((l) => <LinkRowView key={l.id} link={l} events={c.events} agents={data.agents} onEdit={() => setLinkOpen(l)} onChange={onChange} />)}</ul>}
       {linkOpen && <LinkDialog integration={c} meta={meta} link={linkOpen === "new" ? undefined : linkOpen} onClose={() => setLinkOpen(null)} onSaved={onChange} />}
       {editOpen && <IntegrationDialog kinds={data.kinds} options={options} existing={c} onClose={() => setEditOpen(false)} onSaved={onChange} />}
       {renameOpen && <RenameDialog card={c} onClose={() => setRenameOpen(false)} onSaved={onChange} />}
@@ -291,7 +291,7 @@ function PolicyRow({ card: c, onChange }: { card: IntegrationCard; onChange: () 
   );
 }
 
-function LinkRowView({ link: l, events, onEdit, onChange }: { link: LinkRow; events: EventsMode; onEdit: () => void; onChange: () => void }) {
+function LinkRowView({ link: l, events, agents, onEdit, onChange }: { link: LinkRow; events: EventsMode; agents?: AgentOption[]; onEdit: () => void; onChange: () => void }) {
   // The account's events mode can turn a switch off for every link (never on).
   const allowed = effectiveNotify({ me: true, agent: true }, events);
   const [test, setTest] = useState<{ busy?: boolean; state?: string; error?: string }>({});
@@ -322,6 +322,16 @@ function LinkRowView({ link: l, events, onEdit, onChange }: { link: LinkRow; eve
         </div>}
       </div>
       <div className="flex items-center gap-1">
+        {/* The agent that takes this link's messages (§7.7). Only with a server that has named agents. */}
+        {agents && agents.length > 0 && (
+          <div data-slot="link-agent" className="mr-2 flex items-center gap-2">
+            <Label htmlFor={`link-agent-${l.id}`} className="text-muted-foreground text-xs font-normal">Agent</Label>
+            <Select value={linkAgentValue(l)} onValueChange={(v) => void act(`Send ${name} to the ${agentLabel(v, agents)}`, "links/save", { ...l, agent: v === "assistant" ? "" : v }, onChange)}>
+              <SelectTrigger id={`link-agent-${l.id}`} size="sm" aria-label={`Agent for ${name}`} className="w-36 max-sm:h-10"><SelectValue>{agentLabel(linkAgentValue(l), agents)}</SelectValue></SelectTrigger>
+              <SelectContent>{agents.map((a) => <SelectItem key={a.name} value={a.name}>{a.displayName}</SelectItem>)}</SelectContent>
+            </Select>
+          </div>
+        )}
         <div data-slot="link-switches" className="mr-2 flex items-center gap-4 max-md:flex-1">
           {NOTIFY_SWITCHES.map(({ key, label, slot }) => (
             <div key={key} data-slot={slot} className="flex items-center gap-2">
@@ -798,15 +808,15 @@ function SubscriptionDialog({ data, onClose, onSaved }: { data: Overview; onClos
   const [topicPattern, setTopic] = useState(SUBSCRIPTION_PRESETS[0]!.topicPattern);
   const [digest, setDigest] = useState<number | undefined>();
   const [filter, setFilter] = useState("");
-  const [targetKind, setTargetKind] = useState<"link" | "orchestrator" | "workstream" | "web">(data.links.length ? "link" : "web");
+  const [targetKind, setTargetKind] = useState<"link" | "orchestrator" | "agent" | "workstream" | "web">(data.links.length ? "link" : "web");
   const [targetId, setTargetId] = useState(data.links[0]?.id ?? "");
   const [busy, setBusy] = useState(false);
   const parsed = parseFilter(filter);
   const problem = !topicPattern.trim() ? "a topic pattern is required" : !parsed ? "filter: repo=…, branch=… or adapter=…, comma-separated"
-    : targetKind === "link" && !targetId ? "pick a link" : targetKind === "workstream" && !/^[^:]+::.+$/.test(targetId) ? "workstream: repo::branch" : undefined;
+    : targetKind === "link" && !targetId ? "pick a link" : targetKind === "agent" && !targetId ? "pick an agent" : targetKind === "workstream" && !/^[^:]+::.+$/.test(targetId) ? "workstream: repo::branch" : undefined;
   const save = async () => {
     setBusy(true);
-    const r = await act(`Add subscription ${topicPattern}`, "subscriptions/add", { topicPattern, filter: parsed ?? {}, targetKind, ...(targetKind === "link" || targetKind === "workstream" ? { targetId } : {}), ...(digest ? { digestSeconds: digest } : {}) }, onSaved);
+    const r = await act(`Add subscription ${topicPattern}`, "subscriptions/add", { topicPattern, filter: parsed ?? {}, targetKind, ...(targetKind === "link" || targetKind === "workstream" || targetKind === "agent" ? { targetId } : {}), ...(digest ? { digestSeconds: digest } : {}) }, onSaved);
     setBusy(false); if (r) onClose();
   };
   return (
@@ -824,11 +834,12 @@ function SubscriptionDialog({ data, onClose, onSaved }: { data: Overview; onClos
       </div>
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Target" htmlFor="sub-kind">
-          <Select value={targetKind} onValueChange={(v) => { setTargetKind(v as typeof targetKind); setTargetId(v === "link" ? data.links[0]?.id ?? "" : ""); }}>
+          <Select value={targetKind} onValueChange={(v) => { setTargetKind(v as typeof targetKind); setTargetId(v === "link" ? data.links[0]?.id ?? "" : v === "agent" ? data.agents?.[0]?.name ?? "" : ""); }}>
             <SelectTrigger id="sub-kind" className="w-full"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="link" disabled={!data.links.length}>A link</SelectItem>
               <SelectItem value="orchestrator">The orchestrator</SelectItem>
+              {(data.agents?.length ?? 0) > 0 && <SelectItem value="agent">A named agent</SelectItem>}
               <SelectItem value="workstream">A workstream</SelectItem>
               <SelectItem value="web">The web app</SelectItem>
             </SelectContent>
@@ -839,6 +850,14 @@ function SubscriptionDialog({ data, onClose, onSaved }: { data: Overview; onClos
             <Select value={targetId} onValueChange={setTargetId}>
               <SelectTrigger id="sub-link" className="w-full"><SelectValue /></SelectTrigger>
               <SelectContent>{data.links.filter((l) => l.externalId !== CATCH_ALL).map((l) => <SelectItem key={l.id} value={l.id}>{targetLabel({ targetKind: "link", targetId: l.id }, data.links, data.integrations)}</SelectItem>)}</SelectContent>
+            </Select>
+          </Field>
+        )}
+        {targetKind === "agent" && (
+          <Field label="Agent" htmlFor="sub-agent">
+            <Select value={targetId} onValueChange={setTargetId}>
+              <SelectTrigger id="sub-agent" className="w-full"><SelectValue /></SelectTrigger>
+              <SelectContent>{(data.agents ?? []).map((a) => <SelectItem key={a.name} value={a.name}>{a.displayName}</SelectItem>)}</SelectContent>
             </Select>
           </Field>
         )}
