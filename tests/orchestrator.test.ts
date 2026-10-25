@@ -1229,17 +1229,18 @@ test("every message a wake handles is a queue row; spawn and send reference the 
   // The worker's prompt is the brief alone: the origin is for humans.
   expect((await launches()).find((a) => a.includes("Only touch src/cache"))).not.toContain("Please add a response cache");
 
-  // A send queued behind a live run carries its origin on the row to the turn it becomes.
+  // A send queued behind a live run carries its origin on the row to the turn it becomes. The
+  // launcher is process-wide (another test file may leave a no-op one), so this test sets its own.
+  const dispatched: db.QueuedMessage[] = [];
+  agent.onQueuedMessage(async (m) => { dispatched.push(m); await verbs.launchQueued(cfg(), cfg().repos[0]!, m); });
   await writeFile(hold, "");
   await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { handling: { runId: "wake-2", instance: db.instanceName(), messages: ["Also handle empty"], ids: [Number(row!.id)] } });
   await orchestrator.tool(cfg(), "send", { repo: "r", branch, _: ["Handle", "empty"] });
   expect(await orchestrator.tool(cfg(), "send", { repo: "r", branch, _: ["Add", "a", "test"] })).toContain("Queued");
   await rm(hold);
-  await settled(() => db.turns("r", branch), 2);
-  const queued = (await db.claimQueuedMessage("r", branch))!;
-  expect([queued.origin?.wakeRunId, queued.replyTo]).toEqual(["wake-2", undefined]);
-  await verbs.launchQueued(cfg(), cfg().repos[0]!, queued);
   const turns = await settled(() => db.turns("r", branch), 3);
+  agent.onQueuedMessage(async () => {});
+  expect(dispatched.map((m) => [m.origin?.wakeRunId, m.replyTo])).toEqual([["wake-2", undefined]]);
   expect(turns.map((t) => t.origin?.wakeRunId)).toEqual([claim!.runId, "wake-2", "wake-2"]);
 
   // `orca read` joins the rows and prints the quote block before the prompt.
