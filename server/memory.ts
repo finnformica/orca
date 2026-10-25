@@ -545,3 +545,39 @@ export async function reflectionInput(agent: string, since: number, lastSummary:
     .map(([a, b, overlap]) => ({ a: byId.get(a)!, b: byId.get(b)!, overlap }));
   return { agent, changed: changed.map(toMemory), lowest, pairs, ...(lastSummary ? { lastSummary } : {}) };
 }
+
+// ── The Memory page (§9) ───────────────────────────────────────────────────────────────────────
+
+/** Memories for the page: the text search (if any) and the states in SQL, the rest in the pure
+ *  filter (shared/memory.ts filterMemories). At most 1000. */
+export async function listForPage(q: { text?: string; states: MemoryState[] }): Promise<Memory[]> {
+  const rows = await db.withRetry((sql) => q.text?.trim()
+    ? sql`SELECT ${sql.unsafe(COLS)} FROM memory WHERE user_id = ${user()} AND state = ANY(${sql.array(q.states, "TEXT")})
+        AND search @@ websearch_to_tsquery('english', ${q.text}) ORDER BY updated_at DESC LIMIT 1000`
+    : sql`SELECT ${sql.unsafe(COLS)} FROM memory WHERE user_id = ${user()} AND state = ANY(${sql.array(q.states, "TEXT")})
+        ORDER BY updated_at DESC LIMIT 1000`) as Row[];
+  return rows.map(toMemory);
+}
+
+export type ActivityRow = MemoryRevision & { title: string; current: number };
+
+/** The newest revisions over every memory: how the agents' memory changes, in order. */
+export async function activity(limit = 200): Promise<ActivityRow[]> {
+  const rows = await db.withRetry((sql) => sql`
+    SELECT r.*, m.title AS current_title, m.revision AS current FROM memory_revision r JOIN memory m ON m.id = r.memory_id
+    WHERE r.user_id = ${user()} ORDER BY r.at DESC, r.id DESC LIMIT ${Math.min(500, Math.max(1, limit))}`) as (RevRow & { current_title: string; current: number })[];
+  return rows.map((r) => ({ ...toRevision(r), title: r.current_title, current: Number(r.current) }));
+}
+
+/** Memory changes per agent in the last 24 hours, for the page's rate warning. */
+export async function changesToday(now = Date.now()): Promise<Record<string, number>> {
+  const rows = await db.withRetry((sql) => sql`
+    SELECT by, count(*) AS n FROM memory_revision WHERE user_id = ${user()} AND at > ${now - 86_400_000} AND by LIKE 'agent:%' GROUP BY by`) as { by: string; n: string }[];
+  return Object.fromEntries(rows.map((r) => [r.by.slice("agent:".length), Number(r.n)]));
+}
+
+/** Every owner that holds a memory, for the page's owner filter. */
+export async function owners(): Promise<string[]> {
+  const rows = await db.withRetry((sql) => sql`SELECT DISTINCT owner FROM memory WHERE user_id = ${user()} ORDER BY owner`) as { owner: string }[];
+  return [...new Set([CHIEF, SHARED, ...rows.map((r) => r.owner)])];
+}

@@ -756,6 +756,30 @@ Built for the current orchestrator (`chief`). The memory tables already carry th
   - `tests/migrations.test.ts`: the new steps pass `checkSteps`. `bun run check` covers native
     inputs, `tests/console.test.tsx` and `tests/surfaces.test.tsx`.
 
+### PR A as built: changes to the plan
+
+The code changed these points of the plan. PR B builds on the code, not on the older text above.
+
+- **No notes move at boot.** `migrateNotes` runs only from `bun run memory:move-notes [--confirm]`.
+  Without `--confirm` it is a dry run. Until the move runs, the notes stay in the prompt and
+  `orca notes set` works. After it, `notes set` is refused and the notes leave the prompt.
+- **The core is not a recall.** Only search hits add to `recall_count`. Otherwise each wake keeps
+  the core items fresh, and they never age out of the core.
+- **Schema:** `memory.tags_text` holds the tags as text, because a generated column cannot use
+  `array_to_string`. `memory_revision.source` lets a revert restore the source.
+- **Reflection is a wake mode, not a grant level.** Grant levels are stored values with database
+  CHECKs. The blob's `wakeMode: "reflect"` and `REFLECT_VERBS` give the same server-side refusal.
+  A reflection's revisions carry `by = agent:<name>` and the reflection's run id.
+- **`orca memory merge` is new.** It writes the merged memory, links each source "merged into",
+  and archives the sources in one transaction. It keeps the lowest trust of its sources.
+- **`worker:` wakes match run events.** `--on worker:<repo>/<branch>` matches `orca.run.*`
+  events. Every new event goes through `router.onNewEvent`, so the hook is in one place and works
+  for every workstream. `deliverReport` has no hook.
+- **`--at` uses the server's local time** when the time has no offset. The app config has no
+  time zone.
+- **Files:** pure rules are in `shared/memory.ts` and `shared/scheduledWake.ts`. The page API is
+  `server/memoryRoutes.ts`. The detail is a Dialog. The shortcut is `G Y`, because `G M` is Inbox.
+
 ### PR B — Named agents
 
 - **Scope:**

@@ -9,6 +9,7 @@ export const PAGES = [
   "agents",
   "board",
   "inbox",
+  "memory",
   "previews",
   "integrations",
   "handoffs",

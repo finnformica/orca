@@ -471,3 +471,88 @@ export function reflectionPrompt(input: ReflectionInput, writingStyle: string): 
     input.lastSummary ? input.lastSummary.slice(0, 4000) : "(this is the first one)",
   ].join("\n");
 }
+
+// ── The Memory page (§9): its query, filters and the revision diff ────────────────────────────────
+
+export type SourceKind = "user" | "agent" | "outside" | "migration";
+export const SOURCE_KINDS: readonly SourceKind[] = ["user", "agent", "outside", "migration"];
+export const sourceKind = (source: string): SourceKind =>
+  source === "user" ? "user" : source.startsWith("outside:") ? "outside" : source.startsWith("migration") ? "migration" : "agent";
+
+export type MemorySort = "updated" | "importance" | "recalls" | "core";
+export const MEMORY_SORTS: readonly MemorySort[] = ["updated", "importance", "recalls", "core"];
+
+/** The page's view, as the URL holds it, so a filtered view is a link. */
+export type MemoryQuery = { q: string; owners: string[]; states: MemoryState[]; sources: SourceKind[]; trust: Trust[]; pinned: boolean; tag: string; sort: MemorySort };
+
+const csv = (v: string | null): string[] => (v ? v.split(",").map((x) => x.trim()).filter(Boolean) : []);
+
+export function parseMemoryQuery(search: string): MemoryQuery {
+  const p = new URLSearchParams(search);
+  const states = csv(p.get("state")).filter((s): s is MemoryState => (MEMORY_STATES as readonly string[]).includes(s));
+  const sort = p.get("sort") as MemorySort | null;
+  return {
+    q: p.get("q") ?? "",
+    owners: csv(p.get("owner")),
+    states: states.length ? states : ["active"],
+    sources: csv(p.get("source")).filter((s): s is SourceKind => (SOURCE_KINDS as readonly string[]).includes(s)),
+    trust: csv(p.get("trust")).filter((t): t is Trust => t === "trusted" || t === "untrusted"),
+    pinned: p.get("pinned") === "1",
+    tag: p.get("tag") ?? "",
+    sort: sort && MEMORY_SORTS.includes(sort) ? sort : "updated",
+  };
+}
+
+/** The query back as a URL search string ("" for the default view). */
+export function memoryQueryString(q: MemoryQuery, extra: Record<string, string | undefined> = {}): string {
+  const p = new URLSearchParams();
+  if (q.q) p.set("q", q.q);
+  if (q.owners.length) p.set("owner", q.owners.join(","));
+  if (!(q.states.length === 1 && q.states[0] === "active")) p.set("state", q.states.join(","));
+  if (q.sources.length) p.set("source", q.sources.join(","));
+  if (q.trust.length) p.set("trust", q.trust.join(","));
+  if (q.pinned) p.set("pinned", "1");
+  if (q.tag) p.set("tag", q.tag);
+  if (q.sort !== "updated") p.set("sort", q.sort);
+  for (const [k, v] of Object.entries(extra)) if (v) p.set(k, v);
+  const s = p.toString();
+  return s ? `?${s}` : "";
+}
+
+/** Every filter but the text search (the server runs that one), then the sort. Pure. */
+export function filterMemories(list: Memory[], q: MemoryQuery, now: number): Memory[] {
+  const out = list.filter((m) =>
+    q.states.includes(m.state)
+    && (!q.owners.length || q.owners.includes(m.owner))
+    && (!q.sources.length || q.sources.includes(sourceKind(m.source)))
+    && (!q.trust.length || q.trust.includes(m.trust))
+    && (!q.pinned || m.pinned)
+    && (!q.tag || m.tags.includes(q.tag)));
+  const by: Record<MemorySort, (a: Memory, b: Memory) => number> = {
+    updated: (a, b) => b.updatedAt - a.updatedAt,
+    importance: (a, b) => b.importance - a.importance || b.updatedAt - a.updatedAt,
+    recalls: (a, b) => b.recallCount - a.recallCount || b.updatedAt - a.updatedAt,
+    core: (a, b) => coreScore(b, now) - coreScore(a, now),
+  };
+  return out.sort(by[q.sort]);
+}
+
+export type DiffLine = { kind: "same" | "add" | "del"; text: string };
+
+/** A line diff of two texts (longest common subsequence), for a revision against the one before. */
+export function lineDiff(before: string, after: string): DiffLine[] {
+  const a = before.split("\n").slice(0, 400), b = after.split("\n").slice(0, 400);
+  const n = a.length, m = b.length;
+  const lcs: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) lcs[i]![j] = a[i] === b[j] ? lcs[i + 1]![j + 1]! + 1 : Math.max(lcs[i + 1]![j]!, lcs[i]![j + 1]!);
+  const out: DiffLine[] = [];
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) { out.push({ kind: "same", text: a[i]! }); i++; j++; }
+    else if (lcs[i + 1]![j]! >= lcs[i]![j + 1]!) out.push({ kind: "del", text: a[i++]! });
+    else out.push({ kind: "add", text: b[j++]! });
+  }
+  while (i < n) out.push({ kind: "del", text: a[i++]! });
+  while (j < m) out.push({ kind: "add", text: b[j++]! });
+  return out;
+}

@@ -35,6 +35,7 @@ import { CALLBACK_PATH as GOOGLE_CALLBACK_PATH } from "./integrations/adapters/g
 import { deadNotification, webAdapter } from "./integrations/adapters/web";
 import * as orchestrator from "./orchestrator";
 import * as scheduledWake from "./scheduledWake";
+import { handleMemory } from "./memoryRoutes";
 import * as primary from "./primary";
 import { scrubbedEnv } from "./env";
 import * as mergeQueue from "./mergeQueue";
@@ -677,6 +678,9 @@ async function api(req: Request, url: URL): Promise<Response> {
     const answer = withIdentity(await listServers(cfg.serverSwitcher), cfg.serverIdentity);
     return json(withTailscaleUser(answer, req.headers, remoteAddr.get(req)));
   }
+  // The Memory page (server/memoryRoutes.ts): Postgres only, answered here, never forwarded.
+  const memoryAnswer = await handleMemory(req, url, body);
+  if (memoryAnswer) return memoryAnswer;
   // Handoff packs (server/handoff.ts): context for another Orca server, carried by the browser. Never
   // forwarded: the packs are this database's, and the import queues to THIS side's orchestrator.
   if (p === "/api/handoffs" || p.startsWith("/api/handoffs/") || p === "/api/handoff/import") {

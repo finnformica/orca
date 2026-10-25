@@ -1127,6 +1127,34 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   must not both drive it at once (the run lease is per host); a worker's outcome text is model
   output fed to something that can spawn and send, which is why its authority stops there.
 
+## Agent memory (`orca memory`, `orca wake`, the Memory page)
+
+Design and the PR series: `docs/design/named-agents-and-memory.md`. Tables (named steps
+`20261025-memory`, `20261025-scheduled-wake`): `memory` (the current state; `owner` = an agent name,
+today only `chief`, or `shared`), `memory_revision` (APPEND-ONLY: no code updates or deletes it, a
+test greps), `memory_link`, `scheduled_wake` (not `wake`: that word is one run). Store
+`server/memory.ts`, pure rules `shared/memory.ts`, wakes `server/scheduledWake.ts` +
+`shared/scheduledWake.ts`, page API `server/memoryRoutes.ts`, page `views/Memory.tsx` (`/memory`, `G Y`).
+- **The server sets trust, never the agent** (`provenance`): an outside grant, an
+  `[external message]`, a report from a `grantScope` worker or an outside read (`orca slack|gmail
+  read`, WebFetch) makes a write `untrusted` with `source = outside:…`. A change keeps the lower
+  trust; only the user's Mark trusted lifts it. Untrusted memories render fenced in their own section.
+- **Only the user pins** (the page; no `orca` verb). Pinned = read-only to agents. Every change needs
+  `--base <revision>` and `--reason`. Limits: 20 changes a wake, 200 a day, 2000 active per owner.
+- **Every wake prompt** gets `## Memory` after the board: the core (pinned first, then own + shared by
+  importance/recency/recalls, 4000 tokens), up to 8 full-text hits for the messages (1500 tokens),
+  fired scheduled wakes, untrusted ones fenced. Only hits count as a recall, never the core.
+- **The notes move is manual** (`bun run memory:move-notes [--confirm]`, never at boot). Until it
+  runs the notes stay in the prompt and `notes set` works; after it they are read-only.
+- **`orca wake --at|--on`** fires once (claimed by UPDATE … WHERE state = 'pending'): a time from the
+  primary's minute tick, an event from `router.onNewEvent` (`pr:`, `worker:` = `orca.run.*`, `topic:`).
+  A fired wake is `[scheduled wake] …`, delivered as a report (MAX_WAKES and a pause apply), never the
+  user's word (`isUserMessage`), a system line in the chat.
+- **Reflection** (`orchestrator.maybeReflect`, minute tick): idle, nothing queued, not paused; 15
+  changes, a day with one, or `orca memory reflect`; 6 hours apart. A wake MODE (`wakeMode:
+  "reflect"`), not a grant: `REFLECT_VERBS` only, no shell, 40 changes. `orca memory merge` keeps the
+  lowest trust of its sources.
+
 ## Notification centre (toasts + the bell)
 
 Flat notifications — one row per event, no threads — in a `notification` table (migration 15 — 13 and 14 were taken by branches open at the same time; `migrate()` tolerates the gap) shared

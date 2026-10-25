@@ -290,10 +290,10 @@ describe("the phone layout (390px, touch)", () => {
     expect(nav.querySelector('input[aria-label="Find agents"]')).not.toBeNull();
     expect(nav.querySelector('[role="group"][aria-label="Instance"]')).not.toBeNull();
     const links = [...nav.querySelectorAll('nav[aria-label="More pages"] button')].map((b) => b.textContent);
-    expect(links).toEqual(["Board", "Inbox", "Previews", "Integrations", "Handoffs"]);
+    expect(links).toEqual(["Board", "Inbox", "Memory", "Previews", "Integrations", "Handoffs"]);
     expect($('[data-slot="settings-repos"]')).not.toBeNull();
     expect($('[data-slot="settings-github"]')).not.toBeNull();
-    await click(nav.querySelectorAll('nav[aria-label="More pages"] button')[3]!); // Integrations
+    await click(nav.querySelectorAll('nav[aria-label="More pages"] button')[4]!); // Integrations
     expect(location.pathname).toBe("/integrations");
   });
 

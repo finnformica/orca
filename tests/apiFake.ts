@@ -8,6 +8,8 @@ import { mock } from "bun:test";
 import type { AgentOutcome, AgentProvider, AgentTurn } from "../shared/agent";
 import type { CiFailureEvidence, ConversationComment, ReviewThreadEvidence } from "../server/gh";
 import { workstreamShots, type MechanicalMerge } from "../web/src/workstream";
+import { filterMemories, parseMemoryQuery, type Memory } from "../shared/memory";
+import type { MemoryActivityRow, MemoryCore, MemoryDetail } from "../web/src/api";
 
 // Chains onto any launch already held, so one releaseClaude() frees them all.
 async function holdLaunch() {
@@ -233,7 +235,14 @@ export const apiFake = {
   handoffBadgeData: { unsent: 0 },
   handoffPacks: [] as Record<string, unknown>[],
   handoffSeenCalls: 0,
-  reset() { this.inboxUnreadData = { others: 0, mutedKinds: [] }; this.handoffBadgeData = { unsent: 0 }; this.handoffPacks = []; this.handoffSeenCalls = 0; this.inboxData = null; this.inboxCalls = []; this.inboxThreads.clear(); this.threadLinksData = []; this.integrationLinks = []; this.integrationsData = null; this.integrationPosts = []; this.integrationPostAnswers = {}; this.inboxActions = []; this.inboxReplyError = null; this.noticesData = []; this.noticeCalls = []; this.worktrees.clear(); this.pending = null; this.calls = []; this.compactError = null; this.mergeError = null; this.cancelQueuedError = null; this.summaryData = null; this.diffText = ""; this.prDetailData = null; this.prDetailError = null; this.holdPrDetail = false; this.releasePrDetail = null; this.prsData = []; this.mergedData = []; this.repoHasRemote = false; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.agentsError = null; this.healthHistoryError = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.handoffs = []; this.handoffPackById.clear(); this.handoffSelf = "orca-work-box"; this.handoffImportError = null; this.handoffCalls = []; this.formById.clear(); this.formCalls = []; this.submitFormError = null; this.secretSaves = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.createWorktreeCalls = []; this.adoptCalls = []; this.previewCalls = []; this.previewStatusCalls = []; this.previewStopCalls = []; this.previewStopError = null; this.holdUsage = false; this.releaseUsage = null; this.healthData = null; this.holdHealth = false; this.healthHistoryData = []; this.healthHistoryCalls = []; this.healthLiveData = null; this.healthLiveCalls = []; this.holdHealthHistory = false; this.releaseHealthHistory = null; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.prCommentsData = []; this.reviewSignalAuthor = "me"; this.reviewSignalCalls = []; this.ciEvidenceData = []; this.ciEvidenceError = null; this.settleResult = { outcome: "conflict", files: [] }; this.settleCalls = []; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.agentQueued = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.turnPageCalls = []; this.turnPageDbUnavailable = false; this.holdTurnPages = false; this.heldTurnPages = []; this.stopped = []; this.orchestratorState = { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" }; this.orchestratorMessages = []; this.uploadAttachmentsResult = []; this.orchestratorMessageError = null; this.orchestratorMessageDelays = []; this.notificationsData = []; this.notificationCalls = []; this.notificationFetches = []; this.turnStepsData.clear(); this.turnFinished.clear(); this.queuedData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; this.setProfileEnabledCalls = []; this.setProfileEnabledError = null; this.holdSetProfileEnabled = false; this.setProfileEnabledReleasers = []; this.refreshProfileCalls = []; this.refreshProfileError = null; this.refreshProfileStaysStale = false; this.instanceRates = {}; this.setInstanceRateCalls = []; this.setInstanceTerminalCalls = []; this.setShowBoardCalls = []; this.googleOAuthData = undefined; this.setGoogleOAuthCalls = []; this.setServerIdentityCalls = []; this.setServerIdentityError = null; this.githubAccounts = []; this.setGithubAccountCalls = []; },
+  // The Memory page (api.memories / memory / memoryActivity / memoryCore / writeMemory / changeMemory).
+  memoryRows: [] as Memory[],
+  memoryDetails: new Map<number, MemoryDetail>(),
+  memoryActivityRows: [] as MemoryActivityRow[],
+  memoryCoreData: null as MemoryCore | null,
+  memoryToday: {} as Record<string, number>,
+  memoryCalls: [] as [string, unknown][],
+  reset() { this.memoryRows = []; this.memoryDetails.clear(); this.memoryActivityRows = []; this.memoryCoreData = null; this.memoryToday = {}; this.memoryCalls = []; this.inboxUnreadData = { others: 0, mutedKinds: [] }; this.handoffBadgeData = { unsent: 0 }; this.handoffPacks = []; this.handoffSeenCalls = 0; this.inboxData = null; this.inboxCalls = []; this.inboxThreads.clear(); this.threadLinksData = []; this.integrationLinks = []; this.integrationsData = null; this.integrationPosts = []; this.integrationPostAnswers = {}; this.inboxActions = []; this.inboxReplyError = null; this.noticesData = []; this.noticeCalls = []; this.worktrees.clear(); this.pending = null; this.calls = []; this.compactError = null; this.mergeError = null; this.cancelQueuedError = null; this.summaryData = null; this.diffText = ""; this.prDetailData = null; this.prDetailError = null; this.holdPrDetail = false; this.releasePrDetail = null; this.prsData = []; this.mergedData = []; this.repoHasRemote = false; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.agentsError = null; this.healthHistoryError = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.handoffs = []; this.handoffPackById.clear(); this.handoffSelf = "orca-work-box"; this.handoffImportError = null; this.handoffCalls = []; this.formById.clear(); this.formCalls = []; this.submitFormError = null; this.secretSaves = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.createWorktreeCalls = []; this.adoptCalls = []; this.previewCalls = []; this.previewStatusCalls = []; this.previewStopCalls = []; this.previewStopError = null; this.holdUsage = false; this.releaseUsage = null; this.healthData = null; this.holdHealth = false; this.healthHistoryData = []; this.healthHistoryCalls = []; this.healthLiveData = null; this.healthLiveCalls = []; this.holdHealthHistory = false; this.releaseHealthHistory = null; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.prCommentsData = []; this.reviewSignalAuthor = "me"; this.reviewSignalCalls = []; this.ciEvidenceData = []; this.ciEvidenceError = null; this.settleResult = { outcome: "conflict", files: [] }; this.settleCalls = []; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.agentQueued = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.turnPageCalls = []; this.turnPageDbUnavailable = false; this.holdTurnPages = false; this.heldTurnPages = []; this.stopped = []; this.orchestratorState = { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" }; this.orchestratorMessages = []; this.uploadAttachmentsResult = []; this.orchestratorMessageError = null; this.orchestratorMessageDelays = []; this.notificationsData = []; this.notificationCalls = []; this.notificationFetches = []; this.turnStepsData.clear(); this.turnFinished.clear(); this.queuedData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; this.setProfileEnabledCalls = []; this.setProfileEnabledError = null; this.holdSetProfileEnabled = false; this.setProfileEnabledReleasers = []; this.refreshProfileCalls = []; this.refreshProfileError = null; this.refreshProfileStaysStale = false; this.instanceRates = {}; this.setInstanceRateCalls = []; this.setInstanceTerminalCalls = []; this.setShowBoardCalls = []; this.googleOAuthData = undefined; this.setGoogleOAuthCalls = []; this.setServerIdentityCalls = []; this.setServerIdentityError = null; this.githubAccounts = []; this.setGithubAccountCalls = []; },
 };
 
 mock.module("@/api", () => ({
@@ -252,6 +261,37 @@ mock.module("@/api", () => ({
     inboxUnread: async () => apiFake.inboxUnreadData,
     handoffBadge: async () => apiFake.handoffBadgeData,
     handoffs: async () => ({ self: "here", packs: apiFake.handoffPacks }),
+    // The Memory page: the same pure filter as the bridge (server/memoryRoutes.ts), text search too.
+    memories: async (search: string) => {
+      apiFake.memoryCalls.push(["list", search]);
+      const q = parseMemoryQuery(search);
+      const text = q.q.toLowerCase();
+      const rows = apiFake.memoryRows.filter((m) => !text || `${m.title} ${m.body}`.toLowerCase().includes(text));
+      return { memories: filterMemories(rows, q, Date.now()), today: apiFake.memoryToday, owners: [...new Set(["chief", "shared", ...apiFake.memoryRows.map((m) => m.owner)])], limits: { perDay: 200 } };
+    },
+    memory: async (id: number) => {
+      const m = apiFake.memoryRows.find((x) => x.id === id);
+      if (!m) throw new Error(`no memory m${id}`);
+      return { links: [], revisions: [], wakes: [], ...apiFake.memoryDetails.get(id), memory: m };
+    },
+    memoryActivity: async () => ({ revisions: apiFake.memoryActivityRows }),
+    memoryCore: async () => apiFake.memoryCoreData ?? { items: [], leftOut: 0, tokens: 0, pinnedTokens: 0, budget: 4000, pinnedWarn: 2000 },
+    writeMemory: async (body: { owner: string; title: string; body: string; tags?: string[]; importance?: number }) => {
+      apiFake.memoryCalls.push(["write", body]);
+      const now = Date.now();
+      const m: Memory = { id: Math.max(0, ...apiFake.memoryRows.map((x) => x.id)) + 1, owner: body.owner, title: body.title, body: body.body, tags: (body.tags ?? []).map((t) => t.trim()).filter(Boolean), importance: body.importance ?? 5, pinned: false, source: "user", trust: "trusted", state: "active", revision: 1, createdBy: "user", updatedBy: "user", createdAt: now, updatedAt: now, recallCount: 0 };
+      apiFake.memoryRows = [...apiFake.memoryRows, m];
+      return { memory: m };
+    },
+    changeMemory: async (id: number, body: Record<string, unknown> & { action: string }) => {
+      apiFake.memoryCalls.push(["change", { id, ...body }]);
+      const m = apiFake.memoryRows.find((x) => x.id === id)!;
+      const next: Memory = { ...m, revision: m.revision + 1, updatedBy: "user", updatedAt: Date.now(),
+        ...(body.action === "pin" ? { pinned: true } : body.action === "unpin" ? { pinned: false } : body.action === "trust" ? { trust: "trusted" as const }
+          : body.action === "state" ? { state: body.state as Memory["state"] } : body.action === "edit" ? { title: String(body.title), body: String(body.body) } : {}) };
+      apiFake.memoryRows = apiFake.memoryRows.map((x) => (x.id === id ? next : x));
+      return { memory: next };
+    },
     markHandoffsSeen: async () => {
       // No longer touches handoffBadgeData: the nav badge counts only outgoing, unsent packs.
       apiFake.handoffSeenCalls++;
