@@ -1081,8 +1081,11 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   merged them into one in both; rows from before keep their old reading), and deliveries are
   serialised so two workers finishing together can't race a launch. In that run's prompt what you
   said and what the workers reported are separate labelled sections, yours first — `## From the
-  user`, then `## Worker reports` (each report verbatim) — so the model never reads a report as an
-  instruction from you, or the reverse (`orchestratorPrompt`).
+  user`, then `## Worker reports` (each report verbatim), then `## Orca events` (an `orca.*` event:
+  a PR's CI or conflicts, a preview, a merge) — so the model never reads a report or an event as an
+  instruction from you, or the reverse (`orchestratorPrompt`). An event is never the user's input
+  (`isUserMessage`): it does not reset the wake count, and a wake that carries one is not
+  `wakeFromUser`, so it never clears an outside grant.
 - **Loop guards.** `MAX_WAKES` (12) self-wakes in a row with no message from you → it pauses and
   holds further events in the queue until you reply (the window's title says so). Each wake has a
   `--max-budget-usd`: `orchestratorWakeBudgetUsd` in the app config, 5 unless set. There is
