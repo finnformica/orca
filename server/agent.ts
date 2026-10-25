@@ -3,7 +3,7 @@
 // Keyed by an arbitrary string: worktree path for
 // feature/fix runs, `slack:…` for repo-level. The subprocess handle is kept so we can kill it.
 import { retryTitle } from "./title";
-import { autofixInstruction, backgroundResumeInstruction, handoffPrompt, idleExpired, isAutofix, isBackgroundResume, parseAgentOutcome, runStopLabel, type UnfinishedTask, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn, type RunStop, type StopReason, type TurnCheck, type TurnSource } from "../shared/agent";
+import { autofixInstruction, backgroundResumeInstruction, handoffPrompt, idleExpired, isAutofix, isBackgroundResume, parseAgentOutcome, runStopLabel, type UnfinishedTask, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn, type RunStop, type StopReason, type TurnCheck, type TurnOrigin, type TurnSource } from "../shared/agent";
 import { runCheck } from "./check";
 import { run, runCmd } from "./run";
 import { agentEnv, githubEnv } from "./env";
@@ -127,6 +127,9 @@ export type LaunchOptions = {
   evidenceChars?: number; // size of CI/review evidence sent with this run (ledger)
   instruction?: string; // what the user typed (or the action's label) — recorded on the turn, shown in the chat
   source?: TurnSource; // the orchestrator's turns: who it answers (you, or worker reports) — the chat's two channels
+  /** A turn the orchestrator started: its wake and the person's words in it, stored on the turn for
+   *  humans (the chat, `orca read`). Never part of the prompt. */
+  origin?: TurnOrigin;
   maxBudgetUsd?: number; // claude only: the repo's per-run cost cap (`--max-budget-usd`)
   /** The repo's `checkCommand`, run in the worktree after a run that committed (server/check.ts).
    *  `autofix`: queue a follow-up with the failure as evidence — once; a fix attempt that fails
@@ -918,6 +921,7 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
   // reason it is written at launch, and an async database must not quietly weaken it.
   const started = recordTurn(options, () => outbox.startTurn({
     repo: options.repo!, branch: options.branch!, runId, provider, instruction: options.instruction, prompt, sessionId, startedAt, source: options.source,
+    ...(options.origin ? { origin: options.origin } : {}),
   }));
   await started;
   void (async () => {

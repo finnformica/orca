@@ -444,30 +444,64 @@ describe("the phone layout (390px, touch)", () => {
     expect(location.pathname).toBe("/agents");
   });
 
-  test("the orchestrator page on a phone: edge-to-edge dividers, even 12px padding, a compact Send", async () => {
+  test("the orchestrator page on a phone: no top bar, its own 48px header with Back, edge-to-edge dividers, a compact Send", async () => {
     await mount("/", true);
+    // The root page keeps the top bar…
+    expect($('header[data-slot="topbar"]')!.className).not.toContain("max-md:hidden");
     await click([...$('[data-slot="bottom-bar"]')!.querySelectorAll("button")].find((b) => b.textContent === "Orca")!);
     await act(async () => { await flush(); await flush(); });
+    // …the conversation page hides it (Finn: the chat got too little of the screen); the page's own
+    // header carries Back, and the bottom bar is still there for every other page.
+    expect($('header[data-slot="topbar"]')!.className).toContain("max-md:hidden");
+    expect($('[data-slot="bottom-bar"]')).not.toBeNull();
     const page = $('[data-slot="orchestrator-page"]')!;
     const cls = (el: Element) => el.className.split(/\s+/);
-    // Bleeds out of <main>'s padding, so the header's and composer's borders reach both edges, and
-    // ends at the bottom bar's top — main's bottom padding (which holds the safe area) is cancelled,
-    // not added to, and the bar's own max(…, safe-area) is the only inset left.
+    // Bleeds out of <main>'s padding, so the header's and composer's borders reach both edges; with no
+    // top bar above it, it starts at the screen's top and pads itself clear of the notch, and ends at
+    // the bottom bar's top — main's bottom padding (which holds the safe area) is cancelled, not added
+    // to, and the bar's own max(…, safe-area) is the only inset left. No top-bar term in its height.
     expect(cls(page)).toContain("max-md:-mx-[max(1rem,env(safe-area-inset-left))]");
     expect(cls(page)).toContain("max-md:-mt-6");
     expect(cls(page)).toContain("max-md:-mb-[calc(5.5rem+env(safe-area-inset-bottom))]");
-    expect(page.className).toContain("max(0.375rem,env(safe-area-inset-bottom))");
+    expect(cls(page)).toContain("max-md:pt-[env(safe-area-inset-top)]");
+    expect(cls(page)).toContain("max-md:h-[calc(var(--vvh,100dvh)-3.1875rem-max(0.375rem,env(safe-area-inset-bottom)))]");
+    expect(page.className).not.toContain("3.5rem-env(safe-area-inset-top)-3.1875rem");
     // With the keyboard up it is pinned to the visible area instead (styles.css, data-keyboard-fill).
     expect(page.hasAttribute("data-keyboard-fill")).toBe(true);
-    // Header, conversation and composer: the same 12px all round.
+    // The header is the desktop's 48px row (it was a 60px padded block), with the conversation's 12px
+    // at the sides; the conversation and the composer keep their 12px all round.
     const header = page.querySelector('[data-slot="orchestrator-page-header"]')!;
-    expect(cls(header)).toEqual(expect.arrayContaining(["border-b", "max-md:p-3"]));
+    expect(cls(header)).toEqual(expect.arrayContaining(["border-b", "h-12", "max-md:px-3"]));
+    expect(cls(header)).not.toContain("max-md:p-3");
+    expect(header.querySelector('button[aria-label="Back"]')).not.toBeNull();
     expect(cls(page.querySelector('[data-slot="chat-composer-dock"]')!)).toEqual(expect.arrayContaining(["border-t", "max-md:p-3"]));
     expect(cls(page.querySelector(".overflow-y-auto")!)).toContain("p-3");
     // Send: a 28px filled chip in a transparent, still-44px touch target; desktop keeps the size-8 square.
     const send = page.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!;
     expect(cls(send)).toEqual(expect.arrayContaining(["size-8", "max-md:bg-transparent", "pointer-coarse:max-md:min-w-11"]));
     expect(cls(send.querySelector("span")!)).toEqual(expect.arrayContaining(["max-md:size-7", "max-md:bg-primary"]));
+  });
+
+  test("an agent's page on a phone: no top bar, Back to Agents in its sticky header, the chat ends at the bottom bar; a root page keeps the bar and drops its own title", async () => {
+    await mount("/r/local/feat-phone/chat", true);
+    const cls = (el: Element) => el.className.split(/\s+/);
+    expect($('header[data-slot="topbar"]')!.className).toContain("max-md:hidden");
+    // The sticky header sticks at the screen's top and clears the notch itself; its live height
+    // (--stick) then carries that inset, so the chat below subtracts only the bottom bar and it.
+    const sticky = $('[data-slot="agent-header"]')!.closest(".sticky")!;
+    expect(cls(sticky)).toEqual(expect.arrayContaining(["top-14", "max-md:top-0", "max-md:pt-[calc(0.5rem+env(safe-area-inset-top))]"]));
+    const chat = $('[data-slot="agent-chat"]')!;
+    expect(cls(chat)).toContain("h-[calc(var(--vvh,100dvh)-3.1875rem-max(0.375rem,env(safe-area-inset-bottom))-var(--stick,0px))]");
+    expect(cls(chat)).toContain("max-md:-mb-[calc(5.5rem+env(safe-area-inset-bottom))]"); // no stray gap of main's padding above the bar
+    expect(chat.className).not.toContain("9rem");
+    // Back (phone only — the breadcrumb that led here went with the top bar) returns to the list.
+    const back = $('[data-slot="agent-back"]')!;
+    expect(cls(back)).toEqual(expect.arrayContaining(["md:hidden", "max-md:-my-2.5"])); // its 44px target overhangs the 24px row
+    await click(back);
+    expect(location.pathname).toBe("/agents");
+    expect($('header[data-slot="topbar"]')!.className).not.toContain("max-md:hidden");
+    expect($("h1")!.textContent).toBe("Agents");
+    expect(cls($("h1")!)).toContain("max-md:hidden"); // the top bar names the page already
   });
 
   test("on a touch screen Enter in the composer is a newline, not a send", async () => {

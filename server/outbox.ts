@@ -96,7 +96,7 @@ async function through(runId: string, direct: () => Promise<void>, journal: () =
 
 export function startTurn(input: StartInput): Promise<"db" | "outbox"> {
   // A stored secret value never reaches a turn, here or in the journal (server/secrets.ts).
-  input = { ...input, prompt: scrub(input.prompt), ...(input.instruction !== undefined ? { instruction: scrub(input.instruction) } : {}) };
+  input = { ...input, prompt: scrub(input.prompt), ...(input.instruction !== undefined ? { instruction: scrub(input.instruction) } : {}), ...(input.origin ? { origin: scrubValue(input.origin) } : {}) };
   return through(input.runId, () => db.startTurn(input), () => {
     const j = journalFor(input.runId, input);
     j.start = input;
@@ -188,6 +188,7 @@ export function turns(repo: string, branch: string): AgentTurn[] {
         prompt: s?.prompt ?? id?.prompt ?? "",
         response: f?.response ?? "",
         structured: f?.structured,
+        ...(s?.origin ? { origin: s.origin } : {}),
         sessionId: f?.sessionId ?? s?.sessionId,
         failed: status === "error" ? true : undefined,
         stopped: status === "stopped" ? true : undefined,

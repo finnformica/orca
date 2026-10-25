@@ -45,6 +45,13 @@ let calls: Call[] = [];
 let answer: (c: Call) => Record<string, unknown> = () => ({ ok: true });
 const realWs = socketMode.WebSocket;
 const settle = async () => { for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 5)); };
+/** Wait for a value, not a fixed time: under the whole suite a Postgres write can take longer than `settle`. */
+async function until<T>(read: () => Promise<T | undefined>, ms = 5_000): Promise<T | undefined> {
+  for (const end = Date.now() + ms; ; await new Promise((r) => setTimeout(r, 20))) {
+    const v = await read();
+    if (v !== undefined || Date.now() > end) return v;
+  }
+}
 
 /** The Web API: JSON for writes, a form for reads, as the adapter sends them. */
 const fetchStub = (async (url: unknown, init?: RequestInit) => {
@@ -649,15 +656,13 @@ describe("Slack on the integrations core (Postgres)", () => {
   test("a mention in a channel is answered in its thread; a later reply there needs no mention", async () => {
     await store.addPrincipal({ id: "saajan", name: "Saajan", maxLevel: "work" }, [{ adapter: "slack", externalId: "USAAJAN" }]);
     FakeSocket.all[0]!.push(envelope("E1", ev()));
-    await settle();
-    const e = (await store.event("slack:T1:C1:1700000000.000100"))!;
+    const e = (await until(() => store.event("slack:T1:C1:1700000000.000100")))!;
     expect(e).toMatchObject({ source: { linkId: "eng" }, text: "@finn can you look at #12?", thread: { externalId: "C1:1700000000.000100" } });
     await router.replyToEvent(e.id, "Looking now.");
     await dispatcher.dispatchOnce();
     expect(calls.filter((x) => x.method === "chat.postMessage").at(-1)!.body).toEqual({ channel: "C1", text: "Looking now.", thread_ts: "1700000000.000100" });
     FakeSocket.all[0]!.push(envelope("E2", ev({ text: "thanks!", ts: "1700000000.000200", thread_ts: "1700000000.000100" })));
-    await settle();
-    expect(await store.event("slack:T1:C1:1700000000.000200")).toMatchObject({ text: "thanks!" });
+    expect(await until(() => store.event("slack:T1:C1:1700000000.000200"))).toMatchObject({ text: "thanks!" });
   });
 
   test("polling (SLACK_TOKEN alone): a DM reaches the core, the cursor is in integration_cursor, a restart replays nothing", async () => {

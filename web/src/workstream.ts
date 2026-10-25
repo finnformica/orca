@@ -2,7 +2,7 @@
 // so both the store and the e2e tests import it directly.
 
 import type { CiFailureEvidence, CiStatus, ConversationComment, Mergeable, ReviewSignal, ReviewStatus, ReviewThreadEvidence } from "../../server/gh";
-import { AUTOFIX_MARKER, OUTCOME_CONTRACT, runStopLabel, withOutcomeContract, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn, type RunStop, type TurnCheck, type TurnSource } from "../../shared/agent";
+import { AUTOFIX_MARKER, OUTCOME_CONTRACT, runStopLabel, withOutcomeContract, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn, type RunStop, type OriginMessage, type TurnCheck, type TurnOrigin, type TurnSource } from "../../shared/agent";
 import { AUTO_MODEL, MODELS, modelLabel, prettyModel } from "../../shared/models";
 import { SNIPPETS, WRITING_STYLE } from "../../shared/writingStyle";
 import { asksForInput } from "../../shared/notifications";
@@ -1304,6 +1304,77 @@ export const wakeFromUser = (messages: string[], grant?: unknown): boolean =>
  *  Ask, the New-draft box) → `human`. */
 export const turnSource = (messages: string[]): TurnSource =>
   messages.length > 0 && messages.every((m) => isWorkerEvent(m) || isOrcaEvent(m) || isScheduledWake(m) || isReflection(m)) ? "agents" : "human";
+/** The origin of a turn the orchestrator starts: its wake and, BY ID, the `queued_message` rows a
+ *  person wrote (`ids[i]` is the row of `messages[i]`). Worker reports and Orca events are counted,
+ *  not referenced. No text is copied: the chat and `orca read` join the rows. Pure. */
+export function turnOrigin(wake: { runId: string; messages: string[]; ids: number[] }): TurnOrigin {
+  const messageIds: number[] = [];
+  let otherCount = 0;
+  wake.messages.forEach((m, i) => {
+    if (!isUserMessage(m)) otherCount++;
+    else if (wake.ids[i] !== undefined) messageIds.push(wake.ids[i]!);
+  });
+  return { wakeRunId: wake.runId, messageIds, otherCount };
+}
+/** What the chat shows for a referenced row that is gone. */
+export const ORIGIN_MISSING = "message no longer stored";
+/** The referenced rows, in the origin's order: an outside message as the sender's own words with its
+ *  adapter, name and place; the attachment list dropped; a row that is gone as `missing`. Pure. */
+export function joinOrigin(ids: number[], rows: { id: number; instruction: string; createdAt: number }[]): OriginMessage[] {
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  return ids.map((id) => {
+    const r = byId.get(id);
+    if (!r) return { id, missing: true as const };
+    const outside = integrationMessage(r.instruction);
+    return {
+      id, at: r.createdAt, text: withoutAttachmentList(outside ? outside.text : r.instruction).trim(),
+      ...(outside ? { from: { adapter: outside.adapter, ...(outside.sender ? { sender: outside.sender } : {}), ...(outside.place ? { place: outside.place } : {}) } } : {}),
+    };
+  });
+}
+/** Who asked, for an origin's header: each outside sender ("Ana on discord #general") and `you` (the
+ *  user's own chat; the web passes the signed-in name). A gone row says nothing about its sender. Pure. */
+export function originAskedBy(messages: OriginMessage[], you = "you"): string {
+  const shown = messages.filter((m) => !m.missing);
+  if (!messages.length) return "the orchestrator";
+  if (!shown.length) return "someone";
+  return [...new Set(shown.map((m) => m.from
+    ? `${m.from.sender ?? "an outside sender"} on ${m.from.adapter}${m.from.place ? ` ${m.from.place}` : ""}`
+    : you))].join(", ");
+}
+/** "Asked by Finn" for a wake with a person's message, else "Started by the orchestrator". Pure. */
+export const originHead = (messages: OriginMessage[], you = "you"): string =>
+  `${messages.length ? "Asked by" : "Started by"} ${originAskedBy(messages, you)}`;
+/** When the person asked: the newest referenced message still stored. Pure. */
+export const originAt = (messages: OriginMessage[]): number | undefined =>
+  messages.reduce<number | undefined>((t, m) => (m.at !== undefined && (t === undefined || m.at > t) ? m.at : t), undefined);
+/** An origin's time for the chat: "25 Oct 15:20", in the viewer's time zone. */
+export const originTimeLabel = (at: number, timeZone?: string): string =>
+  new Date(at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: false, ...(timeZone ? { timeZone } : {}) }).replace(",", "");
+/** `N worker reports or Orca events not shown`, or "" when there were none. Pure. */
+export const originSkippedText = (origin: TurnOrigin): string =>
+  origin.otherCount ? `${origin.otherCount} worker report${origin.otherCount === 1 ? "" : "s"} or Orca event${origin.otherCount === 1 ? "" : "s"} not shown` : "";
+/** The longest message `orca read` prints in an origin's quote; past it the text is cut and marked. */
+export const ORIGIN_QUOTE_MAX = 2000;
+/** An origin as a quote block for `orca read`: who asked and when, the wake's run id, then each
+ *  joined message with every line prefixed `> `. Pure (the time is ISO, so it does not depend on a locale). */
+export function originQuote(origin: TurnOrigin, messages: OriginMessage[]): string {
+  const at = originAt(messages);
+  const head = `> ${originHead(messages, "the user")}${at !== undefined ? ` · ${new Date(at).toISOString().slice(0, 16).replace("T", " ")} UTC` : ""} · orchestrator run ${origin.wakeRunId}`;
+  const body = messages.flatMap((m) => {
+    if (m.missing) return [">", `> (${ORIGIN_MISSING})`];
+    const text = m.text ?? "";
+    const cut = text.length > ORIGIN_QUOTE_MAX;
+    return [
+      ">",
+      ...(m.from && messages.length > 1 ? [`> From ${originAskedBy([m])}:`] : []),
+      ...(cut ? text.slice(0, ORIGIN_QUOTE_MAX) : text).split("\n").map((line) => `> ${line}`.trimEnd()),
+      ...(cut ? [`> … (cut at ${ORIGIN_QUOTE_MAX} characters)`] : []),
+    ];
+  });
+  const skipped = originSkippedText(origin);
+  return [head, ...body, ...(skipped ? [">", `> (${skipped})`] : [])].join("\n");
+}
 /** Reports that may wait: every part is a clean worker report. */
 export const onlyCleanReports = (messages: string[]): boolean =>
   messages.length > 0 && messages.every((m) => isWorkerEvent(m) && !isWorkerProblem(m));
