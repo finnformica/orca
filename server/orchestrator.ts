@@ -31,6 +31,7 @@ import * as handoff from "./handoff";
 import * as forms from "./forms";
 import * as secrets from "./secrets";
 import * as memory from "./memory";
+import * as scheduledWake from "./scheduledWake";
 import { selfServer } from "./servers";
 import { stateDir } from "./state";
 import { API_PORT } from "./ports";
@@ -49,6 +50,7 @@ import {
 } from "../web/src/workstream";
 import { activityLines, type AgentTurn } from "../shared/agent";
 import { CHIEF, provenance, reportWorkstream } from "../shared/memory";
+import { isScheduledWake, parseScheduledWake } from "../shared/scheduledWake";
 import { providerOfModel } from "../shared/models";
 import { attachmentIdOf, attachmentRefusal, catchAllPostRefusal, deleteRefusal, grantKey, grantRefusal, outboundRefusal, repoScoped, type Grant, type ReplyTo } from "../shared/integrations";
 import * as integrationStore from "./integrations/store";
@@ -316,7 +318,8 @@ export async function deliverReport(cfg: OrcaConfig, text: string, key?: string)
   // A clean finish is queued and delivered when the batch is done — the last of its running
   // workers finishing — or when the user next speaks, whichever is first; in between, the board
   // and `orca read` are there whenever it wants to check in.
-  const exception = isWorkerProblem(text);
+  // A scheduled wake is the agent's own alarm: it wakes at once, like a problem.
+  const exception = isWorkerProblem(text) || isScheduledWake(text);
   await serial(async () => {
     const wakes = (await blob()).wakes ?? 0;
     const othersRunning = !exception && await workersRunning(cfg, key);
@@ -465,7 +468,8 @@ async function wake(cfg: OrcaConfig, fresh: string[], grant?: Grant, freshReplyT
     await patch({ wakeGrant: grant ?? null, wakeReplyTo: replyTo ?? null, wakeFromUser: fromUser || null }); // before the launch: its first `orca` call is checked
     // Memory (server/memory.ts): the core, the hits for these messages. The notes ride along only
     // until the user moves them into memory.
-    const memoryText = await memory.forPrompt(CHIEF, messages, { notice: b.notesMoveNotice ?? undefined });
+    const fired = messages.filter(isScheduledWake).map(parseScheduledWake).filter((f) => f !== undefined);
+    const memoryText = await memory.forPrompt(CHIEF, messages.filter((m) => !isScheduledWake(m)), { fired, notice: b.notesMoveNotice ?? undefined });
     const prompt = orchestratorPrompt({
       fresh: !next.resume, notes: b.notes, notesMoved: Boolean(b.notesMigratedAt), memory: memoryText,
       board: boardText(await board(cfg)), messages, shell, cutOff: b.cutOff, cutOffProgress: b.cutOffProgress,
@@ -1057,11 +1061,15 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       await patch({ notes: text });
       return "Notes saved.";
     }
+    case "wake": {
+      const name = typeof args._agent === "string" && args._agent ? args._agent : CHIEF;
+      return scheduledWake.wakeTool(name, words, args, b.handling?.runId);
+    }
     case "memory": {
       const name = typeof args._agent === "string" && args._agent ? args._agent : CHIEF;
       return memory.memoryTool(name, words, args, () => memoryActor(name, b));
     }
-    default: throw new Error(`unknown command "${verb}". Commands: board, machine, spawn, send, address, archive, stop [--drop-queue], sweep [--confirm], merge --when-green, preview [--status | --push-to-template [--confirm]], status, chats, read, notes, memory, handoff, cloudflare, slack, gmail`);
+    default: throw new Error(`unknown command "${verb}". Commands: board, machine, spawn, send, address, archive, stop [--drop-queue], sweep [--confirm], merge --when-green, preview [--status | --push-to-template [--confirm]], status, chats, read, notes, memory, wake, handoff, cloudflare, slack, gmail`);
   }
 }
 

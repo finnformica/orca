@@ -1143,6 +1143,34 @@ export const MIGRATIONS: MigrationStep[] = [
       CREATE INDEX IF NOT EXISTS memory_link_to ON memory_link (user_id, to_id);
     `,
   },
+  {
+    name: "20261025-scheduled-wake",
+    idempotent: true,
+    // Self-set wakes (`orca wake`, server/scheduledWake.ts). Not `wake`: the word names one run of an
+    // agent in the code (`wake()`, MAX_WAKES). A row fires ONCE: the claim is an UPDATE … WHERE
+    // state = 'pending', so two ticks or two bridges cannot both fire it. `agent` is whose queue it
+    // goes to (the agent column, as memory.owner).
+    sql: `
+      CREATE TABLE IF NOT EXISTS scheduled_wake (
+        id BIGSERIAL PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        agent TEXT NOT NULL,
+        fire_at BIGINT,
+        on_event TEXT,
+        memory_id BIGINT REFERENCES memory(id),
+        note TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','fired','cancelled','expired')),
+        created_by TEXT NOT NULL,
+        created_run TEXT,
+        created_at BIGINT NOT NULL,
+        expires_at BIGINT NOT NULL,
+        fired_at BIGINT,
+        fired_event TEXT
+      );
+      CREATE INDEX IF NOT EXISTS scheduled_wake_due ON scheduled_wake (user_id, state, fire_at);
+      CREATE INDEX IF NOT EXISTS scheduled_wake_agent ON scheduled_wake (user_id, agent, state);
+    `,
+  },
 ];
 
 export type MigrationMismatch = { id: number; recorded: string; expected: string; idempotent: boolean };

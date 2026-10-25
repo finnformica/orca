@@ -15,6 +15,11 @@ let kick: Kick = () => {};
 /** The dispatcher registers itself here (§3.5 rule 6: kick in-process after each insert). */
 export const onPublished = (fn: Kick): void => { kick = fn; };
 
+/** Listeners for every NEW event, after it is recorded (index.ts: the scheduled wakes' `--on`,
+ *  server/scheduledWake.ts). A listener never fails a publish. */
+const newEventListeners: ((e: Envelope) => void)[] = [];
+export const onNewEvent = (fn: (e: Envelope) => void): void => { newEventListeners.push(fn); };
+
 /** Record one event and route it. Idempotent on `key`. `grant` is set by `ingest` only; absent =
  *  Orca's own event, with the full grant. `extra` are deliveries to explicit targets beside the
  *  subscriptions' (`orca post`, `orca ask-user`, a pairing reply). */
@@ -42,6 +47,7 @@ export async function publish(input: InboundEnvelope & { grant?: Grant }, now = 
   const planned = [...plan, ...extra.filter((d) => d.target.kind !== "web" || !plan.some((p) => p.target.kind === "web"))];
   const r = await store.recordEvent(e, planned, now);
   if (r.status === "new" && r.deliveries.length) kick();
+  if (r.status === "new") for (const fn of newEventListeners) { try { fn(e); } catch (err) { console.error("orca: new-event listener failed", err); } }
   return { ...r, id: e.id };
 }
 

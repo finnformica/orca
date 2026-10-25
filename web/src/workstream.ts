@@ -7,6 +7,7 @@ import { AUTO_MODEL, MODELS, modelLabel, prettyModel } from "../../shared/models
 import { SNIPPETS, WRITING_STYLE } from "../../shared/writingStyle";
 import { asksForInput } from "../../shared/notifications";
 import { integrationMessage, isOrcaEvent, type IntegrationMessage } from "../../shared/integrations";
+import { isScheduledWake } from "../../shared/scheduledWake";
 import type { LiveSample } from "../../server/liveMetrics";
 export { attachCommand } from "../../shared/agent";
 
@@ -1289,7 +1290,8 @@ export function splitMessages(instruction: string): string[] {
 }
 /** A message the user wrote: not a worker report and not Orca's own event (`orca.*`: a PR's CI,
  *  conflicts, a preview, a merge). Both of those are automated — Orca's, never the user's words. */
-export const isUserMessage = (text: string): boolean => !isWorkerEvent(text) && !isOrcaEvent(text);
+// A scheduled wake (`orca wake`, shared/scheduledWake.ts) is the agent's own alarm, not the user's word.
+export const isUserMessage = (text: string): boolean => !isWorkerEvent(text) && !isOrcaEvent(text) && !isScheduledWake(text);
 /** Is a wake the user's own (`wakeFromUser`, which lets a steer clear an outside grant)? Only with
  *  no outside sender's grant and EVERY message the user's: a worker report or an Orca event may
  *  carry outside text (a PR title, a Discord message in a report), so either keeps the grant. */
@@ -1299,7 +1301,7 @@ export const wakeFromUser = (messages: string[], grant?: unknown): boolean =>
  *  CI or conflicts) alone → `agents`; anything you said (typed, quick-ask, the palette, a toast's
  *  Ask, the New-draft box) → `human`. */
 export const turnSource = (messages: string[]): TurnSource =>
-  messages.length > 0 && messages.every((m) => isWorkerEvent(m) || isOrcaEvent(m)) ? "agents" : "human";
+  messages.length > 0 && messages.every((m) => isWorkerEvent(m) || isOrcaEvent(m) || isScheduledWake(m)) ? "agents" : "human";
 /** Reports that may wait: every part is a clean worker report. */
 export const onlyCleanReports = (messages: string[]): boolean =>
   messages.length > 0 && messages.every((m) => isWorkerEvent(m) && !isWorkerProblem(m));
@@ -1825,6 +1827,12 @@ const ORCA_COMMANDS = [
   "                                  --base is the revision you read; a newer one is refused and shown to you",
   "  orca memory forget|archive <id> --base <revision> --reason \"…\"   forget: wrong or done; archive: out of the core",
   "  orca memory link|unlink <from> <to> --as \"<relation>\"   join two memories (about, replaces, part of, …)",
+  "  orca wake --at \"<time>\" --note \"<what to look at>\" [--memory <id>]   wake yourself later: 2h, 3d,",
+  "                                  \"tomorrow 09:00\" (server time) or an ISO time; 5 minutes to 90 days ahead",
+  "  orca wake --on \"<event>\" --note \"…\" [--memory <id>] [--expires 14d]   wake on an event, once:",
+  "                                  pr:<repo>#<n>[:merged|ci_failed|conflicts], worker:<repo>/<branch> (its next run",
+  "                                  result) or topic:<pattern>[ repo=<repo>]",
+  "  orca wake list [--all] | orca wake cancel <id>   your pending scheduled wakes (at most 50)",
   "  orca cloudflare <read>         the user's Cloudflare account (read access): account | workers (created / modified)",
   "                                  | deployments <worker> | versions <worker> (author, source) | routes [--zone <zone>]",
   "                                  | domains (Worker custom domains) | pages | r2 | d1 | zones | dns --zone <zone> [--type t] [--name n]",

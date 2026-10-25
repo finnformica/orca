@@ -18,6 +18,7 @@ import * as orchestrator from "../server/orchestrator";
 import * as preview from "../server/preview";
 import * as verbs from "../server/verbs";
 import * as memory from "../server/memory";
+import * as scheduledWake from "../server/scheduledWake";
 import { run } from "../server/run";
 import { parseConfigDocument, type OrcaConfig } from "../server/config";
 import type { AgentTurn } from "../shared/agent";
@@ -454,6 +455,18 @@ test("O5m: memory rides every wake — the core, hits for the messages, notes un
   await orchestrator.message(cfg(), "thanks");
   const third = (await settled(orchTurns, 3))[2]!;
   expect(third.prompt).not.toContain("Your notes moved into memory"); // once
+});
+
+test("O5w: a wake it set itself fires a wake of its own: the note under Scheduled wakes, never as the user's word", async () => {
+  wire();
+  const now = Date.now();
+  expect(await orchestrator.tool(cfg(), "wake", { _: [], at: "2h", note: "Check that PR #12's CI is green" })).toMatch(/^Set w1 at /);
+  await scheduledWake.tick((t) => orchestrator.report(cfg(), t), now + 3 * 3_600_000);
+  const [turn] = await settled(orchTurns, 1);
+  expect(turn!.prompt).toContain("## Scheduled wakes that fired\n- [w1] Check that PR #12's CI is green");
+  expect(turn!.prompt).not.toMatch(/^## From the user$/m);
+  expect(turn!.source).toBe("agents");
+  expect((await orchBlob()).wakes).toBe(1); // a self-wake: MAX_WAKES counts it
 });
 
 test("O9: its model can be changed mid-conversation — Claude only, and the session carries over", async () => {
