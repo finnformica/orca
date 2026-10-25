@@ -8,7 +8,9 @@
 // Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every board
 // action uses.
 import { createContext, memo, startTransition, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowDown, Bot, Check, ChevronRight, Cog, Copy, Loader2, Paperclip, Quote as QuoteIcon, X } from "lucide-react";
+import { AlarmClock, ArrowDown, Bot, Check, ChevronRight, Cog, Copy, Loader2, Paperclip, Quote as QuoteIcon, Sparkles, X } from "lucide-react";
+import { SCHEDULED_WAKE_MARKER, isScheduledWake } from "../../../shared/scheduledWake";
+import { REFLECTION_MARKER, isReflection } from "../../../shared/memory";
 import { cn, PipContext } from "@/lib/utils";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -657,7 +659,10 @@ const ChatTurn = memo(function ChatTurn({ turn, loadStepsFor, compact, newestSai
   // sent, however many one wake drained — and the reports folded. Orca's own events (a PR's CI or
   // conflicts) have no grant, so they can share a wake with you: they get the activity card, never a bubble.
   const reports = parts.filter(isWorkerEvent), outside = parts.map(integrationMessage).filter((m): m is IntegrationMessage => Boolean(m));
-  const said = parts.filter((p) => !isWorkerEvent(p) && !integrationMessage(p));
+  // A scheduled wake the agent set itself (`orca wake`): a system line, never a bubble of yours.
+  // A reflection (shared/memory.ts) is Orca's own turn for the agent's memory: a system line too.
+  const fired = parts.filter((p) => isScheduledWake(p) || isReflection(p));
+  const said = parts.filter((p) => !isWorkerEvent(p) && !integrationMessage(p) && !isScheduledWake(p) && !isReflection(p));
   // Each message's files: an orchestrator wake carries their references in the instruction (one set
   // per message); an agent chat's instruction is the typed text alone, its files read off the prompt.
   const inline = attachmentRefs(turn.instruction ?? "").length > 0;
@@ -674,6 +679,14 @@ const ChatTurn = memo(function ChatTurn({ turn, loadStepsFor, compact, newestSai
           <WorkerReports parts={reports} />
         </WorkerBlock>
       )}
+      {fired.map((text, i) => (
+        <div key={`w${i}`} className="mb-1 flex items-center gap-1.5 text-xs text-neutral-500" data-slot="scheduled-wake">
+          {isReflection(text) ? <Sparkles className="size-3.5 shrink-0" aria-hidden /> : <AlarmClock className="size-3.5 shrink-0" aria-hidden />}
+          <span className="truncate">{isReflection(text)
+            ? `Reflection on memory: ${text.slice(REFLECTION_MARKER.length).trim()}`
+            : `${text.split("\n")[0]!.slice(SCHEDULED_WAKE_MARKER.length).trim()} — ${text.split("\n").slice(1).join(" ").trim()}`}</span>
+        </div>
+      ))}
       {outside.length > 0 && (
         <IntegrationCard slot="turn-integration" messages={outside} time={time} state={integrationState(turn)}>
           <IntegrationMessages messages={outside} />

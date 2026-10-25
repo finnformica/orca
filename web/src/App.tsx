@@ -16,6 +16,7 @@ import { Overview } from "./views/Overview";
 import { Agents } from "./views/Agents";
 import { BoardPage } from "./views/Board";
 import { InboxPage } from "./views/Inbox";
+import { MemoryPage } from "./views/Memory";
 import { PreviewsPage, Settings } from "./views/Pages";
 import { HandoffsPage } from "./views/Handoffs";
 import { PrDetail } from "./views/PrDetail";
@@ -65,6 +66,7 @@ function Page({ route }: { route: Route }) {
     case "agents": return <Agents />;
     case "board": return <BoardRoute />;
     case "inbox": return <InboxPage />;
+    case "memory": return <MemoryPage />;
     case "previews": return <PreviewsPage />;
     case "handoffs": return <HandoffsPage />;
     case "settings": return <Settings />;
@@ -83,7 +85,7 @@ function BoardRoute() {
   return show ? <BoardPage /> : <Agents />;
 }
 
-const TITLES = { overview: "Overview", agents: "Agents", board: "Board", inbox: "Inbox", previews: "Previews", handoffs: "Handoffs", settings: "Settings", orchestrator: "Orca", integrations: "Integrations" } as const;
+const TITLES = { overview: "Overview", agents: "Agents", board: "Board", inbox: "Inbox", memory: "Memory", previews: "Previews", handoffs: "Handoffs", settings: "Settings", orchestrator: "Orca", integrations: "Integrations" } as const;
 
 function Crumbs({ route }: { route: Route }) {
   const rows = useWorkstreams();

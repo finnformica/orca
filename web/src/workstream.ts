@@ -7,6 +7,8 @@ import { AUTO_MODEL, MODELS, modelLabel, prettyModel } from "../../shared/models
 import { SNIPPETS, WRITING_STYLE } from "../../shared/writingStyle";
 import { asksForInput } from "../../shared/notifications";
 import { integrationMessage, isOrcaEvent, type IntegrationMessage } from "../../shared/integrations";
+import { isScheduledWake } from "../../shared/scheduledWake";
+import { isReflection } from "../../shared/memory";
 import type { LiveSample } from "../../server/liveMetrics";
 export { attachCommand } from "../../shared/agent";
 
@@ -1289,7 +1291,9 @@ export function splitMessages(instruction: string): string[] {
 }
 /** A message the user wrote: not a worker report and not Orca's own event (`orca.*`: a PR's CI,
  *  conflicts, a preview, a merge). Both of those are automated — Orca's, never the user's words. */
-export const isUserMessage = (text: string): boolean => !isWorkerEvent(text) && !isOrcaEvent(text);
+// A scheduled wake (`orca wake`, shared/scheduledWake.ts) is the agent's own alarm, and a reflection
+// (shared/memory.ts) is Orca's: neither is the user's word.
+export const isUserMessage = (text: string): boolean => !isWorkerEvent(text) && !isOrcaEvent(text) && !isScheduledWake(text) && !isReflection(text);
 /** Is a wake the user's own (`wakeFromUser`, which lets a steer clear an outside grant)? Only with
  *  no outside sender's grant and EVERY message the user's: a worker report or an Orca event may
  *  carry outside text (a PR title, a Discord message in a report), so either keeps the grant. */
@@ -1299,7 +1303,7 @@ export const wakeFromUser = (messages: string[], grant?: unknown): boolean =>
  *  CI or conflicts) alone → `agents`; anything you said (typed, quick-ask, the palette, a toast's
  *  Ask, the New-draft box) → `human`. */
 export const turnSource = (messages: string[]): TurnSource =>
-  messages.length > 0 && messages.every((m) => isWorkerEvent(m) || isOrcaEvent(m)) ? "agents" : "human";
+  messages.length > 0 && messages.every((m) => isWorkerEvent(m) || isOrcaEvent(m) || isScheduledWake(m) || isReflection(m)) ? "agents" : "human";
 /** The origin of a turn the orchestrator starts: its wake and, BY ID, the `queued_message` rows a
  *  person wrote (`ids[i]` is the row of `messages[i]`). Worker reports and Orca events are counted,
  *  not referenced. No text is copied: the chat and `orca read` join the rows. Pure. */
@@ -1887,7 +1891,27 @@ const ORCA_COMMANDS = [
   "                                  on the Handoffs page. A secret or a file over 10 MB blocks it. `orca handoff list`",
   "  orca notes                      print your notes",
   "  orca notes set \"<the whole new text>\"",
-  "  orca cloudflare <read>          the user's Cloudflare account (read access): account | workers (created / modified)",
+  "  orca memory recall \"<query>\" [--owner me|shared|<agent>|all] [--tag t]… [--all] [--limit 10]   search every",
+  "                                  memory (yours, shared, other agents'), ranked by match, importance and recency",
+  "  orca memory show <id> [--history]   one memory in full, its links and (--history) every revision",
+  "  orca memory write --title \"…\" --body \"…\" [--tag t]… [--importance 1-10] [--shared] [--untrusted] [--reason \"…\"]",
+  "                                  a new memory in your own words. --shared: for every agent. A same-title copy is refused",
+  "  orca memory revise <id> --base <revision> [--title …] [--body …] [--tag t]… [--untag t]… [--importance n] --reason \"…\"",
+  "                                  --base is the revision you read; a newer one is refused and shown to you",
+  "  orca memory forget|archive <id> --base <revision> --reason \"…\"   forget: wrong or done; archive: out of the core",
+  "  orca memory link|unlink <from> <to> --as \"<relation>\"   join two memories (about, replaces, part of, …)",
+  "  orca wake --at \"<time>\" --note \"<what to look at>\" [--memory <id>]   wake yourself later: 2h, 3d,",
+  "                                  \"tomorrow 09:00\" (server time) or an ISO time; 5 minutes to 90 days ahead",
+  "  orca wake --on \"<event>\" --note \"…\" [--memory <id>] [--expires 14d]   wake on an event, once:",
+  "                                  pr:<repo>#<n>[:merged|ci_failed|conflicts], worker:<repo>/<branch> (its next run",
+  "                                  result) or topic:<pattern>[ repo=<repo>]",
+  "  orca wake list [--all] | orca wake cancel <id>   your pending scheduled wakes (at most 50)",
+  "  orca memory merge <id> <id>… --title \"…\" --body \"…\" --reason \"…\"   one memory from several: the old ones",
+  "                                  are archived and linked to it. Untrusted when any of them is",
+  "  orca memory reflect             ask for a reflection pass: in idle time you read your recent turns, worker",
+  "                                  reports and checks, write lessons and tidy memory. Orca also starts one after",
+  "                                  6 idle hours, or when your core is over budget. At most one an hour",
+  "  orca cloudflare <read>         the user's Cloudflare account (read access): account | workers (created / modified)",
   "                                  | deployments <worker> | versions <worker> (author, source) | routes [--zone <zone>]",
   "                                  | domains (Worker custom domains) | pages | r2 | d1 | zones | dns --zone <zone> [--type t] [--name n]",
   "                                  | analytics [--worker w] [--since 24h] [--until t] | audit [--resource <name>]",
@@ -1996,10 +2020,11 @@ const ORCHESTRATOR_ROLE = [
   "  to stop — one step removes the card and can't be restarted by a message still queued behind it.",
   "- Per-workstream state — the plan for it, what it waits on, whether it is small or needs the user",
   "  to merge — goes in `orca status` on that workstream, which the board carries back every wake.",
-  "  Your notes are your memory across context resets for everything else: the user's preferences,",
-  "  standing facts and decisions that span workstreams, in roughly 1500 words or fewer.",
+  "  Your memory (`orca memory`, the `## Memory` section of every wake) is what you keep across context",
+  "  resets for everything else: the user's preferences, standing facts, decisions that span workstreams,",
+  "  tasks you accepted and lessons. Until the user moves your notes into memory, your notes hold the older ones.",
   "- Keep replies short and concrete: what you did, what is running, what needs the user. Write them,",
-  "  your briefs and your notes in STE, as the `## Writing` section of every message says.",
+  "  your briefs and your memories in STE, as the `## Writing` section of every message says.",
 ].join("\n");
 
 /** The dead wake's own record (wakeProgress), under the cut-off notice — kept apart from it so a
@@ -2011,7 +2036,7 @@ function cutOffProgressSection(progress: string | undefined): string[] {
 /** The orchestrator's prompt for one wake. The role goes in only when the session starts (or
  *  restarts after a context reset); the notes and a fresh board go in EVERY time, because they are
  *  what makes the session disposable — everything it needs to carry on is outside its context. */
-export function orchestratorPrompt(input: { fresh: boolean; notes?: string; board: string; messages: string[]; shell?: boolean; cutOff?: string; cutOffProgress?: string }): string {
+export function orchestratorPrompt(input: { fresh: boolean; notes?: string; notesMoved?: boolean; memory?: string; board: string; messages: string[]; shell?: boolean; cutOff?: string; cutOffProgress?: string }): string {
   const human = input.messages.filter(isUserMessage), reports = input.messages.filter(isWorkerEvent);
   const events = input.messages.filter((m) => !isWorkerEvent(m) && isOrcaEvent(m));
   return [
@@ -2034,8 +2059,10 @@ export function orchestratorPrompt(input: { fresh: boolean; notes?: string; boar
     // Every wake as well: a resumed session sees the role once, and the user wants STE ALWAYS.
     "", WRITING_STYLE,
     "", SNIPPETS,
-    "", "## Your notes", input.notes?.trim() || "(empty)",
+    // The notes until the user moves them into memory (server/memory.ts migrateNotes); then memory alone.
+    ...(input.notesMoved ? [] : ["", "## Your notes", input.notes?.trim() || "(empty)"]),
     "", "## Board", input.board,
+    ...(input.memory ? ["", input.memory] : []),
     // The wake before this one died mid-turn: say so, or the user has to ask why it went quiet.
     ...(input.cutOff ? ["", "## Previous wake was cut off", `Your previous wake ${input.cutOff} before it finished its turn, so the user got no reply. What it was handling is below again. It may already have acted: check the board before you spawn or send (never start the same work twice), then finish the reply.`] : []),
     ...cutOffProgressSection(input.cutOffProgress),

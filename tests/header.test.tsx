@@ -144,7 +144,7 @@ describe("console shell", () => {
     expect(sidebar.querySelector('[data-slot="server-menu"], [data-slot="instance-switcher"]') === null).toBe(true);
     expect(sidebar.querySelector('input[aria-label="Find agents"]')).not.toBeNull();
     const items = [...sidebar.querySelectorAll('nav[aria-label="Main"] button')].map(navLabel);
-    expect(items).toEqual(["Overview", "Agents", "Board", "Inbox", "Previews", "Integrations", "Handoffs", "Settings"]);
+    expect(items).toEqual(["Overview", "Agents", "Board", "Inbox", "Memory", "Previews", "Integrations", "Handoffs", "Settings"]);
     expect(navItem("Overview").getAttribute("aria-current")).toBe("page");
     for (const [label, path, slot] of [["Agents", "/agents", "workstream-list"], ["Inbox", "/inbox", "inbox-unread"], ["Integrations", "/integrations", "integrations-page"], ["Settings", "/settings", "settings-appearance"]] as const) {
       await click(navItem(label));

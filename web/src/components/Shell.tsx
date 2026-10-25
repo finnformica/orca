@@ -15,7 +15,7 @@ import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
   Boxes, Check, ChevronsLeft, ChevronsRight, ChevronsUpDown, CircleUser, FolderSync, LayoutGrid, Loader2,
   Bot, Command, Keyboard, Monitor, MonitorPlay, Moon, Plus, RefreshCw, Search, Settings, Sun, X,
-  Package, Plug, Inbox, Columns3,
+  Package, Plug, Inbox, Columns3, Brain,
 } from "lucide-react";
 import { navigate, useRoute, type Route } from "@/lib/route";
 import { addNewOpenAtom, agentQueryAtom, instanceScopeAtom, paletteOpenAtom, repoFilterAtom, shortcutsHelpOpenAtom } from "@/lib/atoms";
@@ -71,6 +71,8 @@ export const NAV: { to: string; label: string; Icon: typeof LayoutGrid; match: (
   // Every integration's inbound messages and events, one timeline (views/Inbox.tsx).
   // Orca's own notifications are rows here too; its count is the bell's (lib/inboxUnread.ts).
   { to: "/inbox", label: "Inbox", Icon: Inbox, match: (r) => r.name === "inbox", badge: (compact) => <InboxBadge compact={compact} /> },
+  // What the agents keep across resets (views/Memory.tsx): read, edit, pin, revert.
+  { to: "/memory", label: "Memory", Icon: Brain, match: (r) => r.name === "memory" },
   // The previews (and Test master) page; its badges are what the two header buttons used to carry.
   { to: "/previews", label: "Previews", Icon: MonitorPlay, match: (r) => r.name === "previews", badge: (compact) => <PreviewsBadge compact={compact} /> },
   { to: "/integrations", label: "Integrations", Icon: Plug, match: (r) => r.name === "integrations" },

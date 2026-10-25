@@ -6,6 +6,9 @@ export type { LiveAnswer, LiveSample } from "../../server/liveMetrics";
 import type { CiFailureEvidence, ConversationComment, MergedPr, PrDetail, PrSummary, ReviewSignal, ReviewThreadEvidence } from "../../server/gh";
 import type { Usage } from "../../server/usage";
 import type { PackView, WirePack } from "../../server/handoff";
+import type { ActivityRow as MemoryActivityRow, LinkedMemory } from "../../server/memory";
+import type { ScheduledWake } from "../../server/scheduledWake";
+import type { CoreSelection, Memory, MemoryRevision, ReflectionPass } from "../../shared/memory";
 import type { AgentOutcome, AgentProvider, AgentStep, AgentTurn, TurnCheck } from "../../shared/agent";
 import type { Notification } from "../../shared/notifications";
 import type { Conversation, InboxFacets, InboxRow, Notice, ThreadActions, ThreadItem, ThreadLinkRecord } from "../../shared/inbox";
@@ -160,6 +163,14 @@ export const api = {
   saveSecret: (body: { name: string; scope?: string; value: string }): Promise<{ ref: string; created: boolean }> => post("/api/orchestrator/secrets", body),
   /** The stored secrets' names (never a value), for a picker such as the Cloudflare Connect form's. */
   secretNames: (): Promise<{ secrets: { scope: string; name: string }[] }> => get("/api/orchestrator/secrets").then(res),
+  // The Memory page (server/memoryRoutes.ts). `search` is the page's own query string (shared/memory.ts).
+  memories: (search: string): Promise<MemoryList> => get(`/api/memory${search}`).then(res),
+  memory: (id: number): Promise<MemoryDetail> => get(`/api/memory/${id}`).then(res),
+  memoryActivity: (): Promise<{ revisions: MemoryActivityRow[] }> => get("/api/memory/activity").then(res),
+  memoryReflections: (): Promise<{ passes: ReflectionPass[] }> => get("/api/memory/reflections").then(res),
+  memoryCore: (agent = "chief"): Promise<MemoryCore> => get(`/api/memory/core?agent=${encodeURIComponent(agent)}`).then(res),
+  writeMemory: (body: { owner: string; title: string; body: string; tags?: string[]; importance?: number }): Promise<{ memory: Memory }> => post("/api/memory", body),
+  changeMemory: (id: number, body: Record<string, unknown> & { action: "edit" | "pin" | "unpin" | "trust" | "state" | "revert" }): Promise<{ memory: Memory }> => post(`/api/memory/${id}`, body),
   handoffs: (): Promise<{ self: string; packs: PackView[] }> => get("/api/handoffs").then(res),
   /** One pack; null once it is deleted (404). */
   handoffPack: (id: string): Promise<{ self: string; pack: PackView } | null> => get(`/api/handoffs/${encodeURIComponent(id)}`).then((r) => (r.status === 404 ? null : res(r))),
@@ -313,3 +324,8 @@ export const api = {
     return (await apiFetch("/api/voice/transcribe", { method: "POST", body: form }).then(res)).text;
   },
 };
+
+export type MemoryList = { memories: Memory[]; today: Record<string, number>; owners: string[]; limits: { perDay: number } };
+export type MemoryDetail = { memory: Memory; links: LinkedMemory[]; revisions: MemoryRevision[]; wakes: ScheduledWake[] };
+export type MemoryCore = CoreSelection & { budget: number; pinnedWarn: number };
+export type { MemoryActivityRow };

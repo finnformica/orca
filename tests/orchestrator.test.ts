@@ -17,6 +17,8 @@ import * as transcript from "../server/transcript";
 import * as orchestrator from "../server/orchestrator";
 import * as preview from "../server/preview";
 import * as verbs from "../server/verbs";
+import * as memory from "../server/memory";
+import * as scheduledWake from "../server/scheduledWake";
 import { run } from "../server/run";
 import { parseConfigDocument, type OrcaConfig } from "../server/config";
 import type { AgentTurn } from "../shared/agent";
@@ -418,6 +420,83 @@ test("O5: notes ride every wake, and a session at 80% context is reset onto them
   expect(argv).toContain("what is the plan?");
   expect(argv).toContain("You are Orca's orchestrator");
   expect(argv).toContain("Plan: ship the cache.");
+});
+
+test("O5m: memory rides every wake — the core, hits for the messages, notes until the move, then a one-time notice", async () => {
+  wire();
+  await orchestrator.tool(cfg(), "notes", { _: ["set", "## Plan\nShip the cache."] });
+  expect(await orchestrator.tool(cfg(), "memory", { _: ["write"], title: "Deploy window", body: "Deploys only before 16:00.", importance: "8" })).toMatch(/^Wrote m\d+ r1 \(chief\)\.$/);
+  await memory.write({ owner: "assistant", title: "Flaky CI", body: "Sam reports flaky CI on Mondays." }, { kind: "user" });
+
+  await orchestrator.message(cfg(), "is CI flaky?");
+  const [first] = await settled(orchTurns, 1);
+  expect(first!.prompt).toContain("## Your notes\n## Plan\nShip the cache."); // before the move
+  expect(first!.prompt).toContain("## Memory\nWrite a memory when");
+  expect(first!.prompt).toMatch(/## Core memory\n\[m\d+ r1\] Deploy window \(chief, importance 8\)/);
+  expect(first!.prompt).toMatch(/## Recalled for this wake\n\[m\d+ r1\] Flaky CI \(assistant/);
+  // The board comes before memory; the user's words after it.
+  const heading = (h: string) => first!.prompt.search(new RegExp(`^${h}$`, "m")); // a heading line, not a mention in the role text
+  expect(heading("## Board")).toBeLessThan(heading("## Memory"));
+  expect(heading("## Memory")).toBeLessThan(heading("## From the user"));
+
+  // A memory written in a wake carries that wake's run id.
+  await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { handling: { runId: first!.id, instance: "local", messages: ["is CI flaky?"] } });
+  await orchestrator.tool(cfg(), "memory", { _: ["write"], title: "CI answer", body: "Told Finn: flaky on Mondays." });
+  const [hit] = await memory.recall({ text: "Told Finn" }, { count: false });
+  expect((await memory.revisions(hit!.memory.id))[0]!.runId).toBe(first!.id);
+  await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { handling: null });
+
+  await memory.migrateNotes({ confirm: true });
+  await orchestrator.message(cfg(), "what is the plan?");
+  const second = (await settled(orchTurns, 2))[1]!;
+  expect(second.prompt).not.toContain("## Your notes");
+  expect(second.prompt).toContain("Your notes moved into memory as 1 item tagged from-notes.");
+  expect(second.prompt).toMatch(/\[m\d+ r1\] Plan \(chief, importance 6\)/);
+  await orchestrator.message(cfg(), "thanks");
+  const third = (await settled(orchTurns, 3))[2]!;
+  expect(third.prompt).not.toContain("Your notes moved into memory"); // once
+});
+
+test("O5w: a wake it set itself fires a wake of its own: the note under Scheduled wakes, never as the user's word", async () => {
+  wire();
+  const now = Date.now();
+  expect(await orchestrator.tool(cfg(), "wake", { _: [], at: "2h", note: "Check that PR #12's CI is green" })).toMatch(/^Set w1 at /);
+  await scheduledWake.tick((t) => orchestrator.report(cfg(), t), now + 3 * 3_600_000);
+  const [turn] = await settled(orchTurns, 1);
+  expect(turn!.prompt).toContain("## Scheduled wakes that fired\n- [w1] Check that PR #12's CI is green");
+  expect(turn!.prompt).not.toMatch(/^## From the user$/m);
+  expect(turn!.source).toBe("agents");
+  expect((await orchBlob()).wakes).toBe(1); // a self-wake: MAX_WAKES counts it
+});
+
+test("O5r: in idle time a reflection pass runs as its own turn, reads the transcript, is logged, and counts no wake", async () => {
+  wire();
+  await orchestrator.message(cfg(), "No, I said use Sonnet for small fixes.");
+  await settled(orchTurns, 1);
+  for (let i = 0; i < 3; i++) await orchestrator.tool(cfg(), "memory", { _: ["write"], title: `Fact ${i}`, body: `Fact number ${i} about the deploy window.` });
+  // Never while a message waits; then, idle and never reflected, a pass is due.
+  await db.queueMessage({ repo: ORCHESTRATOR_REPO, branch: ORCHESTRATOR_BRANCH, worktreePath: orchestrator.dir(), instruction: "later", attachments: [], provider: "claude" });
+  expect(await orchestrator.maybeReflect(cfg())).toBeUndefined();
+  for (const q of await orchQueue()) await db.cancelQueuedMessage(q.id);
+  const runId = await orchestrator.maybeReflect(cfg());
+  expect(runId).toBeString();
+  const turns = await settled(orchTurns, 2);
+  const pass = turns[1]!;
+  expect(pass.instruction).toBe("[reflection] idle: 1 turns, 0 worker reports, 0 checks, 1 corrections, 0 possible contradictions");
+  expect(pass.prompt).toContain("## Signals (found by Orca)\n- Correction (");
+  expect(pass.prompt).toContain("User: No, I said use Sonnet for small fixes.");
+  expect(pass.prompt).not.toMatch(/^## Board$/m); // not a wake: no board
+  expect(pass.source).toBe("agents");
+  const [log] = await memory.passes();
+  expect(log).toMatchObject({ runId, trigger: "idle", state: "done", summary: "## Outcome\nDone.", read: { turns: 1, corrections: 1 }, changed: { total: 0 } });
+  const b = await orchBlob();
+  expect(b.wakeMode).toBeUndefined();
+  expect(b.wakes ?? 0).toBe(0); // a pass is no wake
+  expect(await orchestrator.maybeReflect(cfg())).toBeUndefined(); // passes are at least an hour apart
+  // Its claude ran with no shell: only `orca`, reading and searching.
+  const argv = (await launches()).at(-1)!;
+  expect(argv).toContain("Bash(orca *)");
+  expect(argv).not.toContain("bypassPermissions");
 });
 
 test("O9: its model can be changed mid-conversation — Claude only, and the session carries over", async () => {

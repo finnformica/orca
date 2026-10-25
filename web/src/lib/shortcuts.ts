@@ -13,7 +13,7 @@
 // G then a letter goes to a page (Linear's / GitHub's chords): G arms a short pending state in the
 // listener, and the next key is read ONLY as a page — G O is Overview, never the orchestrator.
 export type ShortcutId = "palette" | "sidebar" | "new" | "orchestrator" | "quickAsk" | "find" | "notifications" | "help" | "escape" | "send"
-  | "goOverview" | "goAgents" | "goBoard" | "goInbox" | "goPreviews" | "goIntegrations" | "goHandoffs" | "goSettings";
+  | "goOverview" | "goAgents" | "goBoard" | "goInbox" | "goMemory" | "goPreviews" | "goIntegrations" | "goHandoffs" | "goSettings";
 /** What a keydown can be: a shortcut, or "go" — the G that arms a page chord. */
 export type ShortcutMatch = ShortcutId | "go";
 
@@ -48,6 +48,7 @@ export const SHORTCUTS: Shortcut[] = [
   { id: "goAgents", label: "Go to Agents", chord: "G", key: "A", to: "/agents", group: "Navigation" },
   { id: "goBoard", label: "Go to Board", chord: "G", key: "B", to: "/board", group: "Navigation" },
   { id: "goInbox", label: "Go to Inbox", chord: "G", key: "M", to: "/inbox", group: "Navigation" },
+  { id: "goMemory", label: "Go to Memory", chord: "G", key: "Y", to: "/memory", group: "Navigation" },
   { id: "goPreviews", label: "Go to Previews", chord: "G", key: "P", to: "/previews", group: "Navigation" },
   { id: "goIntegrations", label: "Go to Integrations", chord: "G", key: "I", to: "/integrations", group: "Navigation" },
   { id: "goHandoffs", label: "Go to Handoffs", chord: "G", key: "K", to: "/handoffs", group: "Navigation" },

@@ -28,12 +28,14 @@ import * as dispatcher from "./integrations/dispatcher";
 import * as inbox from "./integrations/inbox";
 import * as integrationStore from "./integrations/store";
 import { filterInbox, inboundConversation, inboxFacets, inboxRows, inboxWindow, muteKey, noticeOf, notificationIdOf, notificationRows, notificationSender, OWN_EVENT, parseConversation, threadActions, threadItems, workstreamOf } from "../shared/inbox";
-import { replyToEvent } from "./integrations/router";
+import { onNewEvent, replyToEvent } from "./integrations/router";
 import * as integrationAdmin from "./integrations/admin";
 import * as gmailOauth from "./integrations/adapters/gmail/oauth";
 import { CALLBACK_PATH as GOOGLE_CALLBACK_PATH } from "./integrations/adapters/gmail/google";
 import { deadNotification, webAdapter } from "./integrations/adapters/web";
 import * as orchestrator from "./orchestrator";
+import * as scheduledWake from "./scheduledWake";
+import { handleMemory } from "./memoryRoutes";
 import * as primary from "./primary";
 import { scrubbedEnv } from "./env";
 import * as mergeQueue from "./mergeQueue";
@@ -216,6 +218,16 @@ setInterval(() => {
   if (!primary.held()) return;
   void loadConfig().then((cfg) => mergeQueue.tick(cfg)).catch(db.logUnlessDown("orca: merge queue pass failed"));
 }, mergeQueue.MERGE_POLL_MS).unref();
+// Self-set wakes (server/scheduledWake.ts): a due time wake fires from this minute tick; an event
+// wake fires when a matching event is published. Both reach the orchestrator as its own report.
+const deliverWake = async (text: string) => orchestrator.report(await loadConfig(), text);
+setInterval(() => {
+  if (!primary.held()) return;
+  void scheduledWake.tick(deliverWake).catch(db.logUnlessDown("orca: scheduled wake pass failed"));
+  // A reflection on the orchestrator's memory when one is due (shared/memory.ts reflectionDue).
+  void loadConfig().then((cfg) => orchestrator.maybeReflect(cfg)).catch(db.logUnlessDown("orca: reflection pass failed"));
+}, 60_000).unref();
+onNewEvent((e) => { void scheduledWake.onEvent(e, deliverWake).catch(db.logUnlessDown("orca: scheduled wake match failed")); });
 // The heavy-command queue (server/heavy.ts): take back a slot past its max run time or whose
 // `orca-run` client died without closing its connection.
 setInterval(() => heavy.slots().sweep(), 15_000).unref();
@@ -667,6 +679,9 @@ async function api(req: Request, url: URL): Promise<Response> {
     const answer = withIdentity(await listServers(cfg.serverSwitcher), cfg.serverIdentity);
     return json(withTailscaleUser(answer, req.headers, remoteAddr.get(req)));
   }
+  // The Memory page (server/memoryRoutes.ts): Postgres only, answered here, never forwarded.
+  const memoryAnswer = await handleMemory(req, url, body);
+  if (memoryAnswer) return memoryAnswer;
   // Handoff packs (server/handoff.ts): context for another Orca server, carried by the browser. Never
   // forwarded: the packs are this database's, and the import queues to THIS side's orchestrator.
   if (p === "/api/handoffs" || p.startsWith("/api/handoffs/") || p === "/api/handoff/import") {

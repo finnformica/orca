@@ -8,6 +8,11 @@ One line per doc, so you can find the right file fast.
 - [SETUP.md](SETUP.md) — how to deploy your own Orca from the start.
 - [personal-box.md](personal-box.md) — the personal Orca box: provider facts, backup restore, and the setup runbook.
 
+## Design (`docs/design/`)
+
+- [design/surfaces.md](design/surfaces.md) — the four surface levels: fills, borders and shadows.
+- [design/named-agents-and-memory.md](design/named-agents-and-memory.md) — named agents (Chief of Staff, Assistant) and the memory store: schema, tools, prompts and the PR series.
+
 ## Research (`docs/research/`)
 
 - [research/plan.md](research/plan.md) — the dual-instance plan: decisions and next steps.
