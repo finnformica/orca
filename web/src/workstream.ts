@@ -6,7 +6,7 @@ import { AUTOFIX_MARKER, OUTCOME_CONTRACT, runStopLabel, withOutcomeContract, ty
 import { AUTO_MODEL, MODELS, modelLabel, prettyModel } from "../../shared/models";
 import { SNIPPETS, WRITING_STYLE } from "../../shared/writingStyle";
 import { asksForInput } from "../../shared/notifications";
-import { integrationMessage, type IntegrationMessage } from "../../shared/integrations";
+import { integrationMessage, isOrcaEvent, type IntegrationMessage } from "../../shared/integrations";
 import type { LiveSample } from "../../server/liveMetrics";
 export { attachCommand } from "../../shared/agent";
 
@@ -1287,10 +1287,11 @@ export function splitMessages(instruction: string): string[] {
   const parts = instruction.split("\n\n");
   return parts.some(isWorkerEvent) ? parts : [instruction];
 }
-/** Who a wake answers, from the messages it carried: worker reports alone → `agents`; anything you
- *  said (typed, quick-ask, the palette, a toast's Ask, the New-draft box) → `human`. */
+/** Who a wake answers, from the messages it carried: worker reports and Orca's own events (a PR's
+ *  CI or conflicts) alone → `agents`; anything you said (typed, quick-ask, the palette, a toast's
+ *  Ask, the New-draft box) → `human`. */
 export const turnSource = (messages: string[]): TurnSource =>
-  messages.length > 0 && messages.every(isWorkerEvent) ? "agents" : "human";
+  messages.length > 0 && messages.every((m) => isWorkerEvent(m) || isOrcaEvent(m)) ? "agents" : "human";
 /** Reports that may wait: every part is a clean worker report. */
 export const onlyCleanReports = (messages: string[]): boolean =>
   messages.length > 0 && messages.every((m) => isWorkerEvent(m) && !isWorkerProblem(m));

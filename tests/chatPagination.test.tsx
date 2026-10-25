@@ -9,7 +9,7 @@ import { afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
-import { catchAllLabels, fenceExternal, integrationMessage, integrationMetaLine, shownPlace } from "../shared/integrations";
+import { catchAllLabels, fenceExternal, integrationMessage, integrationMetaLine, isOrcaEvent, orcaEventText, shownPlace } from "../shared/integrations";
 import { reloadCatchAllLabels } from "@/lib/catchAllLabels";
 import * as store from "@/store";
 import { ChatPanel } from "@/views/Chat";
@@ -306,6 +306,60 @@ test("the pure pieces: an outside message is read back with its source, and its 
   expect(integrationState({ finishedAt: 1, failed: true })).toBe("failed");
   // ↑ in the composer recalls only what you typed.
   expect(composerHistory([u("a"), x("b", 2)], [{ instruction: outside("q") }])).toEqual(["hi"]);
+});
+
+// Orca's own PR event as the bridge queues it for the orchestrator (server/integrations/inbox.ts orcaEvent).
+const prEvent = (topic: "orca.pr.ci_failed" | "orca.pr.conflicts", body: string) =>
+  orcaEventText({ topic, scope: { repo: "web", branch: "login" }, title: "Add login", text: body, link: { pr: 12 } }, "acme/web");
+
+test("the pure pieces: an Orca event reads back as GitHub or Orca, an old PR event too, and never what you typed", () => {
+  expect(integrationMessage(prEvent("orca.pr.ci_failed", "Failing: ci"))).toEqual({ adapter: "github", sender: "GitHub", place: "web #12", url: "https://github.com/acme/web/pull/12", text: "Add login: Failing: ci" });
+  expect(integrationMessage(orcaEventText({ topic: "orca.preview.failed", scope: { repo: "web", branch: "login" }, title: "Add login", text: "exit 1" })))
+    .toEqual({ adapter: "orca", sender: "Orca", place: "Add login", text: "Add login: exit 1" });
+  // A turn stored before the marker: `<title>: <body>`, with a body only Orca writes.
+  expect(integrationMessage("Add login: Has merge conflicts with its base.")).toEqual({ adapter: "github", sender: "GitHub", place: "Add login", text: "Add login: Has merge conflicts with its base." });
+  expect(integrationMessage("Add login: Failing: ci, lint")).toMatchObject({ adapter: "github", place: "Add login" });
+  expect(integrationMessage("Add login: CI is failing.")).toMatchObject({ adapter: "github" });
+  // What you type is never an event.
+  for (const said of ["Add login: please fix CI", "Why is CI failing?", "Failing: ci", "a: CI is failing.\nplease look"]) expect(isOrcaEvent(said)).toBe(false);
+  // Events alone are not yours; with your words the turn is yours, the event its own card.
+  expect(turnSource([prEvent("orca.pr.ci_failed", "Failing: ci")])).toBe("agents");
+  expect(turnSource([prEvent("orca.pr.ci_failed", "Failing: ci"), "carry on"])).toBe("human");
+  const ev = { id: "e", instruction: prEvent("orca.pr.conflicts", "Has merge conflicts with its base."), finishedAt: 2, source: "human" as const }; // an old row's source
+  expect(chatItems([ev]).map((i) => i.kind)).toEqual(["integration"]);
+  expect(newestMessages([ev]).said).toBeUndefined();
+  expect(composerHistory([ev])).toEqual([]);
+});
+
+test("P10: the orchestrator's chat shows a PR's CI and conflicts events as GitHub activity rows, never your bubble", async () => {
+  const at = (id: string, instruction: string) => ({ id, provider: "claude", instruction, prompt: "", response: `on ${id}`, startedAt: 2000, finishedAt: 2001, source: "human" as const });
+  apiFake.turnsData.set("r::long", [
+    turn(0),
+    at("ci", prEvent("orca.pr.ci_failed", "Failing: ci, lint")),
+    at("old", "Add login: Has merge conflicts with its base."), // stored before the marker
+    at("mixed", `${prEvent("orca.pr.conflicts", "Has merge conflicts with its base.")}${MESSAGE_BREAK}your words`),
+  ]);
+  apiFake.queuedData.set("long", [{ id: 1, instruction: prEvent("orca.pr.conflicts", "Has merge conflicts with its base."), attachments: [] }]);
+  await mount(<ChatPanel row={row} />);
+  const c = container!;
+  const field = (r: Element, slot: string) => r.querySelector(`[data-slot="${slot}"]`)?.textContent;
+  const rows = [...c.querySelectorAll<HTMLElement>('[data-slot="integration-activity"]')];
+  expect(rows.map((r) => [r.querySelector('[data-slot="brand-icon"]')!.getAttribute("data-kind"), field(r, "integration-sender"), field(r, "integration-place"), field(r, "integration-preview")])).toEqual([
+    ["github", "GitHub", "web #12", "Add login: Failing: ci, lint"],
+    ["github", "GitHub", "Add login", "Add login: Has merge conflicts with its base."],
+  ]);
+  await act(async () => { rows[0]!.querySelector("button")!.click(); await flush(); });
+  const link = rows[0]!.querySelector<HTMLAnchorElement>('[data-slot="integration-message"] a')!;
+  expect([link.textContent, link.href]).toEqual(["Open in GitHub", "https://github.com/acme/web/pull/12"]);
+  // The mixed wake: your words in your bubble, the event in its own card above.
+  const mixed = c.querySelector<HTMLElement>('[data-slot="turn-integration"]')!;
+  expect(field(mixed, "integration-place")).toBe("web #12");
+  expect([...c.querySelectorAll('[data-slot="chat-user-text"]')].map((b) => b.textContent)).toEqual(["ask 0", "your words"]);
+  expect(c.textContent).not.toContain("[orca event]");
+  expect(c.textContent).not.toContain("orca:integration");
+  // A queued event is its card too, not a queued bubble of yours.
+  expect(c.querySelector('[data-slot="integration-queued"] [data-slot="brand-icon"]')!.getAttribute("data-kind")).toBe("github");
+  expect(c.querySelector('[data-slot="chat-queued"]')).toBeNull();
 });
 
 test("P8: the orchestrator's chat shows an outside message and its answer as ONE collapsed activity row, never your bubble", async () => {
