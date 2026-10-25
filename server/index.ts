@@ -48,6 +48,7 @@ import { flushMachineSamples, liveAnswer, machineReport, newestLive, sliceMaxGbH
 import { protectionsReport, withLiveState } from "./protections";
 import * as verbs from "./verbs";
 import * as repos from "./repos";
+import { linkOrigins } from "./origin";
 import { BusyError, checkGate, compact, launchOptions, launchQueued, newWorktree, placement, removeWorktree, startPreview } from "./verbs";
 import { ORCHESTRATOR_REPO, attachmentRefs, workstreamShots, mergeSafe, prDescriptionPrompt, sweepText, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
 import { AGENT_PROVIDERS, attachCommand, isAgentProvider, providerBinary, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn } from "../shared/agent";
@@ -1277,12 +1278,12 @@ async function api(req: Request, url: URL): Promise<Response> {
     return json({ ...r, instance: db.instanceName() });
   }
   if (req.method === "POST" && p === "/api/workstreams/spawn") {
-    const ws = await verbs.createWorkstream(cfg, repo, { prompt: String(body.prompt ?? ""), title: body.title, model: body.model, fields: { orchestrated: true, ...(body.grantScope ? { grantScope: body.grantScope } : {}) } });
+    const ws = await verbs.createWorkstream(cfg, repo, { prompt: String(body.prompt ?? ""), title: body.title, model: body.model, fields: { orchestrated: true, ...(body.grantScope ? { grantScope: body.grantScope } : {}) }, origin: body.origin });
     return json({ ...ws, instance: db.instanceName() });
   }
   if (req.method === "POST" && p === "/api/workstreams/followup") {
     if (typeof body.model === "string") await db.patchEnrichment(repo.name, String(body.branch), { preferredModel: body.model, preferredProvider: providerOfModel(body.model) });
-    const r = await verbs.followUp(cfg, repo, String(body.branch), { instruction: String(body.instruction ?? "") });
+    const r = await verbs.followUp(cfg, repo, String(body.branch), { instruction: String(body.instruction ?? ""), origin: body.origin });
     await db.patchEnrichment(repo.name, String(body.branch), { orchestrated: true });
     return json({ ...r, instance: db.instanceName() });
   }
@@ -1301,7 +1302,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     return json(await prShots.attachPrShots(repo, String(body.branch), { pr: body.pr ? Number(body.pr) : undefined }));
   }
   if (req.method === "POST" && p === "/api/workstreams/address") {
-    const r = await verbs.addressPr(cfg, repo, String(body.branch));
+    const r = await verbs.addressPr(cfg, repo, String(body.branch), { origin: body.origin });
     await db.patchEnrichment(repo.name, String(body.branch), { orchestrated: true });
     return json({ ...r, instance: db.instanceName() });
   }
@@ -1711,6 +1712,8 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (repo.name === ORCHESTRATOR_REPO && !degraded) await handoff.linkTurns(turns).catch(db.logUnlessDown("handoff links"));
     // The forms it asked (`orca ask-form`), linked the same way: the chat draws a form card for each.
     if (repo.name === ORCHESTRATOR_REPO && !degraded) await forms.linkTurns(turns).catch(db.logUnlessDown("form links"));
+    // The request origin of a turn the orchestrator started: its referenced messages, joined (server/origin.ts).
+    if (!degraded) await linkOrigins(turns).catch(db.logUnlessDown("origin links"));
     for (const t of turns) if (t.instruction !== undefined) t.prompt = "";
     const body = page ? { turns, older: page.older } : turns;
     return degraded ? degradedJson(body) : json(body);
