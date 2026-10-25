@@ -14,6 +14,7 @@ import * as registry from "./registry";
 import * as router from "./router";
 import * as store from "./store";
 import * as dispatcher from "./dispatcher";
+import * as agents from "../agents";
 import * as secretRefs from "./secretRefs";
 import type { Connection } from "./adapter";
 import * as gmailOauth from "./adapters/gmail/oauth";
@@ -95,7 +96,9 @@ export async function overview(here = db.instanceName(), now = Date.now()): Prom
   }));
   // Sign in with Google: whether THIS bridge has the server's OAuth client (it answers the sign-in).
   const kinds = registry.kinds().map((k) => (k.oauth?.provider === "google" ? { ...k, oauth: { ...k.oauth, ...(googleSetup.problem ? { setup: googleSetup.problem } : {}), ...(googleSetup.fixedOrigin ? { fixedOrigin: true } : {}) } } : k));
-  return { instance: here, kinds, integrations: cards, links, people: persons, pairings: pairs, subscriptions: subs, dead: deadRows };
+  // The named agents, for each link's Agent Select and an agent subscription's target.
+  const agentRows = (await agents.all()).map((a) => ({ name: a.name, displayName: a.displayName }));
+  return { instance: here, kinds, integrations: cards, links, people: persons, pairings: pairs, subscriptions: subs, dead: deadRows, agents: agentRows };
 }
 
 // ── writes ───────────────────────────────────────────────────────────────────────────────────────
@@ -172,6 +175,8 @@ export async function saveLink(b: Record<string, unknown>): Promise<void> {
     // Absent keeps the stored value, so an edit that does not name it never turns pairing back on.
     // A switch a save omits keeps its stored value (on for a new link), so an edit never flips one back.
     ...await switches(b),
+    // The agent that takes its inbound messages (§7.7): absent keeps the stored one; "" = the Assistant.
+    ...await linkAgent(b),
   };
   const problem = linkProblem(l);
   if (problem) fail(problem);
@@ -186,6 +191,16 @@ export async function removeLink(id: string): Promise<void> {
       await tx`DELETE FROM channel_link WHERE user_id = ${user()} AND id = ${id}`;
     });
   });
+}
+
+/** A link's agent from a save: a known agent's name, "" for the default (the Assistant), else the
+ *  stored value. */
+async function linkAgent(b: Record<string, unknown>): Promise<{ agent?: string }> {
+  if (b.agent === undefined) { const stored = await store.link(String(b.id ?? "").trim()); return stored?.agent ? { agent: stored.agent } : {}; }
+  if (b.agent === "" || b.agent === null) return {};
+  const name = String(b.agent);
+  if (!(await agents.get(name))) fail(`no agent ${name}`);
+  return { agent: name };
 }
 
 /** A link's Notify me / Notify agent from a save: a boolean, else the stored value, else on. */
@@ -235,12 +250,13 @@ export async function addSubscription(b: Record<string, unknown>): Promise<numbe
   const topicPattern = String(b.topicPattern ?? "").trim();
   const targetKind = String(b.targetKind ?? "") as TargetKind;
   if (!/^[a-z*][a-z0-9_.*]*$/.test(topicPattern)) fail("topic pattern: dot segments, * for one, e.g. orca.pr.*");
-  if (!["link", "orchestrator", "workstream", "web"].includes(targetKind)) fail("target: link, orchestrator, workstream or web");
+  if (!["link", "orchestrator", "agent", "workstream", "web"].includes(targetKind)) fail("target: link, orchestrator, agent, workstream or web");
   const targetId = typeof b.targetId === "string" && b.targetId ? b.targetId : undefined;
   const target = targetKind === "link" && targetId ? await store.link(targetId) : undefined;
   if (targetKind === "link" && !target) fail("pick a link");
   if (target?.externalId === CATCH_ALL) fail(CATCH_ALL_SEND_ERROR);
   if (targetKind === "workstream" && !/^[^:]+::.+$/.test(targetId ?? "")) fail("workstream target: repo::branch");
+  if (targetKind === "agent" && !(targetId && await agents.get(targetId))) fail("agent target: the name of an agent");
   const filter = b.filter && typeof b.filter === "object" ? Object.fromEntries(Object.entries(b.filter as Record<string, unknown>).map(([k, v]) => [k, String(v)])) : {};
   const digestSeconds = Number(b.digestSeconds) > 0 ? Math.round(Number(b.digestSeconds)) : undefined;
   return store.addSubscription({ topicPattern, filter, targetKind, ...(targetId ? { targetId } : {}), ...(digestSeconds ? { digestSeconds } : {}) });

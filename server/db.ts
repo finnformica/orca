@@ -1198,6 +1198,39 @@ export const MIGRATIONS: MigrationStep[] = [
       CREATE INDEX IF NOT EXISTS scheduled_wake_agent ON scheduled_wake (user_id, agent, state);
     `,
   },
+  {
+    name: "20261025-team-agents",
+    idempotent: true,
+    // Named agents (server/agents.ts, docs/design/named-agents-and-memory.md §2.6–2.7). `agent` holds
+    // each agent's definition and the state it set; its run state stays in its workstream blob, as the
+    // orchestrator's did. The two built-in agents need no row until one changes. `channel_link.agent`
+    // is the agent that takes a link's inbound messages (null = the Assistant). A subscription may
+    // target an agent (`target_kind = 'agent'`, `target_id` = its name); 'orchestrator' stays and
+    // means the Chief of Staff. The CHECK is dropped and re-added in one ALTER, so a re-run is a no-op.
+    sql: `
+      CREATE TABLE IF NOT EXISTS agent (
+        user_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT '',
+        model TEXT,
+        branch TEXT NOT NULL,
+        tools JSONB NOT NULL DEFAULT '{}',
+        max_grant TEXT NOT NULL DEFAULT 'full',
+        state TEXT NOT NULL DEFAULT 'idle' CHECK (state IN ('idle','working','waiting','blocked','done')),
+        state_note TEXT,
+        instance TEXT,
+        created_at BIGINT NOT NULL,
+        updated_at BIGINT NOT NULL,
+        archived_at BIGINT,
+        PRIMARY KEY (user_id, name)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS agent_branch ON agent (user_id, branch) WHERE archived_at IS NULL;
+      ALTER TABLE channel_link ADD COLUMN IF NOT EXISTS agent TEXT;
+      ALTER TABLE subscription DROP CONSTRAINT IF EXISTS subscription_target_kind_check,
+        ADD CONSTRAINT subscription_target_kind_check CHECK (target_kind IN ('link','orchestrator','agent','workstream','web'));
+    `,
+  },
 ];
 
 export type MigrationMismatch = { id: number; recorded: string; expected: string; idempotent: boolean };

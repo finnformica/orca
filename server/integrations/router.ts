@@ -41,7 +41,10 @@ export async function publish(input: InboundEnvelope & { grant?: Grant }, now = 
   const writeRefusal = new Map(conns.map((c) => [c.id, integrationAccessRefusal(c, verb)]));
   for (const d of extra) if (d.target.kind === "link") { const r = writeRefusal.get(d.target.integrationId); if (r) throw new Error(r); }
   const links = new Map(allLinks.filter((l) => !writeRefusal.get(l.integrationId))
-    .map((l) => [l.id, { integrationId: l.integrationId, adapter: kinds.get(l.integrationId) ?? "?", externalId: l.externalId }]));
+    .map((l) => [l.id, { integrationId: l.integrationId, adapter: kinds.get(l.integrationId) ?? "?", externalId: l.externalId, ...(l.agent ? { agent: l.agent } : {}) }]));
+  // An inbound message's own link names its agent even on a read account, whose links post nothing.
+  const own = e.source.linkId ? allLinks.find((l) => l.id === e.source.linkId) : undefined;
+  if (own?.agent && !links.has(own.id)) links.set(own.id, { integrationId: own.integrationId, adapter: kinds.get(own.integrationId) ?? "?", externalId: own.externalId, agent: own.agent });
   const plan = planDeliveries(e, subs, links, threads, inbound);
   // The web shows an event once: an explicit web target beside a subscription's is the same row.
   const planned = [...plan, ...extra.filter((d) => d.target.kind !== "web" || !plan.some((p) => p.target.kind === "web"))];

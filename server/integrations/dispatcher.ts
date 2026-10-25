@@ -13,6 +13,8 @@ export type Sinks = {
   /** A started adapter for an integration on this process, or undefined. */
   adapter(integrationId: string): Adapter | undefined;
   orchestrator?(e: Envelope): Promise<SendResult>;
+  /** A named agent (docs/design/named-agents-and-memory.md §7.4). */
+  agent?(name: string, e: Envelope): Promise<SendResult>;
   workstream?(repo: string, branch: string, e: Envelope): Promise<SendResult>;
   web?(e: Envelope): Promise<SendResult>;
   /** Whether this process serves a non-link kind now (the orchestrator lives on ONE instance). */
@@ -33,7 +35,7 @@ let again = false;
 export function configure(s: Sinks): void { sinks = s; }
 
 /** The non-link target kinds this process serves: those it has a sink for. */
-const servedKinds = (): TargetKind[] => (["orchestrator", "workstream", "web"] as const).filter((k) => sinks[k] && (sinks.serves?.(k) ?? true));
+const servedKinds = (): TargetKind[] => (["orchestrator", "agent", "workstream", "web"] as const).filter((k) => sinks[k] && (sinks.serves?.(k) ?? true));
 
 /** The message an adapter renders for an event. */
 export const outbound = (e: Envelope): OutboundMessage => ({
@@ -91,7 +93,9 @@ async function sendOne(d: store.Delivery, now: number): Promise<SendResult | { d
       }
       return r;
     }
-    const sink = t.kind === "workstream" ? sinks.workstream && ((e: Envelope) => sinks.workstream!(t.repo, t.branch, e)) : sinks[t.kind];
+    const sink = t.kind === "workstream" ? sinks.workstream && ((e: Envelope) => sinks.workstream!(t.repo, t.branch, e))
+      : t.kind === "agent" ? sinks.agent && ((e: Envelope) => sinks.agent!(t.name, e))
+      : sinks[t.kind];
     if (!sink) return { ok: false, retryable: true, error: `no ${t.kind} sink on this bridge` };
     return await sink(d.envelope);
   } catch (e) {

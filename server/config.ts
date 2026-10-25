@@ -221,6 +221,10 @@ export type OrcaConfig = {
    *  subagents. Worth turning off on a shared box: it reads every worker's output, so a shell makes
    *  that output a path to running commands outside any worktree. */
   orchestratorShell?: boolean;
+  /** Named agents (docs/design/named-agents-and-memory.md §7.4). `cleanReportsTo`: the agent that
+   *  takes a clean worker report — `chief` (the default) or `assistant`. A problem report always goes
+   *  to the Chief of Staff. */
+  agents?: { cleanReportsTo?: string };
   /** `--max-budget-usd` for ONE orchestrator wake (default 5). A wake on a long resumed session
    *  re-reads its whole history, so the cap can bite after a tool call or two; a wake that hits it
    *  says so in the chat and its message is retried. Workers are capped per repo (`agentMaxBudgetUsd`). */
@@ -419,6 +423,10 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
   if (d.orchestratorOn !== undefined && (typeof d.orchestratorOn !== "string" || !d.orchestratorOn.trim())) {
     errors.push("orchestratorOn must be an instance name");
   }
+  if (d.agents !== undefined && (typeof d.agents !== "object" || d.agents === null || Array.isArray(d.agents)
+    || ((d.agents as { cleanReportsTo?: unknown }).cleanReportsTo !== undefined && typeof (d.agents as { cleanReportsTo?: unknown }).cleanReportsTo !== "string"))) {
+    errors.push("agents must be an object: { cleanReportsTo?: \"chief\" | \"assistant\" }");
+  }
   if (d.orchestratorShell !== undefined && typeof d.orchestratorShell !== "boolean") {
     errors.push("orchestratorShell must be true or false");
   }
@@ -464,6 +472,7 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
       autoUpkeepConcurrency: d.autoUpkeepConcurrency as number | undefined,
       heavyQueue: d.heavyQueue as HeavyQueueConfig | undefined,
       orchestratorOn: d.orchestratorOn as string | undefined,
+      agents: d.agents as OrcaConfig["agents"],
       agentCpuWeight: d.agentCpuWeight as number | undefined,
       githubAccounts: d.githubAccounts as OrcaConfig["githubAccounts"],
       serverSwitcher: d.serverSwitcher as ServerSwitcherConfig | undefined,
@@ -535,6 +544,7 @@ async function seedFromFile(file: OrcaConfig): Promise<void> {
       ...(file.autoUpkeepConcurrency === undefined ? {} : { autoUpkeepConcurrency: file.autoUpkeepConcurrency }),
       ...(file.heavyQueue === undefined ? {} : { heavyQueue: file.heavyQueue as unknown as db.Fields }),
       ...(file.orchestratorOn === undefined ? {} : { orchestratorOn: file.orchestratorOn }),
+      ...(file.agents === undefined ? {} : { agents: file.agents as unknown as db.Fields }),
       ...(file.agentCpuWeight === undefined ? {} : { agentCpuWeight: file.agentCpuWeight }),
       ...(file.githubAccounts === undefined ? {} : { githubAccounts: file.githubAccounts }),
       ...(file.serverSwitcher === undefined ? {} : { serverSwitcher: file.serverSwitcher as unknown as db.Fields }),
@@ -609,6 +619,7 @@ async function loadFromDb(): Promise<OrcaConfig> {
     autoUpkeepConcurrency: app.autoUpkeepConcurrency as number | undefined,
     heavyQueue: app.heavyQueue as HeavyQueueConfig | undefined,
     orchestratorOn: app.orchestratorOn as string | undefined,
+    agents: app.agents as OrcaConfig["agents"],
     agentCpuWeight: app.agentCpuWeight as number | undefined,
     githubAccounts: app.githubAccounts as OrcaConfig["githubAccounts"],
     serverSwitcher: app.serverSwitcher as ServerSwitcherConfig | undefined,
@@ -654,6 +665,7 @@ export async function saveConfigDocument(config: OrcaConfig): Promise<void> {
       ...(config.autoUpkeepConcurrency === undefined ? {} : { autoUpkeepConcurrency: config.autoUpkeepConcurrency }),
       ...(config.heavyQueue === undefined ? {} : { heavyQueue: config.heavyQueue as unknown as db.Fields }),
       ...(config.orchestratorOn === undefined ? {} : { orchestratorOn: config.orchestratorOn }),
+      ...(config.agents === undefined ? {} : { agents: config.agents as unknown as db.Fields }),
       ...(config.agentCpuWeight === undefined ? {} : { agentCpuWeight: config.agentCpuWeight }),
       ...(config.githubAccounts === undefined ? {} : { githubAccounts: config.githubAccounts }),
       ...(config.serverSwitcher === undefined ? {} : { serverSwitcher: config.serverSwitcher as unknown as db.Fields }),

@@ -31,7 +31,8 @@ const toWake = (r: Row): ScheduledWake => ({
   ...(r.fired_at !== null ? { firedAt: Number(r.fired_at) } : {}), ...(r.fired_event ? { firedEvent: r.fired_event } : {}),
 });
 
-export type Deliver = (text: string) => Promise<unknown>;
+/** Hand a fired wake's message to its agent (index.ts: orchestrator.report with the agent's name). */
+export type Deliver = (text: string, agent: string) => Promise<unknown>;
 
 export async function add(input: { agent: string; at?: number; on?: WakeOn; note: string; memoryId?: number; expiresMs?: number; by: string; runId?: string }, now = Date.now()): Promise<ScheduledWake> {
   const note = input.note.trim();
@@ -97,7 +98,13 @@ export async function claimDue(now = Date.now()): Promise<ScheduledWake[]> {
 export async function claimMatching(e: WakeEvent & { key?: string }, now = Date.now()): Promise<ScheduledWake[]> {
   const pending = await db.withRetry((sql) => sql`
     SELECT * FROM scheduled_wake WHERE user_id = ${user()} AND state = 'pending' AND on_event IS NOT NULL AND expires_at >= ${now}`) as Row[];
-  const hits = pending.map(toWake).filter((w) => { try { return wakeMatches(parseWakeOn(w.on!), e); } catch { return false; } });
+  // `agent:<name>` waits for the reply to ITS OWN ask: the finished wake must have carried one from it.
+  const hits = pending.map(toWake).filter((w) => {
+    try {
+      const on = parseWakeOn(w.on!);
+      return wakeMatches(on, e) && (on.kind !== "agent" || (e.askers ?? []).includes(w.agent));
+    } catch { return false; }
+  });
   const claimed: ScheduledWake[] = [];
   for (const w of hits) {
     const [row] = await db.withRetry((sql) => sql`
@@ -112,11 +119,11 @@ export async function claimMatching(e: WakeEvent & { key?: string }, now = Date.
 export const messageOf = (w: ScheduledWake, event?: string): string =>
   scheduledWakeMessage({ id: w.id, note: w.note, ...(w.memoryId ? { memoryId: w.memoryId } : {}), ...(w.on ? { on: w.on, ...(event ? { event } : {}) } : { at: w.fireAt }) });
 
-/** Deliver claimed wakes. Only the Chief of Staff (today's orchestrator) has a queue in PR A; a
- *  failure is logged, never thrown: the row stays fired, so a broken delivery cannot loop. */
+/** Deliver claimed wakes, each to its own agent. A failure is logged, never thrown: the row stays
+ *  fired, so a broken delivery cannot loop. */
 async function deliverAll(wakes: ScheduledWake[], deliver: Deliver, event?: string): Promise<void> {
   for (const w of wakes) {
-    await deliver(messageOf(w, event)).catch(db.logUnlessDown(`orca: scheduled wake w${w.id} could not be delivered`));
+    await deliver(messageOf(w, event), w.agent).catch(db.logUnlessDown(`orca: scheduled wake w${w.id} could not be delivered`));
   }
 }
 
@@ -145,13 +152,14 @@ export const wakeLine = (w: ScheduledWake): string =>
 
 export const WAKE_USAGE = [
   'orca wake --at "<time>" --note "<what to look at>" [--memory <id>]',
-  'orca wake --on "<event>" --note "<…>" [--memory <id>] [--expires 14d]',
+  'orca wake --on "<event>" --note "<…>" [--memory <id>] [--expires 14d]   (pr:… | worker:… | agent:<name> | topic:…)',
   "orca wake list [--all]",
   "orca wake cancel <id>",
 ].join("\n");
 
-/** `orca wake …` for an agent. Another agent's queue only for the Chief of Staff. */
-export async function wakeTool(agent: string, words: string[], args: Record<string, unknown>, runId?: string, now = Date.now()): Promise<string> {
+/** `orca wake …` for an agent. Another agent's queue only for the Chief of Staff. `known` are the
+ *  agents that exist (server/agents.ts); none given = the Chief of Staff alone. */
+export async function wakeTool(agent: string, words: string[], args: Record<string, unknown>, runId?: string, now = Date.now(), known: string[] = [CHIEF]): Promise<string> {
   const [sub = ""] = words;
   if (sub === "list") {
     const rows = await list({ ...(agent === CHIEF ? {} : { agent }), all: args.all !== undefined });
@@ -166,7 +174,7 @@ export async function wakeTool(agent: string, words: string[], args: Record<stri
   if (sub) throw new Error(`unknown wake command "${sub}". Commands:\n${WAKE_USAGE}`);
   const target = typeof args.agent === "string" && args.agent ? args.agent : agent;
   if (target !== agent && agent !== CHIEF) throw new Error("only the Chief of Staff sets a wake for another agent");
-  if (target !== CHIEF) throw new Error(`there is no agent "${target}" yet: only ${CHIEF} has a wake queue`);
+  if (!known.includes(target)) throw new Error(`there is no agent "${target}" (agents: ${known.join(", ")})`);
   const at = typeof args.at === "string" && args.at ? parseWakeAt(args.at, now) : undefined;
   const on = typeof args.on === "string" && args.on ? parseWakeOn(args.on) : undefined;
   const expiresMs = typeof args.expires === "string" ? parseDuration(args.expires) : undefined;

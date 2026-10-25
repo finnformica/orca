@@ -12,6 +12,8 @@ import {
   type CoreSelection, type FiredWake, type Memory, type MemoryLink, type MemoryRevision, type MemoryState, type NotesPart, type Provenance, type Trust,
 } from "../shared/memory";
 import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, splitMessages } from "../web/src/workstream";
+import { agentBranch } from "../shared/agents";
+import * as agents from "./agents";
 
 const user = () => db.currentUser();
 
@@ -556,8 +558,8 @@ export async function changesSince(agent: string, since: number): Promise<number
   return Number(row?.n ?? 0);
 }
 
-// The orchestrator is the only agent with a conversation in PR A: its turns are (@orca, orchestrator).
-const agentWorkstream = (_agent: string) => ({ repo: ORCHESTRATOR_REPO, branch: ORCHESTRATOR_BRANCH });
+// Each named agent's turns are (@orca, its branch): the Chief of Staff's is the orchestrator's.
+const agentWorkstream = (agent: string) => ({ repo: ORCHESTRATOR_REPO, branch: agentBranch(agent) });
 
 /** Something new for a pass to read: the agent's turns (not reflections) and its memory changes since. */
 export async function activitySince(agent: string, since: number): Promise<number> {
@@ -679,8 +681,11 @@ export async function changesToday(now = Date.now()): Promise<Record<string, num
   return Object.fromEntries(rows.map((r) => [r.by.slice("agent:".length), Number(r.n)]));
 }
 
-/** Every owner that holds a memory, for the page's owner filter. */
+/** Every owner that holds a memory, and every agent, for the page's owner filter and core preview. */
 export async function owners(): Promise<string[]> {
-  const rows = await db.withRetry((sql) => sql`SELECT DISTINCT owner FROM memory WHERE user_id = ${user()} ORDER BY owner`) as { owner: string }[];
-  return [...new Set([CHIEF, SHARED, ...rows.map((r) => r.owner)])];
+  const [rows, defs] = await Promise.all([
+    db.withRetry((sql) => sql`SELECT DISTINCT owner FROM memory WHERE user_id = ${user()} ORDER BY owner`) as Promise<{ owner: string }[]>,
+    agents.all(),
+  ]);
+  return [...new Set([...defs.map((a) => a.name), SHARED, ...rows.map((r) => r.owner)])];
 }

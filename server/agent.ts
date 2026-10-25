@@ -1231,13 +1231,14 @@ export const adoptPoll = { ms: 5_000 }; // mutable so a test needn't wait five s
  *  and an orchestrator never told. Adopt each live lease instead: show it running, and when its
  *  process exits, finish its turn from the provider's own session file (`recover`) and run the same
  *  after-run path a watched run gets — minus the check gate, which needs the HEAD it started from.
- *  `skip` keeps the orchestrator's own wake out of this; orchestrator.recover handles that one. */
+ *  `skip` keeps the named agents' own wakes out of this; orchestrator.recover handles those. */
 export function adoptLeases(
   recover: (runId: string, sessionId?: string, worktreePath?: string) => Promise<{ response?: string; structured?: AgentOutcome } | undefined>,
-  skip?: string,
+  skip?: string | string[],
 ): number {
   if (!primary.held()) return 0; // only the instance's primary finishes another bridge's runs
-  const adopted = lease.live().filter((l) => l.key !== skip && !runs.has(l.key));
+  const skipped = new Set(Array.isArray(skip) ? skip : skip ? [skip] : []);
+  const adopted = lease.live().filter((l) => !skipped.has(l.key) && !runs.has(l.key));
   for (const l of adopted) {
     runs.set(l.key, { status: "running", provider: l.provider, runId: l.runId, sessionId: l.sessionId, startedAt: l.startedAt });
     const poll = setInterval(() => {
