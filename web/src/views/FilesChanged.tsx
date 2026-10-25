@@ -37,7 +37,7 @@ import { isNarrow, useNarrow } from "@/lib/viewport";
 type ViewMode = "unified" | "split";
 
 /** Where a sticky thing parks: under the top bar (h-14) and the page's own sticky header (--stick). */
-const STICK_TOP = "top-[calc(3.5rem+var(--stick,0px))]";
+const STICK_TOP = "top-[calc(3.5rem+var(--stick,0px))] max-md:top-[var(--stick,0px)]"; // a phone has no top bar on the agent page
 
 /** The grid's column gap (Tailwind `gap-4` = 1rem = 16px). The resize handle sits half this, less
  *  half the 1px line, past the tree's right edge — the same centring formula as the dock's gutter
@@ -328,7 +328,7 @@ function FileSection({ file, open, loaded, viewed, view, wrap, compact, onToggle
 
   return (
     <section id={fileAnchor(file.path)} data-slot="diff-file" data-path={file.path} data-open={open}
-      className="bg-card min-w-0 scroll-mt-[calc(3.5rem+var(--stick,0px)+0.5rem)] rounded-lg border">
+      className="bg-card min-w-0 scroll-mt-[calc(3.5rem+var(--stick,0px)+0.5rem)] rounded-lg border max-md:scroll-mt-[calc(var(--stick,0px)+0.5rem)]">
       {/* The sticky wrapper is a scroll-state container; styles.css squares the header's corners
           while it is stuck, so code scrolling under it can't peek through. No overflow clip on the
           section: a clipping ancestor kills sticky. */}
