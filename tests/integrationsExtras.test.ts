@@ -18,6 +18,11 @@ import {
 import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, wakeProgress } from "../web/src/workstream";
 import type { OrcaConfig, RepoConfig } from "../server/config";
 import { native } from "./happydom";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { notificationEnvelope } from "../shared/integrations";
+import { prNotifications } from "../shared/notifications";
 import { freshSchema, type TestDb } from "./pg";
 
 const dom = { fetch: globalThis.fetch, Response: globalThis.Response };
@@ -26,6 +31,24 @@ beforeAll(() => { Object.assign(globalThis, native); orchestrator.postWait.ms = 
 afterAll(() => { Object.assign(globalThis, dom); });
 
 describe("decisions (pure)", () => {
+  test("an Orca PR event reaches the orchestrator tagged, so the chat shows it as GitHub with the PR's link", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "orca-event-"));
+    for (const args of [["init", "-q"], ["remote", "add", "origin", "https://github.com/acme/web.git"]]) Bun.spawnSync(["git", "-C", dir, ...args]);
+    const cfg = { repos: [{ name: "web", repoPath: dir, worktreeRoot: dir, baseBranch: "main", previewServices: [] }] } as unknown as OrcaConfig;
+    const [ci, conflicts] = prNotifications("web", [{ number: 12, title: "Add login", branch: "login", state: "OPEN", ciStatus: "failing", mergeable: "CONFLICTING", failingChecks: ["lint", "ci"], head: "abc" }])
+      .map((n) => notificationEnvelope(n, 1)!);
+    const text = await inbox.orcaEvent(cfg, ci!);
+    expect(text.split("\n").slice(0, 2)).toEqual(["[orca event] orca.pr.ci_failed", "Add login: Failing: ci, lint"]); // the model's text is kept
+    expect(integrationMessage(text)).toEqual({ adapter: "github", sender: "GitHub", place: "web #12", url: "https://github.com/acme/web/pull/12", text: "Add login: Failing: ci, lint" });
+    expect(integrationMessage(await inbox.orcaEvent(cfg, conflicts!))).toMatchObject({ adapter: "github", place: "web #12", text: "Add login: Has merge conflicts with its base." });
+    // A repo Orca does not know: no link, the rest the same.
+    expect(integrationMessage(await inbox.orcaEvent({ repos: [] } as unknown as OrcaConfig, ci!))).toEqual({ adapter: "github", sender: "GitHub", place: "web #12", text: "Add login: Failing: ci, lint" });
+    // Any other Orca event is Orca's, placed by the workstream's title.
+    const run = notificationEnvelope({ key: "run:1:failed", kind: "failed", repo: "web", branch: "login", title: "Add login", body: "exit 1" }, 1)!;
+    expect(integrationMessage(await inbox.orcaEvent(cfg, run))).toEqual({ adapter: "orca", sender: "Orca", place: "Add login", text: "Add login: exit 1" });
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   test("pairing codes: six characters from an alphabet with no 0/O or 1/I/L", () => {
     const code = pairingCode(new Uint8Array([0, 1, 2, 250, 251, 255]));
     expect(code).toHaveLength(6);

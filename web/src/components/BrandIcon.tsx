@@ -3,7 +3,7 @@
 // the bundle carries a few paths and not the set. Gmail is Google's own multicolour "M" (the 2020
 // mark, in its own viewBox). Cloudflare is its own two-tone cloud. A kind with no brand (webhook, web) or a kind a later adapter adds gets
 // a lucide icon.
-import { Globe, Plug, Webhook } from "lucide-react";
+import { Bot, Globe, Plug, Webhook } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type Brand = { title: string; paths: { d: string; fill: string }[]; viewBox?: string };
@@ -36,14 +36,16 @@ export const BRANDS: Record<string, Brand> = {
   linear: { title: "Linear", paths: [{ fill: "#5E6AD2", d: "M2.886 4.18A11.982 11.982 0 0 1 11.99 0C18.624 0 24 5.376 24 12.009c0 3.64-1.62 6.903-4.18 9.105L2.887 4.18ZM1.817 5.626l16.556 16.556c-.524.33-1.075.62-1.65.866L.951 7.277c.247-.575.537-1.126.866-1.65ZM.322 9.163l14.515 14.515c-.71.172-1.443.282-2.195.322L0 11.358a12 12 0 0 1 .322-2.195Zm-.17 4.862 9.823 9.824a12.02 12.02 0 0 1-9.824-9.824Z" }] },
 };
 
-const GENERIC: Record<string, typeof Plug> = { webhook: Webhook, web: Globe };
+// Orca's own events (`orca.run.*`, `orca.preview.*`…) in the chat get the bot, Orca's own icon.
+const GENERIC: Record<string, typeof Plug> = { webhook: Webhook, web: Globe, orca: Bot };
+const GENERIC_TITLES: Record<string, string> = { orca: "Orca" };
 
 /** Whether a kind is an integration this file draws (a brand logo or a generic integration icon).
  *  Not "orca": Orca's own rows keep their own icon. */
 export const isIntegrationKind = (kind: string | undefined): kind is string => !!kind && kind !== "orca" && (kind in BRANDS || kind in GENERIC);
 
 /** The service name for a kind: the brand's title, else the kind itself. */
-export const brandTitle = (kind: string): string => BRANDS[kind]?.title ?? kind;
+export const brandTitle = (kind: string): string => BRANDS[kind]?.title ?? GENERIC_TITLES[kind] ?? kind;
 
 /** A service's logo at the text size (`size-4` by default). Decorative: the name is always beside it. */
 export function BrandIcon({ kind, className }: { kind: string; className?: string }) {

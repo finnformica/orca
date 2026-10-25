@@ -612,8 +612,10 @@ const ChatTurn = memo(function ChatTurn({ turn, loadStepsFor, compact, newestSai
   const loadSteps = loadStepsFor && (() => loadStepsFor(turn));
   const parts = splitMessages(turn.instruction ?? promptInstruction(turn.prompt));
   // A wake that carried your messages AND worker reports: your words in bubbles — one per message you
-  // sent, however many one wake drained — and the reports folded.
-  const reports = parts.filter(isWorkerEvent), said = parts.filter((p) => !isWorkerEvent(p));
+  // sent, however many one wake drained — and the reports folded. Orca's own events (a PR's CI or
+  // conflicts) have no grant, so they can share a wake with you: they get the activity card, never a bubble.
+  const reports = parts.filter(isWorkerEvent), outside = parts.map(integrationMessage).filter((m): m is IntegrationMessage => Boolean(m));
+  const said = parts.filter((p) => !isWorkerEvent(p) && !integrationMessage(p));
   // Each message's files: an orchestrator wake carries their references in the instruction (one set
   // per message); an agent chat's instruction is the typed text alone, its files read off the prompt.
   const inline = attachmentRefs(turn.instruction ?? "").length > 0;
@@ -627,6 +629,11 @@ const ChatTurn = memo(function ChatTurn({ turn, loadStepsFor, compact, newestSai
           label={reports.length === 1 ? `Worker report · ${reportTitle(reports[0]!)}` : `${reports.length} worker reports`}>
           <WorkerReports parts={reports} />
         </WorkerBlock>
+      )}
+      {outside.length > 0 && (
+        <IntegrationCard slot="turn-integration" messages={outside} time={time} state={integrationState(turn)}>
+          <IntegrationMessages messages={outside} />
+        </IntegrationCard>
       )}
       {said.map((text, i) => {
         const clean = withoutAttachmentList(text);

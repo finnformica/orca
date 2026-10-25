@@ -6,7 +6,8 @@ import * as orchestrator from "../orchestrator";
 import * as verbs from "../verbs";
 import type { OrcaConfig } from "../config";
 import * as store from "./store";
-import { agentMay, fenceExternal, integrationMetaLine, integrationPlace, integrationUrl, replyToOf, type Envelope, type SendResult } from "../../shared/integrations";
+import { repoSlug } from "../github";
+import { agentMay, fenceExternal, integrationMetaLine, integrationPlace, integrationUrl, orcaEventText, replyToOf, type Envelope, type SendResult } from "../../shared/integrations";
 
 /** The text an event becomes for an agent: an outside sender's fenced as data, Orca's own as is. */
 export const agentText = (e: Envelope): string => (e.grant ? fenceExternal(e) : e.title ? `${e.title}: ${e.text}` : e.text);
@@ -19,6 +20,15 @@ export async function withSource(e: Envelope): Promise<string> {
   const link = e.source.linkId ? await store.link(e.source.linkId).then((l) => l, () => undefined) : undefined;
   const place = integrationPlace(e, link), url = integrationUrl(e), sender = e.actor?.external.name ?? e.display?.sender;
   return `${agentText(e)}\n${integrationMetaLine({ adapter: e.source.adapter, ...(sender ? { sender } : {}), ...(place ? { place } : {}), ...(url ? { url } : {}) })}`;
+}
+
+/** Orca's own event for the orchestrator, tagged (`orcaEventText`) so the chat shows it as an
+ *  activity row (GitHub for a PR event, with the PR's link) and never as your message. A repo whose
+ *  GitHub name does not resolve costs only the link. */
+export async function orcaEvent(cfg: OrcaConfig, e: Pick<Envelope, "topic" | "scope" | "title" | "text" | "link">): Promise<string> {
+  const repo = e.topic.startsWith("orca.pr.") && e.link?.pr !== undefined ? cfg.repos.find((r) => r.name === e.scope?.repo) : undefined;
+  const slug = repo ? await repoSlug(repo.repoPath).catch(() => undefined) : undefined;
+  return orcaEventText(e, slug);
 }
 
 /** `inbox.toOrchestrator` (§3.5). An outside sender's message goes in as a message with its grant
@@ -34,7 +44,7 @@ export async function toOrchestrator(cfg: OrcaConfig, e: Envelope): Promise<Send
     const replyTo = readOnly ? undefined : replyToOf(e);
     await orchestrator.message(cfg, await withSource(e), e.attachments ?? [], { grant: e.grant, person: !readOnly && Boolean(e.actor ?? e.display?.sender), ...(replyTo ? { replyTo } : {}) });
   } else {
-    await orchestrator.deliverReport(cfg, agentText(e));
+    await orchestrator.deliverReport(cfg, await orcaEvent(cfg, e));
   }
   return { ok: true };
 }

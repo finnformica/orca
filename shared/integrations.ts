@@ -588,6 +588,8 @@ export type IntegrationMessage = IntegrationSource & { text: string };
 /** An outside message (fenced by `fenceExternal`) back into its source and text; undefined for any
  *  other message. A row from before the meta line reads its adapter and sender off the header. Pure. */
 export function integrationMessage(message: string): IntegrationMessage | undefined {
+  const event = orcaEventMessage(message);
+  if (event) return event;
   const head = message.match(/^\[external message\] via (\S+)[^\n]*?· from ([^\n]*?) · grant:/);
   if (!head) return undefined;
   const body = message.match(/\n~~~external\n([\s\S]*?)\n~~~(?:\n|$)/)?.[1] ?? "";
@@ -614,6 +616,54 @@ export const NOTIFICATION_TOPICS: Record<string, Topic | undefined> = {
   merge_refused: "orca.pr.merge_refused", auto_address: "orca.upkeep.address", upkeep_gave_up: "orca.upkeep.gave_up",
   integration_failed: "orca.integration.failed",
 };
+
+/** First line of an Orca event (`orca.*`) as it wakes the orchestrator: how the chat tells it apart
+ *  from a message you typed. */
+export const ORCA_EVENT_MARKER = "[orca event]";
+
+/** Where an Orca event came from, for its row in the chat: GitHub for a PR event (`<repo> #<pr>` and
+ *  the PR's URL when the repo's GitHub name is known), else Orca with the workstream's title. Pure. */
+export function orcaEventSource(e: Pick<Envelope, "topic" | "scope" | "title" | "link">, slug?: string): IntegrationSource {
+  const pr = e.link?.pr, repo = e.scope?.repo;
+  if (e.topic.startsWith("orca.pr.")) {
+    const place = pr !== undefined ? `${repo ? `${repo} ` : ""}#${pr}` : e.title ?? repo;
+    return { adapter: "github", sender: "GitHub", ...(place ? { place } : {}), ...(slug && pr !== undefined ? { url: `https://github.com/${slug}/pull/${pr}` } : {}) };
+  }
+  const place = e.title ?? (repo && e.scope?.branch ? `${repo}/${e.scope.branch}` : repo);
+  return { adapter: "orca", sender: "Orca", ...(place ? { place } : {}) };
+}
+
+/** An Orca event's text for the orchestrator: the marker and topic, the text the model always got
+ *  (`<title>: <text>`), and the meta line the chat reads its source from. Pure. */
+export const orcaEventText = (e: Pick<Envelope, "topic" | "scope" | "title" | "text" | "link">, slug?: string): string =>
+  [`${ORCA_EVENT_MARKER} ${e.topic}`, e.title ? `${e.title}: ${e.text}` : e.text, integrationMetaLine(orcaEventSource(e, slug))].join("\n");
+
+/** An old PR event: stored before the marker as `<title>: <body>`, one line, with a body only
+ *  `prNotifications` writes. Strict, so a message you typed does not match. */
+const OLD_PR_EVENT = /^([^\n]{1,300}?): (Failing: [^\n]+|CI is failing\.|Has merge conflicts with its base\.)$/;
+
+/** An Orca event back into its source and text (`orcaEventText`), else undefined. An old PR event
+ *  (no marker) reads as GitHub with its title as the place. Pure. */
+export function orcaEventMessage(message: string): IntegrationMessage | undefined {
+  if (message.startsWith(`${ORCA_EVENT_MARKER} `)) {
+    const lines = message.split("\n");
+    let meta: Partial<IntegrationSource> = {};
+    const m = lines[lines.length - 1]!.match(META_RE);
+    if (m) try { meta = JSON.parse(m[1]!) as Partial<IntegrationSource>; } catch { /* the marker is enough */ }
+    const topic = lines[0]!.slice(ORCA_EVENT_MARKER.length).trim();
+    const adapter = meta.adapter ?? (topic.startsWith("orca.pr.") ? "github" : "orca");
+    return {
+      adapter, sender: meta.sender ?? (adapter === "github" ? "GitHub" : "Orca"),
+      ...(meta.place ? { place: meta.place } : {}), ...(meta.url ? { url: meta.url } : {}),
+      text: lines.slice(1, m ? -1 : undefined).join("\n"),
+    };
+  }
+  const old = message.match(OLD_PR_EVENT);
+  return old ? { adapter: "github", sender: "GitHub", place: old[1]!, text: message } : undefined;
+}
+
+/** True for an Orca event's text (`orcaEventMessage`): never a message you typed. Pure. */
+export const isOrcaEvent = (message: string): boolean => orcaEventMessage(message) !== undefined;
 
 /** The envelope `notify.emit` writes beside a notification row: the same key, so one event is one
  *  row in each table however often it is emitted. */
