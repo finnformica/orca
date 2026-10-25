@@ -469,23 +469,32 @@ test("O5w: a wake it set itself fires a wake of its own: the note under Schedule
   expect((await orchBlob()).wakes).toBe(1); // a self-wake: MAX_WAKES counts it
 });
 
-test("O5r: after 15 memory changes a reflection runs as its own turn: no wake counted, then not again for 6 hours", async () => {
+test("O5r: in idle time a reflection pass runs as its own turn, reads the transcript, is logged, and counts no wake", async () => {
   wire();
-  for (let i = 0; i < 15; i++) await orchestrator.tool(cfg(), "memory", { _: ["write"], title: `Fact ${i}`, body: `Fact number ${i} about the deploy window.` });
+  await orchestrator.message(cfg(), "No, I said use Sonnet for small fixes.");
+  await settled(orchTurns, 1);
+  for (let i = 0; i < 3; i++) await orchestrator.tool(cfg(), "memory", { _: ["write"], title: `Fact ${i}`, body: `Fact number ${i} about the deploy window.` });
+  // Never while a message waits; then, idle and never reflected, a pass is due.
+  await db.queueMessage({ repo: ORCHESTRATOR_REPO, branch: ORCHESTRATOR_BRANCH, worktreePath: orchestrator.dir(), instruction: "later", attachments: [], provider: "claude" });
+  expect(await orchestrator.maybeReflect(cfg())).toBeUndefined();
+  for (const q of await orchQueue()) await db.cancelQueuedMessage(q.id);
   const runId = await orchestrator.maybeReflect(cfg());
   expect(runId).toBeString();
-  const [turn] = await settled(orchTurns, 1);
-  expect(turn!.instruction).toMatch(/^\[reflection\] 15 changed, \d+ least used, \d+ possible duplicates$/);
-  expect(turn!.prompt).toContain("## Changed since your last reflection\n[m");
-  expect(turn!.prompt).not.toMatch(/^## Board$/m); // not a wake: no board, no messages
-  expect(turn!.source).toBe("agents");
+  const turns = await settled(orchTurns, 2);
+  const pass = turns[1]!;
+  expect(pass.instruction).toBe("[reflection] idle: 1 turns, 0 worker reports, 0 checks, 1 corrections, 0 possible contradictions");
+  expect(pass.prompt).toContain("## Signals (found by Orca)\n- Correction (");
+  expect(pass.prompt).toContain("User: No, I said use Sonnet for small fixes.");
+  expect(pass.prompt).not.toMatch(/^## Board$/m); // not a wake: no board
+  expect(pass.source).toBe("agents");
+  const [log] = await memory.passes();
+  expect(log).toMatchObject({ runId, trigger: "idle", state: "done", summary: "## Outcome\nDone.", read: { turns: 1, corrections: 1 }, changed: { total: 0 } });
   const b = await orchBlob();
-  expect(b).toMatchObject({ lastReflection: { runId, summary: "## Outcome\nDone." } });
   expect(b.wakeMode).toBeUndefined();
-  expect(b.wakes ?? 0).toBe(0); // a reflection is no wake
-  expect(await orchestrator.maybeReflect(cfg())).toBeUndefined(); // 6 hours apart
+  expect(b.wakes ?? 0).toBe(0); // a pass is no wake
+  expect(await orchestrator.maybeReflect(cfg())).toBeUndefined(); // passes are at least an hour apart
   // Its claude ran with no shell: only `orca`, reading and searching.
-  const argv = (await launches())[0]!;
+  const argv = (await launches()).at(-1)!;
   expect(argv).toContain("Bash(orca *)");
   expect(argv).not.toContain("bypassPermissions");
 });

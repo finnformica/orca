@@ -137,6 +137,15 @@ describe("the API", () => {
     expect((await call("POST", `/api/memory/${m.id}`, { action: "revert", revision: 99 })).status).toBe(404);
   });
 
+  test("the reflection log for the page: newest pass first", async () => {
+    const read = { turns: 2, userMessages: 1, reports: 1, checks: 0, failedChecks: 0, failedReports: 0, corrections: 1, repeated: 0, changedMemories: 0, lowest: 0, pairs: 0, contradictions: 0 };
+    await memory.startPass({ agent: CHIEF, runId: "p1", trigger: "idle", read, startedAt: 1000 });
+    await memory.finishPass("p1", "done", "ok", 2000);
+    await memory.startPass({ agent: CHIEF, runId: "p2", trigger: "request", since: 2000, read, startedAt: 3000 });
+    const log = await call("GET", "/api/memory/reflections");
+    expect((log.data.passes as { runId: string; state: string; trigger: string }[]).map((p) => [p.runId, p.state, p.trigger])).toEqual([["p2", "running", "request"], ["p1", "done", "idle"]]);
+  });
+
   test("the core for the page: what the agent gets, with its tokens and the pinned warning line", async () => {
     await memory.write({ owner: CHIEF, title: "Rule", body: "A rule." }, chief);
     const core = await call("GET", "/api/memory/core?agent=chief");

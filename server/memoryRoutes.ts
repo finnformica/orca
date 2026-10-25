@@ -22,6 +22,7 @@ export async function handleMemory(req: Request, url: URL, body: Record<string, 
       const [all, today, owners] = await Promise.all([memory.listForPage({ text: q.q, states: q.states }), memory.changesToday(now), memory.owners()]);
       return json({ memories: filterMemories(all, q, now), today, owners, limits: { perDay: MEMORY_LIMITS.perDay } });
     }
+    if (req.method === "GET" && p === "/api/memory/reflections") return json({ passes: await memory.passes({ ...(url.searchParams.get("agent") ? { agent: url.searchParams.get("agent")! } : {}) }) });
     if (req.method === "GET" && p === "/api/memory/activity") return json({ revisions: await memory.activity(num(url.searchParams.get("limit")) ?? 200) });
     if (req.method === "GET" && p === "/api/memory/core") {
       const c = await memory.core(url.searchParams.get("agent") || "chief");

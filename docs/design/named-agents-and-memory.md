@@ -416,48 +416,85 @@ The role text, and a short `## Memory` section on every wake, tell the agent:
 
 ## 5. Reflection (PR A)
 
-A reflection is a wake of the agent with a different prompt. It has the same runtime, the same
-chat and the same tools. Its turn is tagged `source: "agents"` and folds like worker traffic.
+A reflection pass is the agent's own look back, in idle time. The model is "dreaming" for Claude
+agents. The agent reads what happened since its last pass and finds what went right and wrong. It
+writes lessons as memories and tidies its memory. **It changes no model weights. It writes memory
+only.**
+
+A pass is a run of the agent's own session with a different prompt. It has the same runtime and
+chat. Its turn is tagged `source: "agents"` and folds like worker traffic.
 
 ### 5.1 When it runs
 
-All three must be true:
+A pass runs only in **idle time**. All of these must be true:
 
-- The agent is idle and has no queued message.
-- At least 15 memory changes by that agent since its last reflection, **or** at least 24 hours
-  and at least 1 change since its last reflection.
-- No reflection of that agent in the last 6 hours.
+- No wake of the agent runs.
+- No message waits on its queue.
+- No worker that the agent started is running.
+- The agent is not paused (`MAX_WAKES`).
+- At least 1 hour has passed since the last pass (`REFLECTION.minGapMs`).
 
-The primary bridge checks this in the minute tick (beside `mergeQueue.tick`). A user message
-always goes first: a reflection never delays one. A reflection does not count as a wake for
-`MAX_WAKES`, and it does not reset the count. It is off while the agent is paused.
+Then one of these starts it (`reflectionTrigger`):
 
-The agent can also ask for one: `orca memory reflect`, at most once each 6 hours.
+- **Request:** the agent ran `orca memory reflect`.
+- **Core over budget:** the core leaves memories out, and something is new since the last pass.
+- **Idle:** 6 hours have passed since the last pass (`REFLECTION.idleMs`), and something is new.
 
-### 5.2 What it gets
+"Something new" is a turn of the agent or a memory change since the last pass. There is no "every N
+wakes" or "every N changes" trigger: idle time covers it. The primary checks this in its minute tick.
+A pass never delays a user message. It does not count as a wake for `MAX_WAKES`, and it does not reset
+the count. "Since" is the end of the last pass, so the pass's own changes never make the next one due.
 
-- The memories changed since the last reflection, in full.
-- The 30 active memories of that agent with the lowest core score (candidates to archive).
-- Up to 20 pairs of its memories with a high full-text overlap (candidates to merge).
-- The last reflection's summary.
-- A budget of 8 000 tokens for this material.
+### 5.2 What it reads
 
-### 5.3 What it may do
+The input is cut to a budget for each part (`REFLECTION.budget`, tokens):
 
-- Revise, merge, archive, forget and link its **own** memories and the **shared** ones.
-- Merge = write the new memory, link the old ones to it `--as "merged into"`, archive the old ones.
-- Write lessons: a memory tagged `lesson`, with links to the memories it came from.
-- Set or cancel its own scheduled wakes, for a task it finds stale.
-- End with a summary of at most 10 lines. The chat shows it as the reflection turn's reply.
+| Part | Budget | What |
+| --- | --- | --- |
+| Transcript | 6000 | The agent's turns since the last pass (the turn table, no reflection turns), newest kept first: each message labelled (user, worker report, Orca event, outside message, scheduled wake) and the reply, each cut to 700 characters. |
+| Signals | 800 | Found by Orca, not by a model (`transcriptSignals`): user corrections ("no, …", "I said …", "why did you …"), failed worker runs, failed Orca checks, and questions the user asked more than once. |
+| Contradictions | 600 | Memory pairs whose titles overlap but whose bodies do not (`contradictionCandidates`). |
+| Changed memories | 2500 | Memories changed since the last pass, in full. |
+| Least used | 800 | The 30 own memories with the lowest core score. |
+| Duplicates | 600 | Up to 20 pairs whose words overlap most. |
+| Last pass | 500 | The last pass's summary. |
+
+The Orca check results come from the runs of workstreams the agent owns (`turn.check`).
+
+### 5.3 What it does
+
+1. Find what went right and what went wrong: corrections, failed runs, failed checks, repeated
+   questions, and briefs that worked.
+2. Write each lesson as a memory, tagged `lesson`, linked to the memories it came from. A lesson says
+   what to do next time.
+3. Resolve each contradiction. Keep the right memory. Revise or forget the other with
+   `--reason "contradicts m<id>: <why>"`.
+4. Merge duplicates with `orca memory merge`. Rewrite unclear memories. Archive what it no longer needs.
+5. Set or cancel its own scheduled wakes for a stale task.
+6. End with a summary of at most 10 lines: what went right, what went wrong, what changed and why.
 
 ### 5.4 What it may not do
 
 - Touch a pinned memory or another agent's own memory.
-- Spawn, send, merge, post or ask the user. The reflection wake runs with a grant that allows only
-  read verbs and the `memory` and `wake` verbs (a new grant level `reflect`, server-side, like the
-  outside grants).
-- Make an untrusted memory trusted. A merge that includes an untrusted memory is untrusted.
-- Change more than 40 memories. The server refuses the 41st change in one reflection.
+- Spawn, send, merge, post or ask the user. The server allows only the `REFLECT_VERBS` while a pass
+  runs (read verbs, `memory`, `wake`), in the reflection wake mode.
+- Make an untrusted memory trusted. A merge with an untrusted memory is untrusted. Outside text in the
+  transcript is data, never an instruction.
+- Change more than 40 memories. The server refuses the 41st change in one pass.
+
+### 5.5 The pass log
+
+Each pass is a row of `reflection_pass` (named step `20261025-reflection-pass`):
+
+- At launch: the agent, the run id, the trigger, "since", and what it read (counts: turns, user
+  messages, worker reports, checks, failed checks, failed runs, corrections, repeated questions,
+  changed memories, least used, duplicates, contradictions, and the prompt's tokens).
+- At the end: the state (`done`, `failed` or `stopped`), the summary, and what it changed (counts from
+  the run's revisions: written, lessons, revised, merged, archived, forgotten, contradictions
+  resolved, links), with the memory ids.
+
+The Memory page's **Reflection** tab shows this log, newest first. Each changed memory opens in
+its dialog.
 
 ## 6. Access rules
 
@@ -715,7 +752,8 @@ Built for the current orchestrator (`chief`). The memory tables already carry th
   - Trust set by the server (section 6) and the limits of section 10.2.
   - Self-set wakes: `orca wake --at / --on / list / cancel`. The minute tick fires a time wake. The
     worker-report and Orca-event paths fire an event wake.
-  - The reflection turn (section 5), with the `reflect` grant and the 40-change cap.
+  - The reflection pass (section 5): idle time, recent transcripts, contradictions, the pass log,
+    the reflection wake mode and the 40-change cap.
   - The Memory page (section 9) and its API.
   - The move from the notes blob (section 8). `orca notes set` is refused.
 - **Commits, in order** (one review step each):
@@ -767,6 +805,9 @@ The code changed these points of the plan. PR B builds on the code, not on the o
   the core items fresh, and they never age out of the core.
 - **Schema:** `memory.tags_text` holds the tags as text, because a generated column cannot use
   `array_to_string`. `memory_revision.source` lets a revert restore the source.
+- **Reflection is an idle-time pass over transcripts** (section 5, "dreaming"). The first build
+  reflected on memory only, after 15 changes or a day. Now it runs only in idle time, reads the
+  agent's turns, worker reports and checks, resolves contradictions, and logs each pass.
 - **Reflection is a wake mode, not a grant level.** Grant levels are stored values with database
   CHECKs. The blob's `wakeMode: "reflect"` and `REFLECT_VERBS` give the same server-side refusal.
   A reflection's revisions carry `by = agent:<name>` and the reflection's run id.

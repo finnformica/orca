@@ -8,7 +8,7 @@ import { Brain, ChevronDown, Pin, Plus, X } from "lucide-react";
 import { api, type MemoryActivityRow, type MemoryCore, type MemoryDetail, type MemoryList } from "../api";
 import { ago } from "../workstream";
 import {
-  MEMORY_STATES, SOURCE_KINDS, lineDiff, memoryQueryString, parseMemoryQuery, sourceKind, type Memory, type MemoryQuery, type MemoryRevision, type MemorySort,
+  MEMORY_STATES, SOURCE_KINDS, lineDiff, memoryQueryString, parseMemoryQuery, sourceKind, type Memory, type MemoryQuery, type MemoryRevision, type MemorySort, type ReflectionPass,
 } from "../../../shared/memory";
 import { Empty, Pill, RowSkeleton, VCard } from "@/components/console";
 import { Markdown } from "@/components/Markdown";
@@ -25,7 +25,7 @@ import { notifyLocal } from "@/lib/notificationStore";
 import { navigate, useSearch } from "@/lib/route";
 import { cn } from "@/lib/utils";
 
-type Tab = "memories" | "activity" | "core";
+type Tab = "memories" | "activity" | "reflection" | "core";
 const SORT_LABELS: Record<MemorySort, string> = { updated: "Last updated", importance: "Importance", recalls: "Most recalled", core: "Core score" };
 const IMPORTANCE = Array.from({ length: 10 }, (_, i) => String(i + 1));
 
@@ -43,7 +43,7 @@ export function MemoryPage() {
   const search = useSearch();
   const q = parseMemoryQuery(search);
   const params = new URLSearchParams(search);
-  const tab = (["activity", "core"].includes(params.get("tab") ?? "") ? params.get("tab") : "memories") as Tab;
+  const tab = (["activity", "reflection", "core"].includes(params.get("tab") ?? "") ? params.get("tab") : "memories") as Tab;
   const open = Number(params.get("m")) || undefined;
   const go = (next: Partial<MemoryQuery>, t: Tab = tab, m: number | undefined = open) => navigate(pathOf({ ...q, ...next }, t, m), true);
   const [reload, setReload] = useState(0);
@@ -75,6 +75,7 @@ export function MemoryPage() {
         <TabsList>
           <TabsTrigger value="memories">Memories</TabsTrigger>
           <TabsTrigger value="activity">Activity</TabsTrigger>
+          <TabsTrigger value="reflection">Reflection</TabsTrigger>
           <TabsTrigger value="core">Core</TabsTrigger>
         </TabsList>
         <TabsContent value="memories" className="space-y-3 pt-3">
@@ -86,6 +87,7 @@ export function MemoryPage() {
           </VCard>
         </TabsContent>
         <TabsContent value="activity" className="pt-3">{tab === "activity" && <Activity reload={reload} onOpen={(id) => go({}, tab, id)} />}</TabsContent>
+        <TabsContent value="reflection" className="pt-3">{tab === "reflection" && <Reflections reload={reload} onOpen={(id) => go({}, tab, id)} />}</TabsContent>
         <TabsContent value="core" className="pt-3">{tab === "core" && <Core reload={reload} onOpen={(id) => go({}, tab, id)} />}</TabsContent>
       </Tabs>
       {open !== undefined && <MemoryDialog id={open} onClose={() => go({}, tab, undefined)} onOpen={(id) => go({}, tab, id)} onChanged={refresh} />}
@@ -202,6 +204,52 @@ function Activity({ reload, onOpen }: { reload: number; onOpen: (id: number) => 
         </div>
       ))}
     </VCard>
+  );
+}
+
+const TRIGGER_LABEL: Record<ReflectionPass["trigger"], string> = { idle: "idle time", core: "core over budget", request: "asked for" };
+const STATE_TONE: Record<ReflectionPass["state"], "default" | "green" | "red" | "amber" | "blue"> = { running: "blue", done: "green", failed: "red", stopped: "amber" };
+/** "3 turns, 2 worker reports" from counts, leaving out zeros. */
+const counts = (parts: [number | undefined, string][]) => parts.filter(([n]) => n).map(([n, w]) => `${n} ${w}`).join(", ") || "nothing";
+
+/** The log of reflection passes: when and why each ran, what it read, what it changed, its summary. */
+function Reflections({ reload, onOpen }: { reload: number; onOpen: (id: number) => void }) {
+  const [rows, setRows] = useState<ReflectionPass[] | null>(null);
+  useEffect(() => { api.memoryReflections().then((d) => setRows(d.passes)).catch((e) => failed("Load reflection passes", e)); }, [reload]);
+  return (
+    <VCard slot="memory-reflections" title="Reflection passes" bodyClass="divide-y">
+      {rows === null ? <RowSkeleton /> : rows.length === 0
+        ? <Empty>No reflection pass yet. One runs in idle time, after the orchestrator has done something.</Empty>
+        : rows.map((p) => <PassRow key={p.id} p={p} onOpen={onOpen} />)}
+    </VCard>
+  );
+}
+
+function PassRow({ p, onOpen }: { p: ReflectionPass; onOpen: (id: number) => void }) {
+  const [open, setOpen] = useState(false);
+  const r = p.read, c = p.changed;
+  return (
+    <div className="space-y-1 px-4 py-2.5 text-[13px]" data-slot="memory-reflection" data-state={p.state}>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-medium">{new Date(p.startedAt).toLocaleString()}</span>
+        <Pill>{TRIGGER_LABEL[p.trigger]}</Pill>
+        <Pill tone={STATE_TONE[p.state]}>{p.state}</Pill>
+        {p.finishedAt && <span className="text-muted-foreground text-xs">{Math.max(1, Math.round((p.finishedAt - p.startedAt) / 60_000))} min</span>}
+        {p.summary && <Button variant="ghost" size="sm" className="ml-auto h-6 px-2 text-xs" data-slot="memory-reflection-toggle" onClick={() => setOpen(!open)}>{open ? "Hide summary" : "Show summary"}</Button>}
+      </div>
+      <div className="text-muted-foreground text-xs" data-slot="memory-reflection-read">
+        Read: {counts([[r.turns, "turns"], [r.reports, "worker reports"], [r.checks, "checks"], [r.failedChecks, "failed checks"], [r.failedReports, "failed runs"], [r.corrections, "corrections"], [r.repeated, "repeated questions"], [r.changedMemories, "changed memories"], [r.contradictions, "possible contradictions"], [r.pairs, "possible duplicates"]])}{r.tokens ? ` · about ${r.tokens} tokens` : ""}
+      </div>
+      <div className="text-muted-foreground text-xs" data-slot="memory-reflection-changed">
+        Changed: {p.state === "running" ? "running…" : counts([[c.written, "written"], [c.lessons, "lessons"], [c.revised, "revised"], [c.merged, "merged"], [c.archived, "archived"], [c.forgotten, "forgotten"], [c.contradictions, "contradictions resolved"], [c.linked, "links"]])}
+      </div>
+      {p.memoryIds.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {p.memoryIds.map((id) => <button key={id} type="button" className="bg-selected text-selected-foreground rounded px-1.5 text-[11px]" onClick={() => onOpen(id)}>m{id}</button>)}
+        </div>
+      )}
+      {open && p.summary && <div className="bg-muted rounded-md p-2" data-slot="memory-reflection-summary"><Markdown>{p.summary}</Markdown></div>}
+    </div>
   );
 }
 

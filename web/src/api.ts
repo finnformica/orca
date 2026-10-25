@@ -8,7 +8,7 @@ import type { Usage } from "../../server/usage";
 import type { PackView, WirePack } from "../../server/handoff";
 import type { ActivityRow as MemoryActivityRow, LinkedMemory } from "../../server/memory";
 import type { ScheduledWake } from "../../server/scheduledWake";
-import type { CoreSelection, Memory, MemoryRevision } from "../../shared/memory";
+import type { CoreSelection, Memory, MemoryRevision, ReflectionPass } from "../../shared/memory";
 import type { AgentOutcome, AgentProvider, AgentStep, AgentTurn, TurnCheck } from "../../shared/agent";
 import type { Notification } from "../../shared/notifications";
 import type { Conversation, InboxFacets, InboxRow, Notice, ThreadActions, ThreadItem, ThreadLinkRecord } from "../../shared/inbox";
@@ -167,6 +167,7 @@ export const api = {
   memories: (search: string): Promise<MemoryList> => get(`/api/memory${search}`).then(res),
   memory: (id: number): Promise<MemoryDetail> => get(`/api/memory/${id}`).then(res),
   memoryActivity: (): Promise<{ revisions: MemoryActivityRow[] }> => get("/api/memory/activity").then(res),
+  memoryReflections: (): Promise<{ passes: ReflectionPass[] }> => get("/api/memory/reflections").then(res),
   memoryCore: (agent = "chief"): Promise<MemoryCore> => get(`/api/memory/core?agent=${encodeURIComponent(agent)}`).then(res),
   writeMemory: (body: { owner: string; title: string; body: string; tags?: string[]; importance?: number }): Promise<{ memory: Memory }> => post("/api/memory", body),
   changeMemory: (id: number, body: Record<string, unknown> & { action: "edit" | "pin" | "unpin" | "trust" | "state" | "revert" }): Promise<{ memory: Memory }> => post(`/api/memory/${id}`, body),

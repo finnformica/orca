@@ -6,11 +6,12 @@
 // The server, not the agent, decides a memory's source and trust (`provenance`).
 import * as db from "./db";
 import {
-  CHIEF, MEMORY_BUDGET, REFLECTION, coreScore, similarPairs, type ReflectionInput, MEMORY_LIMITS, SHARED, changedProvenance, cleanTags, fitRecall, importanceOf, mayWrite, memoryBlock, memoryProblems, memorySection,
+  CHIEF, MEMORY_BUDGET, REFLECTION, REFLECTION_MARKER, contradictionCandidates, coreScore, reflectionChanges, similarPairs, transcriptSignals,
+  type CheckResult, type ReflectionInput, type ReflectionPass, type ReflectionRead, type ReflectionTrigger, type TranscriptTurn, MEMORY_LIMITS, SHARED, changedProvenance, cleanTags, fitRecall, importanceOf, mayWrite, memoryBlock, memoryProblems, memorySection,
   normTitle, notesMovedNotice, recallScore, revisionLine, selectCore, splitNotes,
   type CoreSelection, type FiredWake, type Memory, type MemoryLink, type MemoryRevision, type MemoryState, type NotesPart, type Provenance, type Trust,
 } from "../shared/memory";
-import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO } from "../web/src/workstream";
+import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, splitMessages } from "../web/src/workstream";
 
 const user = () => db.currentUser();
 
@@ -387,7 +388,7 @@ export const MEMORY_USAGE = [
   'orca memory link <from> <to> --as "<relation>"',
   'orca memory unlink <from> <to> --as "<relation>"',
   'orca memory merge <id> <id>… --title "<title>" --body "<body>" [--tag t]… --reason "<why>"',
-  "orca memory reflect   (ask for a reflection: at most one each 6 hours)",
+  "orca memory reflect   (ask for a reflection pass when you are idle: at most one an hour)",
 ].join("\n");
 
 /** `orca memory <sub> …` for an agent. `actor` is built lazily: only a change needs the wake read. */
@@ -519,7 +520,34 @@ export async function migrateNotes(o: { confirm?: boolean } = {}, now = Date.now
   return { parts, written: written.map((m) => ({ id: m.id, title: m.title })), skipped, dryRun: false };
 }
 
-// ── Reflection (§5) ────────────────────────────────────────────────────────────────────────────
+// ── Reflection (§5): idle-time passes over transcripts and memory, and their log ─────────────────
+
+type PassRow = {
+  id: string; agent: string; run_id: string; trigger: ReflectionTrigger; state: ReflectionPass["state"]; since: string | null;
+  started_at: string; finished_at: string | null; read: ReflectionPass["read"] | null; changed: ReflectionPass["changed"] | null;
+  memory_ids: (string | number)[] | null; summary: string | null;
+};
+const toPass = (r: PassRow): ReflectionPass => ({
+  id: Number(r.id), agent: r.agent, runId: r.run_id, trigger: r.trigger, state: r.state, ...(r.since !== null ? { since: Number(r.since) } : {}),
+  startedAt: Number(r.started_at), ...(r.finished_at !== null ? { finishedAt: Number(r.finished_at) } : {}),
+  read: r.read ?? {}, changed: r.changed ?? {}, memoryIds: (r.memory_ids ?? []).map(Number), ...(r.summary ? { summary: r.summary } : {}),
+});
+
+/** The newest pass of `agent`, finished or not. Its end (else its start) is "since" for the next one. */
+export async function lastPass(agent: string): Promise<(ReflectionPass & { at: number }) | undefined> {
+  const [row] = await db.withRetry((sql) => sql`
+    SELECT * FROM reflection_pass WHERE user_id = ${user()} AND agent = ${agent} ORDER BY started_at DESC, id DESC LIMIT 1`) as PassRow[];
+  if (!row) return undefined;
+  const p = toPass(row);
+  return { ...p, at: p.finishedAt ?? p.startedAt };
+}
+
+export async function passes(o: { agent?: string; limit?: number } = {}): Promise<ReflectionPass[]> {
+  const rows = await db.withRetry((sql) => sql`
+    SELECT * FROM reflection_pass WHERE user_id = ${user()} ${o.agent ? sql`AND agent = ${o.agent}` : sql``}
+    ORDER BY started_at DESC, id DESC LIMIT ${Math.min(200, Math.max(1, o.limit ?? 50))}`) as PassRow[];
+  return rows.map(toPass);
+}
 
 /** Memory changes by `agent` since `since` (every revision it made). */
 export async function changesSince(agent: string, since: number): Promise<number> {
@@ -528,22 +556,97 @@ export async function changesSince(agent: string, since: number): Promise<number
   return Number(row?.n ?? 0);
 }
 
-/** What a reflection reads: memories changed since the last one, the least used of its own, and
- *  pairs whose words overlap most. */
-export async function reflectionInput(agent: string, since: number, lastSummary: string | undefined, now = Date.now()): Promise<ReflectionInput> {
+// The orchestrator is the only agent with a conversation in PR A: its turns are (@orca, orchestrator).
+const agentWorkstream = (_agent: string) => ({ repo: ORCHESTRATOR_REPO, branch: ORCHESTRATOR_BRANCH });
+
+/** Something new for a pass to read: the agent's turns (not reflections) and its memory changes since. */
+export async function activitySince(agent: string, since: number): Promise<number> {
+  const ws = agentWorkstream(agent);
+  const [row] = await db.withRetry((sql) => sql`
+    SELECT count(*) AS n FROM turn t JOIN workstream w ON w.id = t.workstream_id
+    WHERE t.user_id = ${user()} AND w.repo = ${ws.repo} AND w.branch = ${ws.branch} AND t.started_at > ${since}
+      AND coalesce(t.instruction, '') NOT LIKE ${`${REFLECTION_MARKER}%`}`) as { n: string }[];
+  return Number(row?.n ?? 0) + await changesSince(agent, since);
+}
+
+/** The agent's own turns since `since`, oldest first, each split into its messages. No reflection turns. */
+export async function transcriptSince(agent: string, since: number): Promise<TranscriptTurn[]> {
+  const ws = agentWorkstream(agent);
+  const rows = await db.withRetry((sql) => sql`
+    SELECT t.run_id, t.started_at, t.instruction, t.response, t.status FROM turn t JOIN workstream w ON w.id = t.workstream_id
+    WHERE t.user_id = ${user()} AND w.repo = ${ws.repo} AND w.branch = ${ws.branch} AND t.started_at > ${since}
+      AND t.instruction IS NOT NULL AND t.instruction NOT LIKE ${`${REFLECTION_MARKER}%`}
+    ORDER BY t.started_at DESC LIMIT ${REFLECTION.turnsMax}`) as { run_id: string; started_at: string; instruction: string; response: string | null; status: string }[];
+  return rows.reverse().map((r) => ({
+    runId: r.run_id, at: Number(r.started_at), messages: splitMessages(r.instruction), response: r.response ?? "", failed: r.status === "error",
+  }));
+}
+
+/** Orca's check results on the runs of workstreams the orchestrator owns, since `since`, oldest first. */
+export async function checksSince(since: number): Promise<CheckResult[]> {
+  const rows = await db.withRetry((sql) => sql`
+    SELECT w.repo, w.branch, t.started_at, t."check" AS check FROM turn t JOIN workstream w ON w.id = t.workstream_id
+    WHERE t.user_id = ${user()} AND t."check" IS NOT NULL AND t.started_at > ${since} AND (w.data->>'orchestrated') = 'true'
+    ORDER BY t.started_at DESC LIMIT ${REFLECTION.checksMax}`) as { repo: string; branch: string; started_at: string; check: { ok?: boolean; command?: string; exitCode?: number; output?: string } }[];
+  return rows.reverse().map((r) => ({
+    repo: r.repo, branch: r.branch, at: Number(r.started_at), ok: r.check.ok === true, command: r.check.command ?? "", exitCode: Number(r.check.exitCode ?? 0),
+    ...(r.check.output ? { output: r.check.output.slice(-400) } : {}),
+  }));
+}
+
+/** Everything a pass reads: the transcript and checks since the last pass, the signals in them, the
+ *  memories changed since, the least used, the duplicate pairs and the possible contradictions. */
+export async function reflectionInput(agent: string, o: { since?: number; trigger: ReflectionTrigger; lastSummary?: string }, now = Date.now()): Promise<ReflectionInput> {
+  const since = o.since ?? 0;
+  const [turns, checks] = await Promise.all([transcriptSince(agent, since), checksSince(since)]);
   const changed = await db.withRetry((sql) => sql`
     SELECT ${sql.unsafe(COLS)} FROM memory WHERE user_id = ${user()} AND updated_at > ${since} AND state <> 'forgotten'
       AND (owner = ${agent} OR owner = ${SHARED}) ORDER BY updated_at DESC LIMIT 60`) as Row[];
   const mine = await db.withRetry((sql) => sql`
-    SELECT ${sql.unsafe(COLS)}, tsvector_to_array(search) AS lexemes FROM memory
-    WHERE user_id = ${user()} AND state = 'active' AND (owner = ${agent} OR owner = ${SHARED}) ORDER BY updated_at DESC LIMIT 300`) as (Row & { lexemes: string[] })[];
-  const all = mine.map((r) => ({ memory: toMemory(r), lexemes: r.lexemes ?? [] }));
+    SELECT ${sql.unsafe(COLS)}, tsvector_to_array(search) AS lexemes,
+      tsvector_to_array(to_tsvector('english', title)) AS title_lex, tsvector_to_array(to_tsvector('english', body)) AS body_lex FROM memory
+    WHERE user_id = ${user()} AND state = 'active' AND (owner = ${agent} OR owner = ${SHARED}) ORDER BY updated_at DESC LIMIT 300`) as (Row & { lexemes: string[]; title_lex: string[]; body_lex: string[] })[];
+  const all = mine.map((r) => ({ memory: toMemory(r), lexemes: r.lexemes ?? [], title: r.title_lex ?? [], body: r.body_lex ?? [] }));
   const byId = new Map(all.map((x) => [x.memory.id, x.memory]));
   const lowest = all.map((x) => x.memory).filter((m) => !m.pinned && m.owner === agent)
     .sort((a, b) => coreScore(a, now) - coreScore(b, now)).slice(0, REFLECTION.lowest);
+  const contradictions = contradictionCandidates(all.map((x) => ({ id: x.memory.id, title: x.title, body: x.body })))
+    .map(([a, b]) => ({ a: byId.get(a)!, b: byId.get(b)! }));
+  const clash = new Set(contradictions.map((c) => `${c.a.id}:${c.b.id}`));
   const pairs = similarPairs(all.filter((x) => !x.memory.pinned).map((x) => ({ id: x.memory.id, lexemes: x.lexemes })))
+    .filter(([a, b]) => !clash.has(`${a}:${b}`))
     .map(([a, b, overlap]) => ({ a: byId.get(a)!, b: byId.get(b)!, overlap }));
-  return { agent, changed: changed.map(toMemory), lowest, pairs, ...(lastSummary ? { lastSummary } : {}) };
+  return {
+    agent, trigger: o.trigger, ...(o.since !== undefined ? { since: o.since } : {}), turns, checks, signals: transcriptSignals(turns, checks),
+    changed: changed.map(toMemory), lowest, pairs, contradictions, ...(o.lastSummary ? { lastSummary: o.lastSummary } : {}),
+  };
+}
+
+/** Log a pass at launch: what it read. */
+export async function startPass(p: { agent: string; runId: string; trigger: ReflectionTrigger; since?: number; read: ReflectionRead; startedAt: number }): Promise<void> {
+  await db.withRetry((sql) => sql`
+    INSERT INTO reflection_pass (user_id, agent, run_id, trigger, since, started_at, read)
+    VALUES (${user()}, ${p.agent}, ${p.runId}, ${p.trigger}, ${p.since ?? null}, ${p.startedAt}, ${p.read})
+    ON CONFLICT (user_id, run_id) DO NOTHING`);
+}
+
+/** Finish a pass's log row: its state, its summary, and what its run changed (its revisions and the
+ *  links its agent made while it ran). Only a running row changes, so a second call is a no-op. */
+export async function finishPass(runId: string, state: "done" | "failed" | "stopped", summary: string | undefined, now = Date.now()): Promise<ReflectionPass | undefined> {
+  const [row] = await db.withRetry((sql) => sql`SELECT * FROM reflection_pass WHERE user_id = ${user()} AND run_id = ${runId}`) as PassRow[];
+  if (!row || row.state !== "running") return row && toPass(row);
+  const by = `agent:${row.agent}`;
+  const revs = await db.withRetry((sql) => sql`
+    SELECT memory_id, revision, state, reason, tags FROM memory_revision WHERE user_id = ${user()} AND run_id = ${runId} AND by = ${by} ORDER BY id`) as
+    { memory_id: string; revision: number; state: MemoryState; reason: string | null; tags: string[] | null }[];
+  const [linkRow] = await db.withRetry((sql) => sql`
+    SELECT count(*) AS n FROM memory_link WHERE user_id = ${user()} AND by = ${by} AND at >= ${Number(row.started_at)} AND at <= ${now}`) as { n: string }[];
+  const changed = reflectionChanges(revs.map((r) => ({ memoryId: Number(r.memory_id), revision: Number(r.revision), state: r.state, ...(r.reason ? { reason: r.reason } : {}), tags: r.tags ?? [] })), Number(linkRow?.n ?? 0));
+  const ids = [...new Set(revs.map((r) => Number(r.memory_id)))];
+  const [done] = await db.withRetry((sql) => sql`
+    UPDATE reflection_pass SET state = ${state}, finished_at = ${now}, changed = ${changed}, memory_ids = ${sql.array(ids, "INT8")}, summary = ${summary?.slice(0, 4000) ?? null}
+    WHERE user_id = ${user()} AND run_id = ${runId} AND state = 'running' RETURNING *`) as PassRow[];
+  return done && toPass(done);
 }
 
 // ── The Memory page (§9) ───────────────────────────────────────────────────────────────────────

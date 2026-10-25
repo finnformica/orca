@@ -142,6 +142,29 @@ describe("the Memory page", () => {
     expect(location.search).toBe("?m=4");
   });
 
+  test("the Reflection tab: each pass with its trigger, state, what it read and changed, its memories and summary", async () => {
+    seed();
+    apiFake.memoryPasses = [
+      { id: 2, agent: "chief", runId: "run-2", trigger: "idle", state: "done", since: NOW - 7 * 3_600_000, startedAt: NOW - 60_000, finishedAt: NOW, memoryIds: [1],
+        read: { turns: 12, reports: 4, checks: 3, failedChecks: 1, corrections: 2, contradictions: 1, tokens: 5400 },
+        changed: { written: 1, lessons: 1, forgotten: 1, contradictions: 1, linked: 1, total: 2 }, summary: "Went wrong: two corrections about models.\nWrote one lesson." },
+      { id: 1, agent: "chief", runId: "run-1", trigger: "request", state: "running", startedAt: NOW - 3_600_000, memoryIds: [], read: { turns: 0 }, changed: {} },
+    ];
+    await open("/memory?tab=reflection");
+    const rows = await waitFor(() => all("memory-reflection").length === 2 ? all("memory-reflection") : undefined);
+    expect(rows.map((r) => r.dataset.state)).toEqual(["done", "running"]);
+    expect(rows[0]!.textContent).toContain("idle time");
+    expect(one("memory-reflection-read", rows[0]!)!.textContent).toBe("Read: 12 turns, 4 worker reports, 3 checks, 1 failed checks, 2 corrections, 1 possible contradictions · about 5400 tokens");
+    expect(one("memory-reflection-changed", rows[0]!)!.textContent).toBe("Changed: 1 written, 1 lessons, 1 forgotten, 1 contradictions resolved, 1 links");
+    expect(one("memory-reflection-changed", rows[1]!)!.textContent).toBe("Changed: running…");
+    expect(rows[1]!.textContent).toContain("asked for");
+    expect(one("memory-reflection-summary", rows[0]!)).toBeUndefined();
+    await click(one("memory-reflection-toggle", rows[0]!)!);
+    expect(one("memory-reflection-summary", rows[0]!)!.textContent).toContain("Wrote one lesson.");
+    await click([...rows[0]!.querySelectorAll("button")].find((b) => b.textContent === "m1")!);
+    expect(location.search).toBe("?tab=reflection&m=1");
+  });
+
   test("the Core tab: tokens against the budget, the pinned warning, cut items", async () => {
     apiFake.memoryCoreData = { items: [{ memory: mem({ id: 7, title: "Pinned rule", pinned: true }), cut: false }, { memory: mem({ id: 8, title: "Long one" }), cut: true }], leftOut: 3, tokens: 3900, pinnedTokens: 2500, budget: 4000, pinnedWarn: 2000 };
     await open("/memory?tab=core");

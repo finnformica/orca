@@ -1144,6 +1144,33 @@ export const MIGRATIONS: MigrationStep[] = [
     `,
   },
   {
+    name: "20261025-reflection-pass",
+    idempotent: true,
+    // The log of reflection passes (server/memory.ts startPass / finishPass, the Memory page's
+    // Reflection tab): what each pass read and what it changed, by counts, plus its summary. Written
+    // at launch ('running') and finished in the run-finished hook, keyed by the pass's run id. The
+    // newest row's end is "since" for the next pass. Above scheduled-wake: it does not depend on it.
+    sql: `
+      CREATE TABLE IF NOT EXISTS reflection_pass (
+        id BIGSERIAL PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        agent TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        trigger TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'running' CHECK (state IN ('running','done','failed','stopped')),
+        since BIGINT,
+        started_at BIGINT NOT NULL,
+        finished_at BIGINT,
+        read JSONB NOT NULL DEFAULT '{}'::jsonb,
+        changed JSONB NOT NULL DEFAULT '{}'::jsonb,
+        memory_ids BIGINT[] NOT NULL DEFAULT '{}',
+        summary TEXT
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS reflection_pass_run ON reflection_pass (user_id, run_id);
+      CREATE INDEX IF NOT EXISTS reflection_pass_recent ON reflection_pass (user_id, agent, started_at DESC);
+    `,
+  },
+  {
     name: "20261025-scheduled-wake",
     idempotent: true,
     // Self-set wakes (`orca wake`, server/scheduledWake.ts). Not `wake`: the word names one run of an

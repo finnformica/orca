@@ -1150,10 +1150,18 @@ test greps), `memory_link`, `scheduled_wake` (not `wake`: that word is one run).
   primary's minute tick, an event from `router.onNewEvent` (`pr:`, `worker:` = `orca.run.*`, `topic:`).
   A fired wake is `[scheduled wake] …`, delivered as a report (MAX_WAKES and a pause apply), never the
   user's word (`isUserMessage`), a system line in the chat.
-- **Reflection** (`orchestrator.maybeReflect`, minute tick): idle, nothing queued, not paused; 15
-  changes, a day with one, or `orca memory reflect`; 6 hours apart. A wake MODE (`wakeMode:
-  "reflect"`), not a grant: `REFLECT_VERBS` only, no shell, 40 changes. `orca memory merge` keeps the
-  lowest trust of its sources.
+- **Reflection = "dreaming"** (`orchestrator.maybeReflect`, minute tick; writes memory only, no
+  model weights): ONLY in idle time — no wake, nothing queued, no worker of it running, not paused,
+  1 h since the last pass — then on `orca memory reflect`, a core over budget, or 6 h after the last
+  pass, with something new to read (`reflectionTrigger`). It reads its turns since the last pass
+  (`transcriptSince`, no reflection turns), worker reports, Orca checks (`checksSince`), signals
+  (`transcriptSignals`: corrections, failed runs/checks, repeated questions), contradiction
+  candidates, cut per part (`REFLECTION.budget`); it writes lessons and resolves contradictions
+  (`--reason "contradicts m<id>: …"`). A wake MODE (`wakeMode: "reflect"`), not a grant:
+  `REFLECT_VERBS` only, no shell, 40 changes. Each pass is a `reflection_pass` row (named step
+  `20261025-reflection-pass`): `startPass` at launch (what it read), `finishPass` in the run-finished
+  hook, Stop or a death (what its run's revisions changed); the page's Reflection tab shows them.
+  `orca memory merge` keeps the lowest trust of its sources.
 
 ## Notification centre (toasts + the bell)
 
