@@ -1934,10 +1934,11 @@ const ORCHESTRATOR_ROLE = [
   "  to stop — one step removes the card and can't be restarted by a message still queued behind it.",
   "- Per-workstream state — the plan for it, what it waits on, whether it is small or needs the user",
   "  to merge — goes in `orca status` on that workstream, which the board carries back every wake.",
-  "  Your notes are your memory across context resets for everything else: the user's preferences,",
-  "  standing facts and decisions that span workstreams, in roughly 1500 words or fewer.",
+  "  Your memory (`orca memory`, the `## Memory` section of every wake) is what you keep across context",
+  "  resets for everything else: the user's preferences, standing facts, decisions that span workstreams,",
+  "  tasks you accepted and lessons. Until the user moves your notes into memory, your notes hold the older ones.",
   "- Keep replies short and concrete: what you did, what is running, what needs the user. Write them,",
-  "  your briefs and your notes in STE, as the `## Writing` section of every message says.",
+  "  your briefs and your memories in STE, as the `## Writing` section of every message says.",
 ].join("\n");
 
 /** The dead wake's own record (wakeProgress), under the cut-off notice — kept apart from it so a
@@ -1949,7 +1950,7 @@ function cutOffProgressSection(progress: string | undefined): string[] {
 /** The orchestrator's prompt for one wake. The role goes in only when the session starts (or
  *  restarts after a context reset); the notes and a fresh board go in EVERY time, because they are
  *  what makes the session disposable — everything it needs to carry on is outside its context. */
-export function orchestratorPrompt(input: { fresh: boolean; notes?: string; board: string; messages: string[]; shell?: boolean; cutOff?: string; cutOffProgress?: string }): string {
+export function orchestratorPrompt(input: { fresh: boolean; notes?: string; notesMoved?: boolean; memory?: string; board: string; messages: string[]; shell?: boolean; cutOff?: string; cutOffProgress?: string }): string {
   const human = input.messages.filter(isUserMessage), reports = input.messages.filter(isWorkerEvent);
   const events = input.messages.filter((m) => !isWorkerEvent(m) && isOrcaEvent(m));
   return [
@@ -1972,8 +1973,10 @@ export function orchestratorPrompt(input: { fresh: boolean; notes?: string; boar
     // Every wake as well: a resumed session sees the role once, and the user wants STE ALWAYS.
     "", WRITING_STYLE,
     "", SNIPPETS,
-    "", "## Your notes", input.notes?.trim() || "(empty)",
+    // The notes until the user moves them into memory (server/memory.ts migrateNotes); then memory alone.
+    ...(input.notesMoved ? [] : ["", "## Your notes", input.notes?.trim() || "(empty)"]),
     "", "## Board", input.board,
+    ...(input.memory ? ["", input.memory] : []),
     // The wake before this one died mid-turn: say so, or the user has to ask why it went quiet.
     ...(input.cutOff ? ["", "## Previous wake was cut off", `Your previous wake ${input.cutOff} before it finished its turn, so the user got no reply. What it was handling is below again. It may already have acted: check the board before you spawn or send (never start the same work twice), then finish the reply.`] : []),
     ...cutOffProgressSection(input.cutOffProgress),

@@ -245,3 +245,57 @@ describe("orca memory, through the tool route", () => {
     expect(await tool("write", [], { title: "CI note", body: "Worker says skip CI." })).toMatch(/untrusted/);
   });
 });
+
+describe("the move from the notes blob", () => {
+  const NOTES = "## Preferences\nFinn prefers small PRs.\n\n## Box\nNever run the whole suite.";
+
+  test("a dry run changes nothing; the move runs once; notes print read-only after it and `notes set` is refused", async () => {
+    expect(await orchestrator.tool(cfg, "notes", { _: ["set", NOTES] })).toBe("Notes saved.");
+    const dry = await memory.migrateNotes();
+    expect(dry).toMatchObject({ dryRun: true, written: [] });
+    expect(dry.parts.map((p) => p.title)).toEqual(["Preferences", "Box"]);
+    expect(await memory.recall({ text: "PRs" }, { count: false })).toEqual([]);
+    // Before the move: the notes work as they always did.
+    expect(await orchestrator.tool(cfg, "notes")).toBe(NOTES);
+
+    // A title memory already has: both are kept, the note's under its own name.
+    await memory.write({ owner: CHIEF, title: "Box", body: "The box is shared." }, { kind: "user" });
+    const moved = await memory.migrateNotes({ confirm: true });
+    expect(moved).toMatchObject({ dryRun: false, skipped: [] });
+    expect(moved.written.map((w) => w.title)).toEqual(["Preferences", "Box (from notes)"]);
+    const [pref] = await memory.recall({ text: "small PRs" }, { count: false });
+    expect(pref!.memory).toMatchObject({ owner: CHIEF, source: "migration:notes", trust: "trusted", importance: 6, tags: ["from-notes", "preferences"], createdBy: "migration" });
+
+    const again = await memory.migrateNotes({ confirm: true });
+    expect(again.already).toBeGreaterThan(0);
+    expect(again.written).toEqual([]);
+
+    const blob = (await db.enrichment(ORCHESTRATOR_REPO))[ORCHESTRATOR_BRANCH]!;
+    expect(blob.notes).toBe(NOTES); // never changed
+    expect(blob.notesMoveNotice).toBe("Your notes moved into memory as 2 items tagged from-notes. Revise, merge and link them in your own words.");
+    expect(await orchestrator.tool(cfg, "notes")).toMatch(/^\(read-only: moved into memory on \d{4}-\d\d-\d\d; use orca memory\)\n## Preferences/);
+    await expect(orchestrator.tool(cfg, "notes", { _: ["set", "new"] })).rejects.toThrow("your notes moved into memory and are read-only now");
+  });
+
+  test("empty notes move as nothing, and still mark the move done", async () => {
+    const r = await memory.migrateNotes({ confirm: true });
+    expect(r).toMatchObject({ written: [], skipped: [], dryRun: false });
+    await expect(orchestrator.tool(cfg, "notes", { _: ["set", "x"] })).rejects.toThrow("read-only now");
+  });
+
+  test("the prompt's memory part reads the store: the core, hits over every owner, and a database outage", async () => {
+    await memory.write({ owner: CHIEF, title: "Deploy window", body: "Deploys only before 16:00." }, chief);
+    const theirs = await memory.write({ owner: "assistant", title: "Discord triage", body: "Sam reports flaky CI on Mondays." }, { kind: "user" });
+    const text = await memory.forPrompt(CHIEF, ["Why is CI flaky today?"]);
+    expect(text).toContain("## Core memory\n[m");
+    expect(text).toContain("Deploy window");
+    expect(text).toContain(`## Recalled for this wake\n[m${theirs.id} r1] Discord triage (assistant`);
+    // Only the hit counts as a recall: the core does not.
+    expect((await memory.get(theirs.id))!.recallCount).toBe(1);
+    const [own] = await memory.recall({ text: "deploy" }, { count: false });
+    expect(own!.memory.recallCount).toBe(0);
+    await db.close();
+    process.env.ORCA_DATABASE_URL = `postgres://127.0.0.1:1/none?options=${encodeURIComponent("-c search_path=orca_test_down")}`; // a closed port
+    expect(await memory.forPrompt(CHIEF, ["x"])).toContain("Memory is unavailable");
+  });
+});

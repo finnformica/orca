@@ -96,6 +96,11 @@ type Blob = {
    *  wake's `send` / `address` clears a workstream's `grantScope`: a worker report is model output
    *  that may carry Discord text, so it must not lift the scope. Set and cleared with `wakeGrant`. */
   wakeFromUser?: boolean | null;
+  /** When the user moved the notes into memory (server/memory.ts migrateNotes). From then on the
+   *  notes are read-only and leave the prompt; memory replaces them. */
+  notesMigratedAt?: number;
+  /** A one-time line for the next wake after the move; cleared once a wake carries it. */
+  notesMoveNotice?: string | null;
 };
 /** The model it runs on: its pin, else Opus. Its judgement — what to delegate, how to brief, which
  *  model a task deserves — is what the workers' quality rests on, so it gets a strong model; Fable
@@ -458,7 +463,13 @@ async function wake(cfg: OrcaConfig, fresh: string[], grant?: Grant, freshReplyT
     const replyTo = freshReplyTo ?? [...claimed].reverse().find((m) => m.replyTo)?.replyTo;
     const fromUser = wakeFromUser(messages, grant);
     await patch({ wakeGrant: grant ?? null, wakeReplyTo: replyTo ?? null, wakeFromUser: fromUser || null }); // before the launch: its first `orca` call is checked
-    const prompt = orchestratorPrompt({ fresh: !next.resume, notes: b.notes, board: boardText(await board(cfg)), messages, shell, cutOff: b.cutOff, cutOffProgress: b.cutOffProgress });
+    // Memory (server/memory.ts): the core, the hits for these messages. The notes ride along only
+    // until the user moves them into memory.
+    const memoryText = await memory.forPrompt(CHIEF, messages, { notice: b.notesMoveNotice ?? undefined });
+    const prompt = orchestratorPrompt({
+      fresh: !next.resume, notes: b.notes, notesMoved: Boolean(b.notesMigratedAt), memory: memoryText,
+      board: boardText(await board(cfg)), messages, shell, cutOff: b.cutOff, cutOffProgress: b.cutOffProgress,
+    });
     const receipt = await agent.launch(dir(), dir(), prompt, {
       ...next, provider: "claude", repo: ORCHESTRATOR_REPO, branch: ORCHESTRATOR_BRANCH,
       instruction: joinMessages(messages), action: "orchestrate", queue: false,
@@ -480,7 +491,7 @@ async function wake(cfg: OrcaConfig, fresh: string[], grant?: Grant, freshReplyT
         ORCA_AGENT: CHIEF,
       },
     });
-    await patch({ sessionId: receipt.sessionId, handling: { runId: receipt.runId, instance: db.instanceName(), messages }, cutOff: null, cutOffProgress: null });
+    await patch({ sessionId: receipt.sessionId, handling: { runId: receipt.runId, instance: db.instanceName(), messages }, cutOff: null, cutOffProgress: null, notesMoveNotice: null });
   } catch (e) {
     // The messages were claimed off the queue; a launch that never happened must not eat them.
     for (const m of claimed) await enqueue(m.instruction, m.attachments, m.grant, m.replyTo).catch(() => {});
@@ -1036,7 +1047,11 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
     // the account through the access policy (policy.useAccount), your own chat only (the grant check).
     case "gmail": return gmailTool(args);
     case "notes": {
-      if (words[0] !== "set") return (await blob()).notes || "(empty)";
+      // After the move into memory the notes are read-only: printed, never set (server/memory.ts migrateNotes).
+      if (words[0] !== "set") return b.notesMigratedAt
+        ? `(read-only: moved into memory on ${new Date(b.notesMigratedAt).toISOString().slice(0, 10)}; use orca memory)\n${b.notes || "(empty)"}`
+        : b.notes || "(empty)";
+      if (b.notesMigratedAt) throw new Error("your notes moved into memory and are read-only now. Use orca memory write (or revise) instead.");
       const text = words.slice(1).join(" ").trim();
       if (text.length > NOTES_MAX) throw new Error(`notes are limited to ${NOTES_MAX} characters (got ${text.length}); condense them`);
       await patch({ notes: text });

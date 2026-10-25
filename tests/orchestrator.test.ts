@@ -17,6 +17,7 @@ import * as transcript from "../server/transcript";
 import * as orchestrator from "../server/orchestrator";
 import * as preview from "../server/preview";
 import * as verbs from "../server/verbs";
+import * as memory from "../server/memory";
 import { run } from "../server/run";
 import { parseConfigDocument, type OrcaConfig } from "../server/config";
 import type { AgentTurn } from "../shared/agent";
@@ -418,6 +419,41 @@ test("O5: notes ride every wake, and a session at 80% context is reset onto them
   expect(argv).toContain("what is the plan?");
   expect(argv).toContain("You are Orca's orchestrator");
   expect(argv).toContain("Plan: ship the cache.");
+});
+
+test("O5m: memory rides every wake — the core, hits for the messages, notes until the move, then a one-time notice", async () => {
+  wire();
+  await orchestrator.tool(cfg(), "notes", { _: ["set", "## Plan\nShip the cache."] });
+  expect(await orchestrator.tool(cfg(), "memory", { _: ["write"], title: "Deploy window", body: "Deploys only before 16:00.", importance: "8" })).toMatch(/^Wrote m\d+ r1 \(chief\)\.$/);
+  await memory.write({ owner: "assistant", title: "Flaky CI", body: "Sam reports flaky CI on Mondays." }, { kind: "user" });
+
+  await orchestrator.message(cfg(), "is CI flaky?");
+  const [first] = await settled(orchTurns, 1);
+  expect(first!.prompt).toContain("## Your notes\n## Plan\nShip the cache."); // before the move
+  expect(first!.prompt).toContain("## Memory\nWrite a memory when");
+  expect(first!.prompt).toMatch(/## Core memory\n\[m\d+ r1\] Deploy window \(chief, importance 8\)/);
+  expect(first!.prompt).toMatch(/## Recalled for this wake\n\[m\d+ r1\] Flaky CI \(assistant/);
+  // The board comes before memory; the user's words after it.
+  const heading = (h: string) => first!.prompt.search(new RegExp(`^${h}$`, "m")); // a heading line, not a mention in the role text
+  expect(heading("## Board")).toBeLessThan(heading("## Memory"));
+  expect(heading("## Memory")).toBeLessThan(heading("## From the user"));
+
+  // A memory written in a wake carries that wake's run id.
+  await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { handling: { runId: first!.id, instance: "local", messages: ["is CI flaky?"] } });
+  await orchestrator.tool(cfg(), "memory", { _: ["write"], title: "CI answer", body: "Told Finn: flaky on Mondays." });
+  const [hit] = await memory.recall({ text: "Told Finn" }, { count: false });
+  expect((await memory.revisions(hit!.memory.id))[0]!.runId).toBe(first!.id);
+  await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { handling: null });
+
+  await memory.migrateNotes({ confirm: true });
+  await orchestrator.message(cfg(), "what is the plan?");
+  const second = (await settled(orchTurns, 2))[1]!;
+  expect(second.prompt).not.toContain("## Your notes");
+  expect(second.prompt).toContain("Your notes moved into memory as 1 item tagged from-notes.");
+  expect(second.prompt).toMatch(/\[m\d+ r1\] Plan \(chief, importance 6\)/);
+  await orchestrator.message(cfg(), "thanks");
+  const third = (await settled(orchTurns, 3))[2]!;
+  expect(third.prompt).not.toContain("Your notes moved into memory"); // once
 });
 
 test("O9: its model can be changed mid-conversation — Claude only, and the session carries over", async () => {

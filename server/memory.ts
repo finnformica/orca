@@ -6,9 +6,11 @@
 // The server, not the agent, decides a memory's source and trust (`provenance`).
 import * as db from "./db";
 import {
-  MEMORY_LIMITS, SHARED, changedProvenance, cleanTags, importanceOf, mayWrite, memoryBlock, memoryProblems, normTitle,
-  recallScore, revisionLine, type Memory, type MemoryLink, type MemoryRevision, type MemoryState, type Provenance, type Trust,
+  CHIEF, MEMORY_BUDGET, MEMORY_LIMITS, SHARED, changedProvenance, cleanTags, fitRecall, importanceOf, mayWrite, memoryBlock, memoryProblems, memorySection,
+  normTitle, notesMovedNotice, recallScore, revisionLine, selectCore, splitNotes,
+  type CoreSelection, type FiredWake, type Memory, type MemoryLink, type MemoryRevision, type MemoryState, type NotesPart, type Provenance, type Trust,
 } from "../shared/memory";
+import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO } from "../web/src/workstream";
 
 const user = () => db.currentUser();
 
@@ -387,4 +389,69 @@ export async function memoryTool(agent: string, words: string[], args: Record<st
     default:
       throw new MemoryError(`unknown memory command "${sub}". Commands:\n${MEMORY_USAGE}`);
   }
+}
+
+// ── The wake prompt (§4) ───────────────────────────────────────────────────────────────────────
+
+/** The active memories that may be in `agent`'s core: its own, the shared ones, and every pinned one. */
+export async function coreCandidates(agent: string): Promise<Memory[]> {
+  const rows = await db.withRetry((sql) => sql`
+    SELECT ${sql.unsafe(COLS)} FROM memory
+    WHERE user_id = ${user()} AND state = 'active' AND (pinned OR owner = ${agent} OR owner = ${SHARED})
+    ORDER BY pinned DESC, importance DESC, updated_at DESC LIMIT 400`) as Row[];
+  return rows.map(toMemory);
+}
+
+export async function core(agent: string, now = Date.now()): Promise<CoreSelection> {
+  return selectCore(await coreCandidates(agent), agent, now);
+}
+
+/** The memory part of a wake prompt: the core, the hits for the wake's messages (over every owner,
+ *  not already in the core), the scheduled wakes that fired. Only the hits count as a recall: the
+ *  core is there every wake, and counting it would keep it fresh for ever. With the database down the
+ *  wake runs, with a line that says memory is unavailable. */
+export async function forPrompt(agent: string, messages: string[], o: { fired?: FiredWake[]; notice?: string } = {}, now = Date.now()): Promise<string> {
+  try {
+    const c = await core(agent, now);
+    const text = messages.join("\n").slice(0, 20_000);
+    const hits = text.trim()
+      ? await recall({ anyOf: text }, { exclude: c.items.map((i) => i.memory.id), limit: MEMORY_BUDGET.recallHits, count: false }, now)
+      : [];
+    const recalled = fitRecall(hits.map((h) => h.memory));
+    await countRecalls(recalled.map((m) => m.id), now);
+    return memorySection({ core: c, recalled, fired: o.fired, notice: o.notice });
+  } catch (e) {
+    if (db.isDbError(e)) return memorySection({ core: { items: [], leftOut: 0, tokens: 0, pinnedTokens: 0 }, recalled: [], unavailable: true });
+    throw e;
+  }
+}
+
+// ── The move from the notes blob (§8) ─────────────────────────────────────────────────────────
+
+export type NotesMove = { parts: NotesPart[]; written: { id: number; title: string }[]; skipped: { title: string; why: string }[]; already?: number; dryRun: boolean };
+
+/** Move the orchestrator's notes into memory as `chief`'s, once. A dry run unless `confirm`. The
+ *  notes blob is not changed: `orca notes` still prints it, read-only. Run by the user (scripts/
+ *  memory-move-notes.ts) after the merge, never at boot. */
+export async function migrateNotes(o: { confirm?: boolean } = {}, now = Date.now()): Promise<NotesMove> {
+  const blob = ((await db.enrichment(ORCHESTRATOR_REPO))[ORCHESTRATOR_BRANCH] ?? {}) as { notes?: string; notesMigratedAt?: number };
+  const parts = splitNotes(blob.notes ?? "");
+  if (blob.notesMigratedAt) return { parts, written: [], skipped: [], already: blob.notesMigratedAt, dryRun: !o.confirm };
+  if (!o.confirm) return { parts, written: [], skipped: [], dryRun: true };
+  const written: NotesMove["written"] = [], skipped: NotesMove["skipped"] = [];
+  const actor: Actor = { kind: "migration" };
+  for (const p of parts) {
+    const input = { owner: CHIEF, title: p.title, body: p.body, tags: p.tags, importance: 6, reason: "moved from the notes" };
+    try {
+      written.push(await write(input, actor, now));
+    } catch (e) {
+      // A title that memory already has: keep both, the note's under its own name.
+      if (e instanceof MemoryError && e.status === 409) {
+        try { written.push(await write({ ...input, title: `${p.title.slice(0, MEMORY_LIMITS.titleMax - 14)} (from notes)` }, actor, now)); continue; } catch (again) { e = again; }
+      }
+      skipped.push({ title: p.title, why: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { notesMigratedAt: now, notesMoveNotice: notesMovedNotice(written.length) });
+  return { parts, written: written.map((m) => ({ id: m.id, title: m.title })), skipped, dryRun: false };
 }
