@@ -206,10 +206,11 @@ describe("the console's pages", () => {
     expect(sticky.children).toHaveLength(2); // the row and the tabs — nothing else stacked in it
     expect(sticky.closest('[data-slot="tabs"]')!.className).toContain("gap-0");
     const chat = $("agent-chat");
-    // Full-bleed, and on desktop it takes main's bottom padding: only the top bar and the header remain.
+    // Full-bleed, and it takes main's bottom padding: on desktop only the top bar and the header
+    // remain; on a phone (no top bar there) the bottom bar and the header.
     expect(chat.className).toContain("md:h-[calc(var(--vvh,100dvh)-3.5rem-env(safe-area-inset-top)-var(--stick,0px))]");
-    expect(chat.className).toContain("h-[calc(var(--vvh,100dvh)-9rem-");
-    expect(chat.className.split(/\s+/)).toEqual(expect.arrayContaining(["-mx-4", "md:-mx-6", "md:-mb-6"]));
+    expect(chat.className).toContain("h-[calc(var(--vvh,100dvh)-3.1875rem-max(0.375rem,env(safe-area-inset-bottom))-var(--stick,0px))]");
+    expect(chat.className.split(/\s+/)).toEqual(expect.arrayContaining(["-mx-4", "md:-mx-6", "md:-mb-6", "max-md:-mb-[calc(5.5rem+env(safe-area-inset-bottom))]"]));
     // Even padding around the header, and the tabs pulled left so "Overview" lines up with the repo name.
     expect(sticky.className.split(/\s+/)).toContain("py-2");
     expect(sticky.querySelector('[role="tablist"]')!.className).toContain("-ml-[13px]");

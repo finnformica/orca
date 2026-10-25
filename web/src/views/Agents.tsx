@@ -50,7 +50,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 export function Agents() {
   return (
     <div className="space-y-5">
-      <h1 className="text-heading text-2xl font-semibold tracking-tight">Agents</h1>
+      <h1 className="text-heading text-2xl font-semibold tracking-tight max-md:hidden">Agents</h1>
       <AgentsList />
     </div>
   );

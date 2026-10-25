@@ -29,7 +29,7 @@ import { grantKey, type Grant, type ReplyTo } from "../shared/integrations";
 import { statSync } from "fs";
 import { hostname } from "os";
 import { join } from "path";
-import type { AgentOutcome, AgentProvider, AgentTurn, StopReason, TurnCheck, TurnSource } from "../shared/agent";
+import type { AgentOutcome, AgentProvider, AgentTurn, StopReason, TurnCheck, TurnOrigin, TurnSource } from "../shared/agent";
 import * as bus from "./bus";
 import type { Notification, NotificationInput } from "../shared/notifications";
 
@@ -1492,13 +1492,21 @@ type TurnRow = {
   started_at: string | number; finished_at: string | number | null;
 };
 
+/** `structured` holds the outcome AND, for a turn the orchestrator started, its `origin`: split
+ *  them, so nothing that reads the outcome (the chat's sections, the handover) sees the origin. */
+function splitStructured(v: (AgentOutcome & { origin?: TurnOrigin }) | null): { structured?: AgentOutcome; origin?: TurnOrigin } {
+  if (!v) return {};
+  const { origin, ...outcome } = v;
+  return { ...(Object.keys(outcome).length ? { structured: outcome as AgentOutcome } : {}), ...(origin ? { origin } : {}) };
+}
+
 const toTurn = (r: TurnRow): AgentTurn => ({
   id: r.run_id,
   provider: r.provider as AgentProvider,
   instruction: r.instruction ?? undefined,
   prompt: r.prompt,
   response: r.response ?? "",
-  structured: r.structured ?? undefined,
+  ...splitStructured(r.structured),
   sessionId: r.session_id ?? undefined,
   failed: r.status === "error" ? true : undefined,
   stopped: r.status === "stopped" ? true : undefined,
@@ -1517,13 +1525,15 @@ const toTurn = (r: TurnRow): AgentTurn => ({
 export async function startTurn(input: {
   repo: string; branch: string; runId: string; provider: AgentProvider;
   instruction?: string; prompt: string; sessionId?: string; startedAt: number; source?: TurnSource;
+  origin?: TurnOrigin; // the orchestrator wake that started it (spawn / send / address): kept in `structured`
 }): Promise<void> {
   return withRetry(async (sql) => {
     const id = await workstreamId(input.repo, input.branch);
     await sql`
-      INSERT INTO turn (workstream_id, user_id, instance, run_id, provider, status, instruction, prompt, session_id, raw_ref, started_at, source)
+      INSERT INTO turn (workstream_id, user_id, instance, run_id, provider, status, instruction, prompt, session_id, raw_ref, started_at, source, structured)
       VALUES (${id}, ${currentUser()}, ${instanceName()}, ${input.runId}, ${input.provider}, 'running', ${input.instruction ?? null}, ${input.prompt},
-              ${input.sessionId ?? null}, ${input.sessionId ?? null}, ${input.startedAt}, ${input.source ?? null})
+              ${input.sessionId ?? null}, ${input.sessionId ?? null}, ${input.startedAt}, ${input.source ?? null},
+              ${input.origin ? { origin: input.origin } : null}::jsonb)
       ON CONFLICT (run_id) DO NOTHING`;
     bus.publish({ kind: "turn", runId: input.runId, repo: input.repo, branch: input.branch });
   });
@@ -1550,7 +1560,9 @@ export async function finishTurn(runId: string, input: {
         UPDATE turn SET
           status = ${input.status},
           response = ${input.response ?? null},
-          structured = ${input.structured ?? null},
+          -- The outcome replaces what was there, but an origin written at the start stays.
+          structured = CASE WHEN turn.structured->'origin' IS NULL THEN ${input.structured ?? null}::jsonb
+            ELSE COALESCE(${input.structured ?? null}::jsonb, '{}'::jsonb) || jsonb_build_object('origin', turn.structured->'origin') END,
           stop_reason = ${input.stopReason ?? null},
           session_id = COALESCE(${input.sessionId ?? null}, session_id),
           raw_ref = COALESCE(${input.sessionId ?? null}, raw_ref),
@@ -2184,6 +2196,11 @@ export async function handoffOutputs(runIds: string[]): Promise<{ runId: string;
 }
 
 // ---- queued messages ----
+// A DISPATCHED row is not dead: a workstream turn the orchestrator started references the rows of
+// its wake by id (`turn.structured.origin.messageIds`, shared/agent.ts TurnOrigin), and the chat and
+// `orca read` join them to show the person's words. So dispatched rows are kept. Only undispatched
+// rows are ever deleted (cancel, drop). If a prune of old rows is ever added, it must skip every row
+// a turn's origin references.
 
 export type QueuedMessage = {
   id: number; repo: string; branch: string; worktreePath: string;
@@ -2192,8 +2209,17 @@ export type QueuedMessage = {
   grant?: Grant;
   /** Where an answer goes (`orca post --reply`): the link and thread the message came from. */
   replyTo?: ReplyTo;
+  /** A workstream message the orchestrator sent: its wake's origin, for the turn it becomes. It rides
+   *  in the `reply_to` JSONB under `origin` (no column of its own; a workstream's queue has no replyTo). */
+  origin?: TurnOrigin;
 };
 
+/** The `reply_to` JSONB back into the message's `replyTo` and the `origin` packed beside it. */
+const replyAndOrigin = (v: unknown): { replyTo?: ReplyTo; origin?: TurnOrigin } => {
+  if (!v || typeof v !== "object") return {};
+  const { origin, ...reply } = v as ReplyTo & { origin?: TurnOrigin };
+  return { ...(Object.keys(reply).length ? { replyTo: reply as ReplyTo } : {}), ...(origin ? { origin } : {}) };
+};
 const grantScope = (g?: Grant) => (g && g.level !== "full" ? { ...g, key: grantKey(g) } : null);
 const grantOf = (v: unknown): Grant | undefined => {
   if (!v || typeof v !== "object") return undefined;
@@ -2207,7 +2233,7 @@ export async function queueMessage(input: Omit<QueuedMessage, "id" | "createdAt"
     const rows = await sql`
       INSERT INTO queued_message (user_id, repo, branch, worktree_path, instruction, attachments, provider, created_at, grant_scope, reply_to)
       VALUES (${currentUser()}, ${input.repo}, ${input.branch}, ${input.worktreePath}, ${input.instruction},
-              ${input.attachments}, ${input.provider ?? null}, ${Date.now()}, ${grantScope(input.grant)}, ${input.replyTo ?? null})
+              ${input.attachments}, ${input.provider ?? null}, ${Date.now()}, ${grantScope(input.grant)}, ${input.replyTo || input.origin ? { ...input.replyTo, ...(input.origin ? { origin: input.origin } : {}) } : null})
       RETURNING id, created_at`;
     return { ...input, id: Number(rows[0].id), createdAt: Number(rows[0].created_at) };
   });
@@ -2227,7 +2253,7 @@ export async function queuedMessages(repo: string, branch: string): Promise<Queu
       instruction: String(r.instruction), attachments: (r.attachments as string[]) ?? [],
       provider: (r.provider as string) ?? undefined, createdAt: Number(r.created_at),
       ...(grantOf(r.grant_scope) ? { grant: grantOf(r.grant_scope) } : {}),
-      ...(r.reply_to ? { replyTo: r.reply_to as ReplyTo } : {}),
+      ...replyAndOrigin(r.reply_to),
     }));
   });
 }
@@ -2266,8 +2292,18 @@ export async function claimQueuedMessage(repo: string, branch: string, onlyGrant
       instruction: String(r.instruction), attachments: (r.attachments as string[]) ?? [],
       provider: (r.provider as string) ?? undefined, createdAt: Number(r.created_at),
       ...(grantOf(r.grant_scope) ? { grant: grantOf(r.grant_scope) } : {}),
-      ...(r.reply_to ? { replyTo: r.reply_to as ReplyTo } : {}),
+      ...replyAndOrigin(r.reply_to),
     };
+  });
+}
+
+/** The `queued_message` rows a turn's origin references, by id (dispatched or not), for the join
+ *  that shows their words (server/origin.ts). A missing id is simply not returned. */
+export async function originRows(ids: number[]): Promise<{ id: number; instruction: string; createdAt: number }[]> {
+  if (!ids.length) return [];
+  return withRetry(async (sql) => {
+    const rows = await sql`SELECT id, instruction, created_at FROM queued_message WHERE user_id = ${currentUser()} AND id IN ${sql(ids)}`;
+    return (rows as Record<string, unknown>[]).map((r) => ({ id: Number(r.id), instruction: String(r.instruction), createdAt: Number(r.created_at) }));
   });
 }
 
@@ -2279,14 +2315,16 @@ export async function releaseQueuedMessage(id: number): Promise<void> {
   });
 }
 
-/** Drop a queued message before it is sent (the user changed their mind). */
+/** Drop a queued message before it is sent (the user changed their mind). Undispatched only: a
+ *  dispatched row may be referenced by a turn's origin and must stay (see "queued messages" above). */
 export async function cancelQueuedMessage(id: number): Promise<void> {
   return withRetry(async (sql) => {
     await sql`DELETE FROM queued_message WHERE id = ${id} AND user_id = ${currentUser()} AND dispatched_at IS NULL`;
   });
 }
 
-/** Drop every undispatched message for a branch — so archiving a cancelled workstream can't be
+/** (Undispatched only: dispatched rows are referenced by turns' origins and must not be pruned.)
+ *  Drop every undispatched message for a branch — so archiving a cancelled workstream can't be
  *  resurrected by a message that was queued behind its running agent. */
 export async function dropQueuedMessages(repo: string, branch: string): Promise<void> {
   return withRetry(async (sql) => {

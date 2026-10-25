@@ -21,7 +21,7 @@ import * as prShots from "./prShots";
 import { featuresOf, modelFor, providerAllowed, runLimits, type OrcaConfig, type RepoConfig } from "./config";
 import { addressNeedsAgent, addressPrPrompt, chatPrompt, cleanupDecision, continuation, followUpPrompt, launchPrompt, mergeSettled, mergedPrIsHistory, slugifyBranch, titleFromPrompt, withAttachments, workerPrBody, type MechanicalMerge, type SweepReport } from "../web/src/workstream";
 import { providerOfModel } from "../shared/models";
-import { isAgentProvider, type AgentOutcome, type AgentProvider } from "../shared/agent";
+import { isAgentProvider, type AgentOutcome, type AgentProvider, type TurnOrigin } from "../shared/agent";
 
 /** The --model for a run: the card's pinned model, else the config's default — a Claude id, so it
  *  applies to Claude only (an unpinned Codex/Cursor run takes that CLI's own default). */
@@ -150,7 +150,7 @@ function providerFor(repo: RepoConfig, e: db.Fields): AgentProvider {
 /** Create a workstream and launch its first run. `fields` are extra enrichment for the new card. */
 export async function createWorkstream(
   cfg: OrcaConfig, repo: RepoConfig,
-  input: { prompt: string; title?: string; model?: string; fields?: db.Fields },
+  input: { prompt: string; title?: string; model?: string; fields?: db.Fields; origin?: TurnOrigin },
 ): Promise<{ branch: string; worktreePath: string; title: string; runId: string }> {
   const model = input.model ?? modelFor(cfg, repo);
   const provider = providerOfModel(model) ?? "claude";
@@ -163,7 +163,7 @@ export async function createWorkstream(
     prompt: input.prompt, title, agentProvider: provider, preferredModel: model, createdAt: new Date().toISOString(), ...input.fields,
   });
   const receipt = await agent.runAgent(wt.worktreePath, launchPrompt({ title, branch: wt.branch, prompt: input.prompt }, repo.baseBranch), {
-    ...launchOptions(cfg, repo, provider, model, input.fields), branch: wt.branch, action: "launch", instruction: input.prompt,
+    ...launchOptions(cfg, repo, provider, model, input.fields), branch: wt.branch, action: "launch", instruction: input.prompt, origin: input.origin,
   });
   await db.patchEnrichment(repo.name, wt.branch, { sessionId: receipt.sessionId });
   return { ...wt, title, runId: receipt.runId };
@@ -174,7 +174,7 @@ export async function createWorkstream(
  *  scaffolding for an action that builds its own (Address PR). */
 export async function followUp(
   cfg: OrcaConfig, repo: RepoConfig, branch: string,
-  input: { instruction: string; prompt?: string; action?: string; evidenceChars?: number },
+  input: { instruction: string; prompt?: string; action?: string; evidenceChars?: number; origin?: TurnOrigin },
 ): Promise<{ status: "running" | "queued"; worktreePath: string }> {
   const worktreePath = await ensureWorktree(repo, branch);
   const e = (await db.enrichment(repo.name))[branch] ?? {};
@@ -183,7 +183,7 @@ export async function followUp(
   // queues behind them and the queue drains in order, instead of jumping ahead and leaving them.
   const behind = !agent.isRunning(worktreePath) && (await db.queuedMessages(repo.name, branch).catch(() => [])).length > 0;
   if (agent.isRunning(worktreePath) || behind) {
-    await db.queueMessage({ repo: repo.name, branch, worktreePath, instruction: input.instruction, attachments: [], provider });
+    await db.queueMessage({ repo: repo.name, branch, worktreePath, instruction: input.instruction, attachments: [], provider, ...(input.origin ? { origin: input.origin } : {}) });
     if (behind) await agent.drainQueue(worktreePath, repo.name, branch);
     return { status: "queued", worktreePath };
   }
@@ -195,7 +195,7 @@ export async function followUp(
   });
   const receipt = await agent.runAgent(worktreePath, input.prompt ?? chatPrompt(input.instruction, { mergeWhenGreen: Boolean(e.mergeWhenGreen) }), {
     ...launchOptions(cfg, repo, provider, e.preferredModel as string | undefined, e), ...next,
-    branch, action: input.action ?? "followup", instruction: input.instruction, evidenceChars: input.evidenceChars,
+    branch, action: input.action ?? "followup", instruction: input.instruction, evidenceChars: input.evidenceChars, origin: input.origin,
   });
   await db.patchEnrichment(repo.name, branch, { agentProvider: provider, sessionId: receipt.sessionId });
   return { status: "running", worktreePath };
@@ -221,7 +221,7 @@ export async function launchQueued(cfg: OrcaConfig, repo: RepoConfig, message: d
   });
   const receipt = await agent.runAgent(message.worktreePath, withAttachments(followUpPrompt(message.instruction, { mergeWhenGreen: Boolean(e.mergeWhenGreen) }), message.attachments), {
     ...launchOptions(cfg, repo, provider, typeof pinned === "string" ? pinned : undefined, e), ...next,
-    branch: message.branch, action: "followup", instruction: message.instruction,
+    branch: message.branch, action: "followup", instruction: message.instruction, origin: message.origin,
   });
   await db.patchEnrichment(repo.name, message.branch, { agentProvider: provider, sessionId: receipt.sessionId });
 }
@@ -302,7 +302,7 @@ export async function settleConflict(repo: RepoConfig, branch: string): Promise<
 /** THE agent action for a PR — one run for conflicts, failing CI and the review, whichever apply —
  *  with the evidence fetched immediately before launch. The manual form of the store's `addressPr`:
  *  every unresolved thread is sent, and the hand-over is recorded once the launch is accepted. */
-export async function addressPr(cfg: OrcaConfig, repo: RepoConfig, branch: string): Promise<{ status: "running" | "queued" | "resolved"; pr: number }> {
+export async function addressPr(cfg: OrcaConfig, repo: RepoConfig, branch: string, opts: { origin?: TurnOrigin } = {}): Promise<{ status: "running" | "queued" | "resolved"; pr: number }> {
   const pr = (await gh.listPrs(repo.repoPath)).find((p) => p.branch === branch);
   if (!pr) throw new Error(`${repo.name}/${branch} has no open PR to address`);
   const e = (await db.enrichment(repo.name))[branch] ?? {};
@@ -321,7 +321,7 @@ export async function addressPr(cfg: OrcaConfig, repo: RepoConfig, branch: strin
   const ci = ciFailing ? { failingChecks: pr.failingChecks, details } : undefined;
   if (settled && !addressNeedsAgent({ conflicting, ci, feedback: pr.feedback, threads: marked, comments })) return { status: "resolved", pr: pr.number };
   const { status } = await followUp(cfg, repo, branch, {
-    instruction: "Address the PR: conflicts, CI, review", action: "address",
+    instruction: "Address the PR: conflicts, CI, review", action: "address", origin: opts.origin,
     evidenceChars: JSON.stringify(details).length + JSON.stringify(marked).length + JSON.stringify(comments).length,
     prompt: addressPrPrompt({ prNumber: pr.number, branch }, {
       base: repo.baseBranch, conflicting, ci,

@@ -93,7 +93,7 @@ export function Settings() {
   useEffect(() => { if (location.hash) document.getElementById(location.hash.slice(1))?.scrollIntoView(); }, [route]);
   return (
     <div className="max-w-4xl space-y-6">
-      <h1 className="text-heading text-2xl font-semibold tracking-tight">Settings</h1>
+      <h1 className="text-heading text-2xl font-semibold tracking-tight max-md:hidden">Settings</h1>
       <MobileNav />
       <VCard slot="settings-appearance" title="Appearance" bodyClass="divide-y">
         <Setting label="Theme" hint="Light, dark, or follow the system.">
@@ -626,7 +626,7 @@ function AccountRowView({ account: a, onSaved }: { account: GithubAccount; onSav
 export function PreviewsPage() {
   return (
     <div className="space-y-6">
-      <h1 className="text-heading text-2xl font-semibold tracking-tight">Previews</h1>
+      <h1 className="text-heading text-2xl font-semibold tracking-tight max-md:hidden">Previews</h1>
       <div><SectionTitle>Running</SectionTitle><VCard slot="running-previews"><RunningPreviews /></VCard></div>
       <div><SectionTitle>Test master</SectionTitle><VCard slot="test-master"><TestMaster /></VCard></div>
     </div>
