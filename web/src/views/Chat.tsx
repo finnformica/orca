@@ -8,17 +8,18 @@
 // Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every board
 // action uses.
 import { createContext, memo, startTransition, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { AlarmClock, ArrowDown, Bot, Check, ChevronRight, Cog, Copy, Loader2, Paperclip, Quote as QuoteIcon, Sparkles, X } from "lucide-react";
-import { SCHEDULED_WAKE_MARKER, isScheduledWake } from "../../../shared/scheduledWake";
-import { REFLECTION_MARKER, isReflection } from "../../../shared/memory";
+import { AlarmClock, ArrowDown, Bot, Check, ChevronRight, CloudMoon, Cog, Copy, Loader2, Paperclip, Quote as QuoteIcon, X } from "lucide-react";
+import { isScheduledWake } from "../../../shared/scheduledWake";
+import { isReflection } from "../../../shared/memory";
 import { cn, PipContext } from "@/lib/utils";
+import { navigate } from "@/lib/route";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import type { AgentStep, AgentTurn, OriginMessage, TurnOrigin } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, previewsEnabled, refresh, setCardModel, type Row } from "../store";
-import { ORCHESTRATOR_REPO, RECENT_FULL, TAIL_WINDOW, reportShots, turnHandoffs, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, longMessage, newestMessages, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, formatDuration, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, undeliveredQueued, composerHistory, integrationPreview, integrationState, anchorShift, eagerFrom, estimateItemHeight, withNotices, ORIGIN_MISSING, originAskedBy, originAt, originHead, originSkippedText, originTimeLabel } from "../workstream";
+import { ORCHESTRATOR_REPO, RECENT_FULL, TAIL_WINDOW, reportShots, turnHandoffs, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, firedLabel, longMessage, newestMessages, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, formatDuration, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, undeliveredQueued, composerHistory, integrationPreview, integrationState, anchorShift, eagerFrom, estimateItemHeight, withNotices, ORIGIN_MISSING, originAskedBy, originAt, originHead, originSkippedText, originTimeLabel } from "../workstream";
 import { HandoffWidget } from "./Handoffs";
 import { FormCard } from "@/components/FormCard";
 import { stickToTail } from "@/lib/stickToTail";
@@ -679,12 +680,13 @@ const ChatTurn = memo(function ChatTurn({ turn, loadStepsFor, compact, newestSai
           <WorkerReports parts={reports} />
         </WorkerBlock>
       )}
+      {/* A fired message (a scheduled wake or a reflection pass) mixed into a wake with a worker
+          report: a system line, not its own collapsed card — a pure-fired turn gets that instead
+          (ChatItem's "fired" kind, FiredBlock below). */}
       {fired.map((text, i) => (
         <div key={`w${i}`} className="mb-1 flex items-center gap-1.5 text-xs text-neutral-500" data-slot="scheduled-wake">
-          {isReflection(text) ? <Sparkles className="size-3.5 shrink-0" aria-hidden /> : <AlarmClock className="size-3.5 shrink-0" aria-hidden />}
-          <span className="truncate">{isReflection(text)
-            ? `Reflection on memory: ${text.slice(REFLECTION_MARKER.length).trim()}`
-            : `${text.split("\n")[0]!.slice(SCHEDULED_WAKE_MARKER.length).trim()} — ${text.split("\n").slice(1).join(" ").trim()}`}</span>
+          {isReflection(text) ? <CloudMoon className="size-3.5 shrink-0" aria-hidden /> : <AlarmClock className="size-3.5 shrink-0" aria-hidden />}
+          <span className="truncate">{firedLabel(text)}</span>
         </div>
       ))}
       {outside.length > 0 && (
@@ -895,23 +897,52 @@ function IntegrationHead({ m, more, time, state }: { m: IntegrationMessage; more
   );
 }
 
+/** The tinted, collapsed activity card every background turn uses — an outside message, a scheduled
+ *  wake, a reflection pass: one line (`head`) collapsed, the full body open in place. ONE shell, so
+ *  every kind of "this happened without you" turn looks and behaves the same. */
+function CollapsedCard({ slot, bodySlot, state, pending, dataAttrs, head, children }: {
+  slot: string; bodySlot: string; state: CardState; pending?: boolean; dataAttrs?: Record<string, string>; head: ReactNode; children: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div data-slot={slot} data-state={state} data-open={open || undefined} data-pending={pending || undefined} {...dataAttrs}
+      className={cn("border-geist-blue/20 bg-geist-blue/5 mb-4 rounded-md border text-[12px]", pending && "opacity-60")}>
+      <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open}
+        className="text-muted-foreground hover:text-foreground flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left">
+        <ChevronRight className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-90")} />
+        {head}
+      </button>
+      {open && <div className="border-geist-blue/20 space-y-3 border-t px-2.5 py-2" data-slot={bodySlot}>{children}</div>}
+    </div>
+  );
+}
+
 /** The tinted card of an outside message (Discord, Slack, email…): ONE collapsed activity row that
  *  opens in place. A delivered message's wake (IntegrationBlock) and a queued one (Queued, `pending`:
  *  faded) are the same card, so it looks the same before and after it runs. */
 function IntegrationCard({ slot, messages, time, state, pending, children }: {
   slot: string; messages: IntegrationMessage[]; time: string; state: CardState; pending?: boolean; children: ReactNode;
 }) {
-  const [open, setOpen] = useState(false);
   return (
-    <div data-slot={slot} data-adapter={messages[0]!.adapter} data-state={state} data-open={open || undefined} data-pending={pending || undefined}
-      className={cn("border-geist-blue/20 bg-geist-blue/5 mb-4 rounded-md border text-[12px]", pending && "opacity-60")}>
-      <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open}
-        className="text-muted-foreground hover:text-foreground flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left">
-        <ChevronRight className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-90")} />
-        <IntegrationHead m={messages[0]!} more={messages.length - 1} time={time} state={state} />
-      </button>
-      {open && <div className="border-geist-blue/20 space-y-3 border-t px-2.5 py-2" data-slot="integration-body">{children}</div>}
-    </div>
+    <CollapsedCard slot={slot} bodySlot="integration-body" state={state} pending={pending} dataAttrs={{ "data-adapter": messages[0]!.adapter }}
+      head={<IntegrationHead m={messages[0]!} more={messages.length - 1} time={time} state={state} />}>
+      {children}
+    </CollapsedCard>
+  );
+}
+
+/** The collapsed line of a fired wake (a scheduled wake or a reflection pass): its icon, the
+ *  summary, the time and the state — no sender, no place, unlike an outside message's. */
+function FiredHead({ text, time, state }: { text: string; time: string; state: CardState }) {
+  return (
+    <>
+      {isReflection(text) ? <CloudMoon className="size-3.5 shrink-0" aria-hidden /> : <AlarmClock className="size-3.5 shrink-0" aria-hidden />}
+      <span className="min-w-0 flex-1 truncate" data-slot="fired-preview">{firedLabel(text)}</span>
+      {time && <span className="shrink-0 text-[11px]">{time}</span>}
+      <span data-slot="fired-state" className={cn("flex shrink-0 items-center gap-1 text-[11px]", state === "queued" || state === "notified" ? "" : STATE_TONE[state])}>
+        {state === "in progress" && <Loader2 className="size-3 animate-spin" />}{state}
+      </span>
+    </>
   );
 }
 
@@ -947,6 +978,34 @@ const IntegrationBlock = memo(function IntegrationBlock({ turn, messages, loadSt
         </div>
       </div>
     </IntegrationCard>
+  );
+});
+
+/** A wake the agent fired on itself — a scheduled wake or a reflection pass — with nothing else in
+ *  it: ONE collapsed activity row, never your bubble, like an outside message's. Open, it shows the
+ *  full trigger text, then the orchestrator's answer. A reflection links to its pass on the Memory
+ *  page's Reflection tab. */
+const FiredBlock = memo(function FiredBlock({ turn, messages, loadStepsFor }: { turn: AgentTurn; messages: string[]; loadStepsFor?: (turn: AgentTurn) => Promise<AgentStep[]> }) {
+  const state = integrationState(turn);
+  const reflection = messages.some(isReflection);
+  return (
+    <CollapsedCard slot="fired-activity" bodySlot="fired-body" state={state} dataAttrs={{ "data-kind": reflection ? "reflection" : "wake" }}
+      head={<FiredHead text={messages[0]!} time={clockOf(turn.startedAt)} state={state} />}>
+      {messages.map((text, i) => <div key={i} data-slot="fired-message" className="text-foreground whitespace-pre-wrap">{text}</div>)}
+      {reflection && (
+        <button type="button" data-slot="fired-memory-link" onClick={() => navigate("/memory?tab=reflection")}
+          className="text-muted-foreground hover:text-foreground text-[11px] underline-offset-2 hover:underline">
+          View reflection passes
+        </button>
+      )}
+      <div className="flex gap-2" data-slot="fired-reply">
+        <span className="bg-accent text-foreground inline-flex size-5 shrink-0 items-center justify-center rounded-full" aria-hidden="true"><Bot className="size-3" /></span>
+        <div className="min-w-0 flex-1">
+          <div className="text-foreground mb-0.5 text-[11px] font-medium">Orca</div>
+          <Reply turn={turn} loadSteps={loadStepsFor && (() => loadStepsFor(turn))} />
+        </div>
+      </div>
+    </CollapsedCard>
   );
 });
 
@@ -1376,6 +1435,7 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
           {item.kind === "notice" ? <NoticeCard notice={item.notice} />
             : item.kind === "turn" ? chatTurn(item.turn)
             : item.kind === "integration" ? <IntegrationBlock turn={item.turn} messages={item.messages} loadStepsFor={loadStepsFor} />
+            : item.kind === "fired" ? <FiredBlock turn={item.turn} messages={item.messages} loadStepsFor={loadStepsFor} />
             : <AgentsMarker turns={item.turns} render={chatTurn} />}
         </LazyItem>
       );

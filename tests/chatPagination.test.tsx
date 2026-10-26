@@ -10,11 +10,13 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
 import { catchAllLabels, fenceExternal, integrationMessage, integrationMetaLine, isOrcaEvent, orcaEventText, shownPlace } from "../shared/integrations";
+import { REFLECTION_MARKER } from "../shared/memory";
+import { scheduledWakeMessage } from "../shared/scheduledWake";
 import { reloadCatchAllLabels } from "@/lib/catchAllLabels";
 import * as store from "@/store";
 import { ChatPanel } from "@/views/Chat";
 import type { Row } from "@/store";
-import { integrationState, integrationTurn, composerHistory, CHAT_WINDOW, TAIL_WINDOW, TURN_PAGE_SIZE, agentsMarker, anchoredScrollTop, asTurnPage, atBottom, MESSAGE_BREAK, capWindow, chatItems, longMessage, newestMessages, longReply, splitMessages, mergeLatestPage, prependOlderPage, revealAbove, revealBelow, sourceOf, anchorShift, eagerFrom, estimateItemHeight, turnSource, windowRange, withNotices, WORKER_EVENT_MARKER, type ChatItem } from "@/workstream";
+import { integrationState, integrationTurn, composerHistory, CHAT_WINDOW, TAIL_WINDOW, TURN_PAGE_SIZE, agentsMarker, anchoredScrollTop, asTurnPage, atBottom, firedLabel, firedTurn, MESSAGE_BREAK, capWindow, chatItems, longMessage, newestMessages, longReply, splitMessages, mergeLatestPage, prependOlderPage, revealAbove, revealBelow, sourceOf, anchorShift, eagerFrom, estimateItemHeight, turnSource, windowRange, withNotices, WORKER_EVENT_MARKER, type ChatItem } from "@/workstream";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 beforeAll(() => store.configReady);
@@ -257,7 +259,7 @@ test("the pure pieces: the window, compact replies and the worker blocks", () =>
   expect(longMessage("x".repeat(601))).toBe(true);
   const w = (id: string, startedAt = 1) => ({ id, instruction: `${WORKER_EVENT_MARKER} x`, finishedAt: 1, startedAt });
   const u = (id: string) => ({ id, instruction: "hi", finishedAt: 1 });
-  const kinds = <T extends { id: string }>(items: ChatItem<T>[]) => items.map((i) => (i.kind === "turn" ? i.turn.id : i.kind === "integration" ? `@${i.turn.id}` : `[${i.turns.map((t) => t.id).join(",")}]`));
+  const kinds = <T extends { id: string }>(items: ChatItem<T>[]) => items.map((i) => (i.kind === "turn" ? i.turn.id : i.kind === "integration" ? `@${i.turn.id}` : i.kind === "fired" ? `!${i.turn.id}` : `[${i.turns.map((t) => t.id).join(",")}]`));
   // Your turns, each run of agent turns between them as one block — even a single one, even the newest.
   expect(kinds(chatItems([u("a"), w("b"), w("c"), u("d"), w("e"), w("f")]))).toEqual(["a", "[b,c]", "d", "[e,f]"]);
   expect(kinds(chatItems([w("a"), u("b")]))).toEqual(["[a]", "b"]);
@@ -306,6 +308,28 @@ test("the pure pieces: an outside message is read back with its source, and its 
   expect(integrationState({ finishedAt: 1, failed: true })).toBe("failed");
   // ↑ in the composer recalls only what you typed.
   expect(composerHistory([u("a"), x("b", 2)], [{ instruction: outside("q") }])).toEqual(["hi"]);
+});
+
+const wakeMsg = scheduledWakeMessage({ id: 3, note: "check the deploy", at: Date.UTC(2026, 9, 26, 9, 0) });
+const reflectionMsg = `${REFLECTION_MARKER} idle: 5 turns, 2 worker reports, 1 checks, 0 corrections, 0 possible contradictions`;
+
+test("the pure pieces: a wake the agent fired on itself is its own card, never your bubble, unless it carries a report too", () => {
+  expect(firedTurn({ instruction: wakeMsg })).toEqual([wakeMsg]);
+  expect(firedTurn({ instruction: reflectionMsg })).toEqual([reflectionMsg]);
+  // Mixed with a worker report, or with your words: a plain turn, not its own card.
+  expect(firedTurn({ instruction: `${wakeMsg}${MESSAGE_BREAK}${WORKER_EVENT_MARKER} r/x — done` })).toBeUndefined();
+  expect(firedTurn({ instruction: `${reflectionMsg}${MESSAGE_BREAK}carry on` })).toBeUndefined();
+  expect(firedTurn({ instruction: "carry on" })).toBeUndefined();
+  expect(firedLabel(wakeMsg)).toBe("w3 · at 2026-10-26 09:00 UTC — check the deploy");
+  expect(firedLabel(reflectionMsg)).toBe("Reflection on memory: idle: 5 turns, 2 worker reports, 1 checks, 0 corrections, 0 possible contradictions");
+  const u = (id: string) => ({ id, instruction: "hi", finishedAt: 1 });
+  const w = (id: string, text: string, finishedAt?: number) => ({ id, instruction: text, finishedAt, source: "agents" as const });
+  const turns = [u("a"), w("b", wakeMsg, 2), w("c", reflectionMsg, 3)];
+  // Its own row, even when it holds the newest answer; never "your newest message".
+  expect(chatItems(turns, turns[2]).map((i) => i.kind === "fired" ? `!${i.turn.id}` : i.kind)).toEqual(["turn", "!b", "!c"]);
+  expect(newestMessages(turns).said).toBe(turns[0]);
+  // A fired turn with no reply yet: still its own card, never folded into the agents block.
+  expect(chatItems([u("a"), w("b", wakeMsg)]).map((i) => i.kind)).toEqual(["turn", "fired"]);
 });
 
 // Orca's own PR event as the bridge queues it for the orchestrator (server/integrations/inbox.ts orcaEvent).
@@ -360,6 +384,39 @@ test("P10: the orchestrator's chat shows a PR's CI and conflicts events as GitHu
   // A queued event is its card too, not a queued bubble of yours.
   expect(c.querySelector('[data-slot="integration-queued"] [data-slot="brand-icon"]')!.getAttribute("data-kind")).toBe("github");
   expect(c.querySelector('[data-slot="chat-queued"]')).toBeNull();
+});
+
+test("P12: the orchestrator's chat collapses a reflection pass and a fired scheduled wake, like an outside message's row", async () => {
+  const fired = (id: string, text: string, finished = true) => ({
+    id, provider: "claude", instruction: text, prompt: "", response: finished ? `did on ${id}` : "", startedAt: 2000, source: "agents" as const,
+    ...(finished ? { finishedAt: 2001 } : {}),
+  });
+  apiFake.turnsData.set("r::long", [turn(0), fired("reflect", reflectionMsg), fired("wake", wakeMsg, false)]);
+  await mount(<ChatPanel row={row} />);
+  const c = container!;
+  const rows = [...c.querySelectorAll<HTMLElement>('[data-slot="fired-activity"]')];
+  expect(rows).toHaveLength(2);
+  const field = (r: HTMLElement, slot: string) => r.querySelector(`[data-slot="${slot}"]`)!.textContent;
+  // Each card's kind picks its icon (CloudMoon for a reflection, AlarmClock for a scheduled wake);
+  // the summary is the collapsed line, in or out of progress.
+  expect(rows.map((r) => [r.dataset.kind, field(r, "fired-preview"), field(r, "fired-state")])).toEqual([
+    ["reflection", firedLabel(reflectionMsg), "answered"],
+    ["wake", firedLabel(wakeMsg), "in progress"],
+  ]);
+  // Never your bubble, and the full trigger text + reply stay out of the DOM until opened.
+  expect([...c.querySelectorAll('[data-slot="chat-user-text"]')].map((b) => b.textContent)).toEqual(["ask 0"]);
+  expect(c.textContent).not.toContain("did on reflect");
+  expect(c.querySelector('[data-slot="fired-message"]')).toBeNull();
+  await act(async () => { rows[0]!.querySelector("button")!.click(); await flush(); });
+  expect(field(rows[0]!, "fired-message")).toBe(reflectionMsg);
+  expect(field(rows[0]!, "fired-reply")).toContain("did on reflect");
+  // A reflection's open card links to its passes on the Memory page; a scheduled wake does not.
+  await act(async () => { rows[0]!.querySelector<HTMLElement>('[data-slot="fired-memory-link"]')!.click(); await flush(); });
+  expect(location.pathname + location.search).toBe("/memory?tab=reflection");
+  await act(async () => { rows[1]!.querySelector("button")!.click(); await flush(); });
+  expect(field(rows[1]!, "fired-message")).toBe(wakeMsg);
+  expect(field(rows[1]!, "fired-reply")).not.toContain("did on"); // still running: no reply yet
+  expect(rows[1]!.querySelector('[data-slot="fired-memory-link"]')).toBeNull(); // no Memory link for a scheduled wake
 });
 
 test("P8: the orchestrator's chat shows an outside message and its answer as ONE collapsed activity row, never your bubble", async () => {
