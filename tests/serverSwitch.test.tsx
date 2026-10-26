@@ -14,7 +14,7 @@ import { navigate } from "@/lib/route";
 import { subscribeTurns } from "@/lib/events";
 import {
   CHOICE_KEY, KNOWN_KEY, _resetServer, _setReloader, apiBase, apiFetch, apiUrl, currentServer, defaultServerName, knownServers,
-  mergeServers, probeServer, rememberServer, serverOrigin, serverStatus, showServerMenu, switchServer, type Probe, type ServersAnswer,
+  mergeServers, probeAddress, probeServer, rememberServer, serverOrigin, serverStatus, showServerMenu, switchServer, type Probe, type ServersAnswer,
 } from "@/lib/server";
 import { _resetServerList } from "@/components/ServerMenu";
 import { _resetIdentity, activeIdentityOf, profileInitials } from "@/lib/identity";
@@ -642,4 +642,22 @@ test("S10: URLs and names (pure)", () => {
   setup();
   expect(rememberServer({ url: "not a url" })).toBeNull();
   expect(JSON.parse(localStorage.getItem(KNOWN_KEY) ?? "[]")).toEqual([]);
+});
+
+test("S13: from an HTTPS page a plain-http server is probed at its HTTPS door, and listed there once it answers", () => {
+  // The address: only an http listing on an https page is rewritten, to https://<host> (tailscale serve 443).
+  expect(probeAddress("http://orca-personal-box.tail1.ts.net:8787", "https:")).toBe("https://orca-personal-box.tail1.ts.net");
+  expect(probeAddress("http://orca-personal-box.tail1.ts.net:8787", "http:")).toBe("http://orca-personal-box.tail1.ts.net:8787");
+  expect(probeAddress("https://orca-flow-box.tail1.ts.net", "https:")).toBe("https://orca-flow-box.tail1.ts.net");
+  // The row: the home page lists the personal box as http:8787; the probe at its door answered (its own
+  // answer still says http:8787, ORCA_SERVER_URL unset there) — the row's url is the door, once.
+  const home = "https://orca-flow-box.tail1.ts.net";
+  const answer: ServersAnswer = { ...HOME, tailscaleApi: true, source: "tailscale", self: { name: "cloud", url: home },
+    servers: [{ name: "cloud", url: home, online: true, self: true }, { name: "orca-personal-box", url: "http://orca-personal-box.tail1.ts.net:8787", online: true, self: false }] };
+  const personal: ServersAnswer = { enabled: true, source: "tailscale", tailscaleApi: true, self: { name: "personal", url: "http://orca-personal-box.tail1.ts.net:8787" }, servers: [] };
+  const probes: Record<string, Probe> = { "http://orca-personal-box.tail1.ts.net:8787": { health: "online", answer: personal, at: "https://orca-personal-box.tail1.ts.net" } };
+  const rows = mergeServers(home, answer, [], probes);
+  expect(rows.map((r) => [r.name, r.url, r.health])).toEqual([["cloud", home, "online"], ["personal", "https://orca-personal-box.tail1.ts.net", "online"]]);
+  // Unprobed, or probed at the listed address: the listing stands.
+  expect(mergeServers(home, answer, [], {}).map((r) => r.url)).toEqual([home, "http://orca-personal-box.tail1.ts.net:8787"]);
 });
