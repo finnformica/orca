@@ -122,13 +122,13 @@ export function HandoffWidget({ id }: { id: string }) {
   const load = useCallback(() => api.handoffPack(id).then((d) => { setData(d); setLoadError(undefined); }).catch((e) => setLoadError(e instanceof Error ? e.message : String(e))), [id]);
   useEffect(() => { void load(); }, [load]);
   if (data === null) {
-    return <div data-slot="chat-handoff" data-state="discarded" className="text-muted-foreground mt-2 rounded-md border px-3 py-2 text-xs">Handoff pack deleted. It was not sent.</div>;
+    return <div data-slot="chat-handoff" data-state="discarded" className="bg-card text-muted-foreground mt-2 rounded-md border px-3 py-2 text-xs">Handoff pack deleted. It was not sent.</div>;
   }
   if (!data) {
-    return <div data-slot="chat-handoff" data-state="loading" className="text-muted-foreground mt-2 rounded-md border px-3 py-2 text-xs">{loadError ? `Cannot load the handoff pack: ${loadError}` : "Loading the handoff pack…"}</div>;
+    return <div data-slot="chat-handoff" data-state="loading" className="bg-card text-muted-foreground mt-2 rounded-md border px-3 py-2 text-xs">{loadError ? `Cannot load the handoff pack: ${loadError}` : "Loading the handoff pack…"}</div>;
   }
   return (
-    <div className="mt-2 rounded-md border">
+    <div className="bg-card mt-2 rounded-md border">
       <PackRow pack={data.pack} source={{ name: data.self, url: apiBase() || undefined }} servers={servers} onChange={load} variant="chat" />
     </div>
   );
