@@ -8,7 +8,7 @@ import { atom, useAtom } from "jotai";
 import { Check, Plus, ServerOff } from "lucide-react";
 import { poll } from "@/lib/poll";
 import {
-  apiFetch, chosenServer, currentServer, fetchServers, homeOrigin, knownServers, mergeServers, onKnownChange, probeServer,
+  apiFetch, chosenServer, currentServer, fetchServers, homeOrigin, knownServers, mergeServers, onKnownChange, probeAddress, probeServer,
   rememberServer, serverOrigin, showServerMenu, switchServer, useServerStatus,
   type Probe, type ServerEntry, type ServerHealth, type ServersAnswer,
 } from "@/lib/server";
@@ -40,9 +40,10 @@ export function checkServers(all = false): void {
   for (const s of list()) {
     if (s.self || inflight.has(s.url) || (!all && s.url in probes)) continue;
     inflight.add(s.url);
-    void probeServer(s.url).then((p) => {
+    const at = probeAddress(s.url);
+    void probeServer(at).then((p) => {
       inflight.delete(s.url);
-      probes = { ...probes, [s.url]: p };
+      probes = { ...probes, [s.url]: p.health === "online" && at !== s.url ? { ...p, at } : p };
       // A known server goes by its own name from now on (an added IP becomes "personal").
       if (p.health === "online" && knownServers().some((k) => k.url === s.url)) rememberServer({ url: s.url, name: p.answer.self.name });
       changed();
@@ -174,10 +175,11 @@ export function AddServerDialog() {
     if (!origin) return setError("Type a server address, for example orca-personal-box:8787.");
     if (origin === homeOrigin()) return setError("This is the server you are on.");
     setBusy(true); setError("");
-    const p = await probeServer(origin);
+    const at = probeAddress(origin);
+    const p = await probeServer(at);
     setBusy(false);
     const known = rememberServer({ url: origin, name: p.health === "online" ? p.answer.self.name : undefined })!;
-    probes = { ...probes, [origin]: p };
+    probes = { ...probes, [origin]: p.health === "online" && at !== origin ? { ...p, at } : p };
     changed();
     if (p.health !== "online") {
       return setError(p.health === "refused"
