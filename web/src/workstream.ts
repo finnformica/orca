@@ -7,8 +7,8 @@ import { AUTO_MODEL, MODELS, modelLabel, prettyModel } from "../../shared/models
 import { SNIPPETS, WRITING_STYLE } from "../../shared/writingStyle";
 import { asksForInput } from "../../shared/notifications";
 import { integrationMessage, isOrcaEvent, type IntegrationMessage } from "../../shared/integrations";
-import { isScheduledWake } from "../../shared/scheduledWake";
-import { isReflection } from "../../shared/memory";
+import { isScheduledWake, SCHEDULED_WAKE_MARKER } from "../../shared/scheduledWake";
+import { isReflection, REFLECTION_MARKER } from "../../shared/memory";
 import { isAgentMessage } from "../../shared/agents";
 import type { LiveSample } from "../../server/liveMetrics";
 export { attachCommand } from "../../shared/agent";
@@ -4290,7 +4290,24 @@ export const integrationState = (t: { finishedAt?: number; failed?: boolean; sto
 /** An outside message's row, in one line: its first non-empty line, cut to `max`. */
 export const integrationPreview = (text: string, max = 120): string => clip((text.split("\n").find((l) => l.trim()) ?? "").trim(), max);
 
-export type ChatItem<T> = { kind: "turn"; turn: T } | { kind: "agents"; turns: T[] } | { kind: "integration"; turn: T; messages: IntegrationMessage[] };
+/** A wake the agent fired on itself — a scheduled wake or a reflection pass — when it carried
+ *  nothing else: never the user's word, so it gets its own collapsed row like an outside message's,
+ *  not your bubble. A wake mixing a fired message with a worker report keeps the plain turn
+ *  rendering (ChatTurn's own fallback). Undefined otherwise. */
+export function firedTurn(t: Sourced): string[] | undefined {
+  const messages = splitMessages(t.instruction ?? promptInstruction(t.prompt ?? ""));
+  return messages.length > 0 && messages.every((m) => isScheduledWake(m) || isReflection(m)) ? messages : undefined;
+}
+
+/** A fired wake's one-line summary: what the pass read, or the wake's name and note. */
+export const firedLabel = (text: string): string => isReflection(text)
+  ? `Reflection on memory: ${text.slice(REFLECTION_MARKER.length).trim()}`
+  : `${text.split("\n")[0]!.slice(SCHEDULED_WAKE_MARKER.length).trim()} — ${text.split("\n").slice(1).join(" ").trim()}`;
+
+export type ChatItem<T> =
+  | { kind: "turn"; turn: T } | { kind: "agents"; turns: T[] }
+  | { kind: "integration"; turn: T; messages: IntegrationMessage[] }
+  | { kind: "fired"; turn: T; messages: string[] };
 
 /** A worker-woken turn worth keeping in the open: it has something to say, not just the worker
  *  reports that woke it. A wake that finished with no text and no structured outcome — only tool
@@ -4301,15 +4318,18 @@ const hasReply = (t: Sourced): boolean => Boolean(t.finishedAt) && (Boolean(t.re
  *  into it (ChatTurn's own WorkerBlock) but the reply itself always in the open, in order, like a
  *  reply to a human turn. Only a worker-woken turn with nothing to show for itself — no reply yet, or
  *  one that finished with no text and no structured outcome — folds into one collapsed run with its
- *  neighbours; an outside message's wake is its own activity row (never your bubble, even when it
- *  holds the newest answer). `keepOut` is a turn that never folds into a block: the newest answer,
- *  which the chat always shows (see newestMessages). */
+ *  neighbours; an outside message's wake, and a wake the agent fired on itself (a scheduled wake or a
+ *  reflection pass), are each their own activity row (never your bubble, even when it holds the
+ *  newest answer). `keepOut` is a turn that never folds into a block: the newest answer, which the
+ *  chat always shows (see newestMessages). */
 export function chatItems<T extends Sourced>(turns: T[], keepOut?: T): ChatItem<T>[] {
   const out: ChatItem<T>[] = [];
   for (const t of turns) {
     const last = out[out.length - 1];
     const outside = integrationTurn(t);
+    const fired = firedTurn(t);
     if (outside) out.push({ kind: "integration", turn: t, messages: outside });
+    else if (fired) out.push({ kind: "fired", turn: t, messages: fired });
     else if (sourceOf(t) === "human" || t === keepOut || hasReply(t)) out.push({ kind: "turn", turn: t });
     else if (last?.kind === "agents") last.turns.push(t);
     else out.push({ kind: "agents", turns: [t] });
