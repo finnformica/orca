@@ -12,32 +12,28 @@ The site is plain HTML and CSS in `public/`, with a self-hosted font (Unbounded,
 `public/fonts/OFL.txt`). It makes no external request, and it has no script and no tracking. The Worker
 (`src/worker.ts`) runs only for `/api/*`. The tests are in `tests/site.test.ts` at the repo root.
 
-## Deploy with GitHub Actions
+## Deploy with Workers Builds
 
-`.github/workflows/site.yml` deploys the Worker with `cloudflare/wrangler-action` (`wrangler deploy` in
-`site/`). It runs on each push to `main` that changes `site/**` or the workflow, and by hand
-(**Actions > site > Run workflow**). When `CLOUDFLARE_API_TOKEN` is not set, the run skips the deploy
-and passes.
+Use these settings in the Cloudflare dashboard (**Workers & Pages > Create > Import a repository**):
 
-Set it up one time:
+| Setting | Value |
+| --- | --- |
+| Repository | `finnformica/orca` |
+| Branch | `main` |
+| Root directory | `site` |
+| Build watch paths | `site/**` |
+| Build command | (empty) |
+| Deploy command | `npx wrangler deploy` |
 
-1. In the Cloudflare dashboard, open **My Profile > API Tokens**. Click **Create Token**.
-2. Use the template **Edit Cloudflare Workers**. Limit it to your account. Click **Create Token**.
-3. Copy the token.
-4. Copy your account ID from **Workers & Pages** (the right column).
-5. In GitHub, open `finnformica/orca` **Settings > Secrets and variables > Actions**.
-6. Add the repository secret `CLOUDFLARE_API_TOKEN` with the token.
-7. Add the repository secret `CLOUDFLARE_ACCOUNT_ID` with the account ID.
-8. Open **Actions > site**. Click **Run workflow** on `main`.
+Each push to `main` that changes a file under `site/` deploys the Worker again.
 
-The first deploy makes the Worker `orca-site`. `wrangler.jsonc` holds no account id and no routes.
-Add the custom domain in the dashboard: open the Worker, then **Settings > Domains & Routes > Add >
-Custom domain**. `workers_dev` is on and `preview_urls` is off.
+`wrangler.jsonc` holds no account id and no routes. Workers Builds gives the account. Add the custom
+domain in the dashboard: open the Worker, then **Settings > Domains & Routes > Add > Custom domain**.
+`workers_dev` is on and `preview_urls` is off.
 
 ## The variable
 
-Set one variable on the Worker in the dashboard, after the first deploy: **Settings > Variables and
-Secrets > Add**.
+Set one variable on the Worker in the dashboard: **Settings > Variables and Secrets > Add**.
 
 | Name | Type | Value |
 | --- | --- | --- |
