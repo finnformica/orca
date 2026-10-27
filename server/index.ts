@@ -14,6 +14,7 @@ import { portFree, reclaimBridgePort, waitForPortFree } from "./net";
 import { RENEW_POLL_MS, refreshProfile, renewStaleLogins, routingInfo, setProfileEnabled, setProfileEnabledEverywhere, usage, usageAcrossInstances } from "./usage";
 import * as ledger from "./ledger";
 import * as db from "./db";
+import * as rooms from "./rooms";
 import * as outbox from "./outbox";
 import * as transcript from "./transcript";
 import { backfillRun } from "./backfill";
@@ -444,7 +445,7 @@ const NOTICE_WINDOW = 200;
 // the machine that produced it is asleep. Everything else touches a worktree or spawns a process and
 // must run where the repo lives.
 const DATABASE_ONLY = new Set([
-  "/api/turns", "/api/turns/local", "/api/enrichment", "/api/enrichment/import", "/api/config", "/api/config/document",
+  "/api/turns", "/api/turns/local", "/api/rooms", "/api/enrichment", "/api/enrichment/import", "/api/config", "/api/config/document",
   // /api/usage merges every reachable instance's reading (usageAcrossInstances); /api/usage/local is
   // what that merge fetches from a PEER — always this host's own, unmerged, never forwarded (a repo's
   // placement must not send it chasing a worktree that has nothing to do with hydra).
@@ -1808,6 +1809,14 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (req.method === "POST" && p === "/api/queued/cancel") {
     await db.cancelQueuedMessage(Number(body.id));
     return json({ ok: true });
+  }
+  if (req.method === "GET" && p === "/api/rooms") {
+    // A chat's agent-to-agent messages (docs/design/agent-rooms.md), read off its turns and the
+    // named agents' chats. Read only: nothing about routing or delivery changes.
+    const branch = url.searchParams.get("branch");
+    if (!branch) return json({ error: "branch required" }, 400);
+    try { return json({ entries: await rooms.roomEntries(repo.name, branch) }); }
+    catch (e) { if (db.isDbError(e)) return json({ entries: [], dbUnavailable: true }); throw e; }
   }
   if (req.method === "GET" && p === "/api/turns/steps") {
     // Catch-up after a dropped stream: the steps recorded since the cursor the client holds. The

@@ -1331,14 +1331,14 @@ export const turnSource = (messages: string[]): TurnSource =>
 /** The origin of a turn the orchestrator starts: its wake and, BY ID, the `queued_message` rows a
  *  person wrote (`ids[i]` is the row of `messages[i]`). Worker reports and Orca events are counted,
  *  not referenced. No text is copied: the chat and `orca read` join the rows. Pure. */
-export function turnOrigin(wake: { runId: string; messages: string[]; ids: number[] }): TurnOrigin {
+export function turnOrigin(wake: { runId: string; messages: string[]; ids: number[]; agent?: string }): TurnOrigin {
   const messageIds: number[] = [];
   let otherCount = 0;
   wake.messages.forEach((m, i) => {
     if (!isUserMessage(m)) otherCount++;
     else if (wake.ids[i] !== undefined) messageIds.push(wake.ids[i]!);
   });
-  return { wakeRunId: wake.runId, messageIds, otherCount };
+  return { wakeRunId: wake.runId, messageIds, otherCount, ...(wake.agent ? { agent: wake.agent } : {}) };
 }
 /** What the chat shows for a referenced row that is gone. */
 export const ORIGIN_MISSING = "message no longer stored";

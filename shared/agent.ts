@@ -149,6 +149,9 @@ export type TurnOrigin = {
   messageIds: number[];
   /** How many messages of the wake were worker reports or Orca events (not referenced). */
   otherCount: number;
+  /** The named agent whose wake it was (shared/rooms.ts: the room's other end). Absent on an older
+   *  origin: that reads as the Chief of Staff, the only agent that may brief a worker. */
+  agent?: string;
 };
 /** One referenced message, joined from its `queued_message` row (`missing`: the row is gone). */
 export type OriginMessage = {
@@ -192,6 +195,9 @@ export type AgentTurn = {
   origin?: TurnOrigin;
   /** `origin.messageIds` joined to their rows — server-decorated (`originMessages` in server/db.ts). */
   originMessages?: OriginMessage[];
+  /** Who sent the turn and whose chat it is in (shared/rooms.ts TurnRoute), read off `structured`.
+   *  Absent on a row from before it was recorded: shared/rooms.ts `routeOf` derives it. */
+  route?: { sender: { kind: "person" | "agent" | "worker" | "orca"; id: string }; recipient: { kind: "person" | "agent" | "worker" | "orca"; id: string } };
 };
 
 const OUTCOME_HEADINGS = ["outcome", "verification", "decisions", "remaining", "commits"] as const;

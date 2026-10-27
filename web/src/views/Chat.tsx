@@ -8,7 +8,7 @@
 // Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every board
 // action uses.
 import { createContext, memo, startTransition, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { AlarmClock, ArrowDown, Bot, Check, ChevronRight, CloudMoon, Cog, Copy, Loader2, Quote as QuoteIcon, X } from "lucide-react";
+import { AlarmClock, ArrowDown, ArrowLeft, Bot, Check, ChevronRight, CloudMoon, Cog, Copy, Loader2, Quote as QuoteIcon, X } from "lucide-react";
 import { isScheduledWake } from "../../../shared/scheduledWake";
 import { isReflection } from "../../../shared/memory";
 import { cn, PipContext } from "@/lib/utils";
@@ -17,6 +17,9 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import type { AgentStep, AgentTurn, OriginMessage, TurnOrigin } from "../../../shared/agent";
+import { agentMessageFrom, isAgentMessage } from "../../../shared/agents";
+import { agentSide, chatOwner, entryPill, entryTurn, inMainChat, mergePills, roomUnseen, roomsOf, routeLabel, routeOf, sameSide, sideLabel, stripAgentWrapper, type RoomEntry, type RoomPill, type Side } from "../../../shared/rooms";
+import { persistedKey, usePersisted } from "@/lib/persisted";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, previewsEnabled, refresh, setCardModel, type Row } from "../store";
 import { ORCHESTRATOR_REPO, RECENT_FULL, TAIL_WINDOW, reportShots, turnHandoffs, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, splitSecretRefs, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, firedLabel, longMessage, newestMessages, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, formatDuration, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, undeliveredQueued, composerHistory, integrationPreview, integrationState, anchorShift, eagerFrom, estimateItemHeight, withNotices, ORIGIN_MISSING, originAskedBy, originAt, originHead, originSkippedText, originTimeLabel, type AgentMention } from "../workstream";
@@ -417,7 +420,7 @@ export function Attachments({ files, secrets = [], className = "" }: { files: At
  *  the composer as a blockquote) for one message. Hidden until the message is hovered, but stays
  *  reachable: visible while a button inside has focus (keyboard), and always on a touch screen,
  *  which has no hover to reveal it. */
-function MessageActions({ text, onQuote, className }: { text: string; onQuote: () => void; className?: string }) {
+function MessageActions({ text, onQuote, className }: { text: string; onQuote?: () => void; className?: string }) {
   const [copied, setCopied] = useState(false);
   const onCopy = async () => {
     if (await copyText(text, "message")) { setCopied(true); setTimeout(() => setCopied(false), 1500); }
@@ -433,11 +436,14 @@ function MessageActions({ text, onQuote, className }: { text: string; onQuote: (
           {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
         </Button>
       </Tip>
-      <Tip label="Quote">
-        <Button type="button" size="icon" variant="ghost" className={cn("size-6", btn)} aria-label="Quote message" onClick={onQuote}>
-          <QuoteIcon className="size-3.5" />
-        </Button>
-      </Tip>
+      {/* No Quote where there is no composer (a room is read only). */}
+      {onQuote && (
+        <Tip label="Quote">
+          <Button type="button" size="icon" variant="ghost" className={cn("size-6", btn)} aria-label="Quote message" onClick={onQuote}>
+            <QuoteIcon className="size-3.5" />
+          </Button>
+        </Tip>
+      )}
     </div>
   );
 }
@@ -652,7 +658,10 @@ const clockOf = (ms?: number) => (ms ? CLOCK.format(ms) : "");
 // Memoized, with only stable props (the turn, flags, two stable callbacks): a re-render of the panel —
 // every open sets a new composer prefill — must not render the whole thread again (measured: ~60ms per
 // open with a long orchestrator thread at 4× CPU in production, ~250ms in dev).
-const ChatTurn = memo(function ChatTurn({ turn, loadStepsFor, compact, newestSaid, onQuote, author }: { turn: AgentTurn; loadStepsFor?: (turn: AgentTurn) => Promise<AgentStep[]>; compact?: boolean; newestSaid?: boolean; onQuote: (text: string) => void; author?: string }) {
+// `saidBy` / `replyBy` are the speakers (shared/rooms.ts sideLabel): a room, or a turn that is not
+// the person's, names who sent the messages; `replyBy: null` draws no reply (a message the other side
+// has not answered). Primitive props, so the memo holds. Without them: you, and the agent (`author`).
+const ChatTurn = memo(function ChatTurn({ turn, loadStepsFor, compact, newestSaid, onQuote, author, owner, saidBy, replyBy, source }: { turn: AgentTurn; loadStepsFor?: (turn: AgentTurn) => Promise<AgentStep[]>; compact?: boolean; newestSaid?: boolean; onQuote?: (text: string) => void; author?: string; owner?: Side; saidBy?: string; replyBy?: string | null; source?: string }) {
   const loadSteps = loadStepsFor && (() => loadStepsFor(turn));
   const parts = splitMessages(turn.instruction ?? promptInstruction(turn.prompt));
   // A wake that carried your messages AND worker reports: your words in bubbles — one per message you
@@ -662,14 +671,17 @@ const ChatTurn = memo(function ChatTurn({ turn, loadStepsFor, compact, newestSai
   // A scheduled wake the agent set itself (`orca wake`): a system line, never a bubble of yours.
   // A reflection (shared/memory.ts) is Orca's own turn for the agent's memory: a system line too.
   const fired = parts.filter((p) => isScheduledWake(p) || isReflection(p));
-  const said = parts.filter((p) => !isWorkerEvent(p) && !integrationMessage(p) && !isScheduledWake(p) && !isReflection(p));
+  // Another agent's message (`orca ask`) in a wake that also carried yours: its own card with both
+  // ends named, never your bubble. A wake of only such messages is in that agents' room instead.
+  const asks = parts.filter(isAgentMessage);
+  const said = parts.filter((p) => !isWorkerEvent(p) && !integrationMessage(p) && !isScheduledWake(p) && !isReflection(p) && !isAgentMessage(p));
   // Each message's files: an orchestrator wake carries their references in the instruction (one set
   // per message); an agent chat's instruction is the typed text alone, its files read off the prompt.
   const inline = attachmentRefs(turn.instruction ?? "").length > 0;
   const filesOf = (text: string, i: number) => inline ? attachmentRefs(text) : i === said.length - 1 ? turn.attachments ?? [] : [];
   const time = clockOf(turn.startedAt);
   return (
-    <div className="mb-4" data-slot="chat-turn" data-run-id={turn.id} data-failed={turn.failed || undefined}>
+    <div className="mb-4" data-slot="chat-turn" data-run-id={turn.id} data-failed={turn.failed || undefined} data-source={source}>
       {/* Why the orchestrator started this turn: the person's words in its wake, above the brief. */}
       {turn.origin && <TurnOriginQuote origin={turn.origin} messages={turn.originMessages ?? turn.origin.messageIds.map((id) => ({ id, missing: true as const }))} />}
       {/* Worker reports that woke it, split out of what you said: a collapsed block of their own. */}
@@ -688,11 +700,13 @@ const ChatTurn = memo(function ChatTurn({ turn, loadStepsFor, compact, newestSai
           <span className="truncate">{firedLabel(text)}</span>
         </div>
       ))}
+      {asks.map((text, i) => <AgentAsk key={`a${i}`} text={text} to={owner} time={time} />)}
       {outside.length > 0 && (
         <IntegrationCard slot="turn-integration" messages={outside} time={time} state={integrationState(turn)}>
           <IntegrationMessages messages={outside} />
         </IntegrationCard>
       )}
+      {saidBy && said.length > 0 && <div data-slot="chat-speaker" className="text-muted-foreground mb-0.5 text-right text-[11px]">{saidBy}</div>}
       {said.map((text, i) => {
         const clean = withoutAttachmentList(text);
         return (
@@ -701,21 +715,21 @@ const ChatTurn = memo(function ChatTurn({ turn, loadStepsFor, compact, newestSai
           <UserBubble key={i} text={clean} files={filesOf(text, i)} clamp={!(newestSaid && i === said.length - 1) && longMessage(clean)}
             footer={
               <div className="flex items-center justify-end gap-1.5">
-                {clean && <MessageActions text={clean} onQuote={() => onQuote(clean)} />}
+                {clean && <MessageActions text={clean} onQuote={onQuote && (() => onQuote(clean))} />}
                 {i === said.length - 1 && <div className="text-muted-foreground text-[10px] opacity-0 transition-opacity group-hover:opacity-100" data-slot="turn-time">{time}</div>}
               </div>
             } />
         );
       })}
-      <div className="group flex gap-2" data-slot="chat-reply">
+      {replyBy !== null && <div className="group flex gap-2" data-slot="chat-reply">
         <span className="bg-accent text-foreground inline-flex size-6 shrink-0 items-center justify-center rounded-full" aria-hidden="true"><Bot className="size-3.5" /></span>
         <div className="min-w-0 flex-1">
           {/* One line the avatar's height: the name, then Copy / Quote right beside it (not after the
               hover-only time, whose reserved width left them floating off on their own), then the time. */}
           <div data-slot="chat-reply-head" className="text-muted-foreground mb-0.5 flex h-6 items-center gap-2 text-[11px]">
-            <span className="text-foreground font-medium">{author ?? agentLabel(turn.provider)}</span>
+            <span className="text-foreground font-medium">{replyBy ?? author ?? agentLabel(turn.provider)}</span>
             {turn.failed ? <span className="text-red-400">failed</span> : turn.stopped ? <span className="text-amber-400">stopped by you</span> : null}
-            {turn.finishedAt && turn.response && <MessageActions text={turn.response} onQuote={() => onQuote(turn.response)} className="-mx-1" />}
+            {turn.finishedAt && turn.response && <MessageActions text={turn.response} onQuote={onQuote && (() => onQuote(turn.response))} className="-mx-1" />}
             <span className="opacity-0 transition-opacity group-hover:opacity-100" data-slot="turn-time">{clockOf(turn.finishedAt) || time}</span>
           </div>
           <Reply turn={turn} loadSteps={loadSteps} compact={compact} />
@@ -724,7 +738,7 @@ const ChatTurn = memo(function ChatTurn({ turn, loadStepsFor, compact, newestSai
           {/* A form this turn asked (`orca ask-form`): fill it in here. */}
           {turnForms(turn).map((id) => <FormCard key={id} id={id} />)}
         </div>
-      </div>
+      </div>}
     </div>
   );
 });
@@ -1039,6 +1053,53 @@ function NoticeWatch({ onNew }: { onNew: () => void }) {
  *  picker and the context ring (ChatControls); `controls` supplies their values when they don't come
  *  from the row's card. Everything else — the turns, steps, attachments, worker reports, queued and
  *  sending messages, scrolling, the composer — is the same on every surface. */
+// ---- agent rooms (shared/rooms.ts, docs/design/agent-rooms.md) ----
+
+/** What the chat places between its turns by time: a notice, or a room pill. */
+type Placed = { id: string; at: number; notice?: Notice; pill?: RoomPill };
+
+const isSeenMap = (v: unknown): v is Record<string, number> =>
+  typeof v === "object" && v !== null && !Array.isArray(v) && Object.values(v).every((n) => typeof n === "number");
+
+/** An agent's message to this chat's agent, in a wake that also carried yours: both ends named, the
+ *  wrapper (`[from chief]`) stripped. */
+function AgentAsk({ text, to, time }: { text: string; to?: Side; time: string }) {
+  const from = agentMessageFrom(text);
+  return (
+    <div data-slot="agent-ask" className="mb-2 rounded-md border px-2.5 py-1.5 text-[12px]">
+      <div className="text-muted-foreground mb-0.5 flex items-center gap-1.5 text-[11px]" data-slot="agent-ask-route">
+        <Bot className="size-3.5 shrink-0" aria-hidden />
+        <span className="truncate">{from && to ? routeLabel(agentSide(from), to) : "From another agent"}</span>
+        <span className="ml-auto shrink-0">{time}</span>
+      </div>
+      <ChatMarkdown tone="text-foreground" breaks>{stripAgentWrapper(text)}</ChatMarkdown>
+    </div>
+  );
+}
+
+/** Where agents talked, in your chat: "N messages with <agent>", opening the room. A brief's origin —
+ *  the words you said that caused it — sits above it in your own lane. */
+function RoomPillRow({ pill, unseen, onOpen }: { pill: RoomPill; unseen: boolean; onOpen: () => void }) {
+  const peer = sideLabel(pill.peer);
+  return (
+    <div className="mb-4" data-slot="room-pill-row">
+      {pill.person.map((m) => (
+        <UserBubble key={m.id} text={m.text ?? ""} files={[]} clamp={longMessage(m.text ?? "")} slot="room-person" textSlot="room-person-text"
+          footer={<div className="text-muted-foreground text-right text-[10px]">You · via {peer}</div>} />
+      ))}
+      <div className="flex justify-center">
+        <Button type="button" variant="outline" size="sm" onClick={onOpen} data-slot="room-pill" data-room={pill.room}
+          className="h-7 gap-1.5 rounded-full px-3 text-[12px] font-normal">
+          <Bot className="size-3.5" aria-hidden />
+          {pill.count} message{pill.count === 1 ? "" : "s"} with {peer}
+          {unseen && <span data-slot="room-unseen" className="bg-geist-blue size-1.5 rounded-full" aria-label="new" />}
+          <ChevronRight className="size-3.5" aria-hidden />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export function ChatPanel({ row, send, controls, prefill, outbox, author, size = "panel", autoFocus, mention }: {
   row: Row; send?: (text: string, images: File[]) => Promise<void>; controls?: ChatControlsProps;
   /** The orchestrator's panel only: named agents for the composer's `@` picker. A send with recipient
@@ -1147,7 +1208,37 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
       const had = new Map(prev.map((t) => [t.id, t.steps]));
       return mergeLatestPage(prev, page.turns.map((t) => (t.steps || !had.get(t.id) ? t : { ...t, steps: had.get(t.id) })));
     });
+    void loadRooms();
   };
+  // The chat's rooms (shared/rooms.ts): agent-to-agent traffic, read with every fresh page. A failed
+  // read keeps the last good list.
+  const owner = useMemo(() => chatOwner(row.repo, row.branch), [row.repo, row.branch]);
+  const [roomEntries, setRoomEntries] = useState<RoomEntry[]>([]);
+  // "loading" until the first answer, then "ok" — or "failed", which keeps every turn in the chat.
+  const [roomsState, setRoomsState] = useState<"loading" | "ok" | "failed">("loading");
+  const loadRooms = async () => {
+    const got = await Promise.resolve().then(() => api.rooms(row.repo, row.branch)).catch(() => null);
+    if (got && Array.isArray(got.entries) && !got.dbUnavailable) { setRoomEntries(got.entries); setRoomsState("ok"); }
+    else setRoomsState((s) => (s === "loading" ? "failed" : s));
+  };
+  // A turn leaves your chat only for a room that holds it (or while the rooms load): when the read
+  // fails, or the turn is older than what it returned, it stays here. Nothing is lost.
+  const roomRuns = useMemo(() => new Set(roomEntries.filter((e) => sameSide(e.chat, owner)).map((e) => e.id)), [roomEntries, owner]);
+  const inChat = (t: AgentTurn) => inMainChat(owner, t) || roomsState === "failed" || (roomsState === "ok" && !roomRuns.has(t.id));
+  const rooms = useMemo(() => roomsOf(owner, roomEntries), [owner, roomEntries]);
+  const pills = useMemo(() => roomEntries.map((e) => entryPill(owner, e)), [roomEntries, owner]);
+  // The open room: read only, drawn by the same transcript in this pane, with a Back button.
+  const [openRoom, setOpenRoom] = useState<string | null>(null);
+  const room = rooms.find((r) => r.id === openRoom);
+  const roomLog = useRef<HTMLDivElement>(null);
+  // A room opens at its newest message, like the chat.
+  useLayoutEffect(() => { if (roomLog.current) roomLog.current.scrollTop = roomLog.current.scrollHeight; }, [room?.id, room?.entries.length]);
+  const [seen, setSeen] = usePersisted<Record<string, number>>(persistedKey("roomSeen", `${row.repo}::${row.branch}`), {}, isSeenMap);
+  // An open room is read: its newest message marks it seen.
+  useEffect(() => {
+    if (!room) return;
+    if ((seen[room.id] ?? 0) < room.lastAt) setSeen({ ...seen, [room.id]: room.lastAt });
+  }, [room, seen, setSeen]);
   /** The page before the oldest loaded turn, put in front of it with the scroll position anchored on
    *  what you were reading (useLayoutEffect below). */
   const loadOlder = async () => {
@@ -1414,13 +1505,31 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
   // Your newest message and the newest answer are never clamped or folded, at any age.
   const newest = newestMessages(turns ?? []);
   const loadStepsFor = useCallback((turn: AgentTurn) => api.turnSteps(row.repo, row.branch, turn.id, 0).then((r) => withoutFinalEcho(r.steps, turn.response)), [row.repo, row.branch]);
-  const chatTurn = (turn: AgentTurn) => <ChatTurn key={turn.id} turn={turn} loadStepsFor={loadStepsFor} compact={(position.get(turn.id) ?? 0) < compactBefore && turn !== newest.answer} newestSaid={turn === newest.said} onQuote={onQuote} author={author} />;
+  // Each turn carries its source (shared/rooms.ts route: person, agent, worker, Orca); one that is not
+  // the person's names its sender over its messages, so your own words are the only unnamed lane.
+  const chatTurn = (turn: AgentTurn) => {
+    const { sender } = routeOf(owner, turn);
+    return <ChatTurn key={turn.id} turn={turn} loadStepsFor={loadStepsFor} compact={(position.get(turn.id) ?? 0) < compactBefore && turn !== newest.answer} newestSaid={turn === newest.said} onQuote={onQuote} author={author} owner={owner}
+      source={sender.kind} saidBy={sender.kind === "person" ? undefined : sideLabel(sender)} />;
+  };
+  // A room's turns: the same transcript, each side named, read only (no Quote, no composer).
+  const roomTurn = (e: RoomEntry) => <ChatTurn key={e.id} turn={entryTurn(e) as AgentTurn} owner={owner} source={e.sender.kind}
+    saidBy={sideLabel(e.sender)} replyBy={e.reply ? sideLabel(e.recipient) : null} />;
+  const openRoomAt = (id: string) => {
+    const r = rooms.find((x) => x.id === id);
+    if (r) setSeen({ ...seen, [r.id]: Math.max(seen[r.id] ?? 0, r.lastAt) });
+    setOpenRoom(id);
+  };
   // The orchestrator's chat places notices between the mounted turns, by time: only those inside
   // the window's span, so one never sits beside turns it is not between.
   const noticeFrom = range.start > 0 || older ? shownTurns?.[0]?.startedAt ?? -Infinity : -Infinity;
   const noticeTo = hiddenBelow > 0 ? turns?.[range.end]?.startedAt ?? Infinity : Infinity;
   const renderTurns = (list: AgentTurn[]) => {
-    const items = withNotices(chatItems(list, newest.answer), outbox ? notices : [], noticeFrom, noticeTo);
+    // Notices and room pills are placed between the turns by time, the same way; a run of one room's
+    // pills with nothing between becomes one.
+    const placed: Placed[] = [...(outbox ? notices : []).map((n) => ({ id: n.id, at: n.at, notice: n })), ...pills.map((p) => ({ id: p.id, at: p.at, pill: p }))];
+    const items = mergePills(withNotices(chatItems(list, newest.answer), placed, noticeFrom, noticeTo),
+      (it) => (it.kind === "notice" ? it.notice.pill : undefined), (p) => ({ kind: "notice" as const, notice: { id: p.id, at: p.at, pill: p } }));
     // The newest items that fill about one and a half screens mount at once; the rest as they near
     // the viewport. Your newest message and the newest answer are full height (never compact).
     const estimates = items.map((item) => item.kind !== "turn" ? estimateItemHeight(0, { folded: true }) // a collapsed row: worker reports, an outside message, a notice
@@ -1439,7 +1548,9 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
               <span className="h-px flex-1 bg-border" /><span>{dayLabel(first.startedAt!)}</span><span className="h-px flex-1 bg-border" />
             </div>
           )}
-          {item.kind === "notice" ? <NoticeCard notice={item.notice} />
+          {item.kind === "notice" ? (item.notice.pill
+              ? <RoomPillRow pill={item.notice.pill} unseen={roomUnseen(item.notice.pill.lastAt, seen[item.notice.pill.room])} onOpen={() => openRoomAt(item.notice.pill!.room)} />
+              : <NoticeCard notice={item.notice.notice!} />)
             : item.kind === "turn" ? chatTurn(item.turn)
             : item.kind === "integration" ? <IntegrationBlock turn={item.turn} messages={item.messages} loadStepsFor={loadStepsFor} />
             : item.kind === "fired" ? <FiredBlock turn={item.turn} messages={item.messages} loadStepsFor={loadStepsFor} />
@@ -1452,8 +1563,24 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
     // log-themed: the page's theme (styles.css remaps the dark palette in light mode).
     <div className="log-themed flex h-full flex-col" data-slot="chat-panel" data-size={size}>
       {outbox && <NoticeWatch onNew={loadNotices} />}
+      {room && (
+        <div data-slot="room-head" className={cn("flex items-center gap-2 border-b py-1.5", size === "page" ? "px-4 md:px-6" : "px-3")}>
+          <Button type="button" variant="ghost" size="sm" className="h-7 gap-1 px-2 text-[12px]" data-slot="room-back" onClick={() => setOpenRoom(null)}>
+            <ArrowLeft className="size-3.5" aria-hidden />Back
+          </Button>
+          <span className="min-w-0 truncate text-[12px] font-medium" data-slot="room-title">Messages with {sideLabel(room.peer)}</span>
+          <span className="text-muted-foreground ml-auto shrink-0 text-[11px]">{sideLabel(room.peer)} and {sideLabel(owner)} · read only</span>
+        </div>
+      )}
+      {room && (
+        <div data-slot="room-log" data-room={room.id} ref={roomLog}
+          className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain leading-relaxed ${size === "page" ? "px-4 py-3 md:px-6" : "p-3"} font-sans text-[13px] text-neutral-200 [&_.prose]:text-[13px]`}>
+          <DraftContext.Provider value={drafts}>{room.entries.map(roomTurn)}</DraftContext.Provider>
+        </div>
+      )}
       <div
         ref={scroller}
+        hidden={Boolean(room)}
         data-slot="chat-log"
         onScroll={onScroll}
         onWheel={() => { seek.current++; }}
@@ -1495,7 +1622,7 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
         )}
         {turns === null ? <ChatSkeleton rows={4} />
           : turns.length === 0 ? <p className="text-neutral-500">No history yet for <span className="text-neutral-300">{row.branch}</span>. Send a message below to start.</p>
-          : <LazyContext.Provider value={lazy}><DraftContext.Provider value={drafts}>{renderTurns(shownTurns!)}</DraftContext.Provider></LazyContext.Provider>}
+          : <LazyContext.Provider value={lazy}><DraftContext.Provider value={drafts}>{renderTurns(shownTurns!.filter(inChat))}</DraftContext.Provider></LazyContext.Provider>}
         {hiddenBelow > 0 && (
           <div className="mb-3 flex justify-center" data-slot="chat-newer">
             <button type="button" onClick={() => setWin(revealBelow(turns ?? [], win))} className="rounded-md border border-neutral-800 px-2 py-0.5 text-[11px] text-neutral-400 hover:text-neutral-200">
@@ -1531,7 +1658,7 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
           </div>
         )}
       </div>
-      <div data-slot="chat-composer-dock" className={size === "page" ? "border-t p-4" : cn("border-t p-2", !pip && "max-md:p-3")}>
+      <div data-slot="chat-composer-dock" hidden={Boolean(room)} className={size === "page" ? "border-t p-4" : cn("border-t p-2", !pip && "max-md:p-3")}>
       <ChatComposer
         className="shadow-none"
         commands={slash.commands}
