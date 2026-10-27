@@ -317,6 +317,14 @@ export const api = {
     for (const f of files) form.append("files", f);
     return (await apiFetch("/api/attachments", { method: "POST", body: form }).then(res)).paths;
   },
+  // A stored attachment as a File again: a cancelled queued message's files go back into the
+  // composer as chips, and a send uploads them like any fresh file.
+  attachmentFile: async (id: string, name: string): Promise<File> => {
+    const r = await apiFetch(`/api/attachments/${encodeURIComponent(id)}`);
+    if (!r.ok) throw new Error(`attachment ${name}: HTTP ${r.status}`);
+    const blob = await r.blob();
+    return new File([blob], name, { type: blob.type });
+  },
   // A recorded clip → its transcript (server/voice.ts). The bridge holds the key.
   transcribe: async (audio: Blob, name: string): Promise<string> => {
     const form = new FormData();

@@ -91,10 +91,13 @@ these (`shared/secretGuard.ts`, taken from the gitleaks rule set):
   (`=`, `:` or a space), then 16 or more characters (hex and a single case both count — this is
   what catches a Datadog- or Mailgun-style hex key with no prefix of its own).
 
-The bar under the box gives two choices:
+A bar inside the box, above the text, gives two choices:
 
-- **Save as secret** stores each value in the `chat` scope. The message then holds
-  `[secret chat/<name> stored]` in place of the value.
+- **Save as secret** stores each value in the `chat` scope. The value goes out of the text, and a
+  secret chip (a lock icon and the name, never the value) appears in the box beside the image chips.
+  On send, the message holds `[secret chat/<name> stored]` for each chip, and the box clears the
+  chips. The sent or queued message shows the chip under its bubble. If the guard held a send, the
+  send continues after the save.
 - **Send anyway** sends the text as it is.
 
 A commit sha, a UUID, a URL and a path do not trigger the guard — unless one of the keywords above

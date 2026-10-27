@@ -197,16 +197,38 @@ describe("paste guard", () => {
     expect(q("[data-slot=paste-guard]")).toBeNull();
   });
 
-  test("Save as secret stores the value and sends only its name", async () => {
+  test("Save as secret stores the value, makes a chip in the box, and the send carries only its name", async () => {
     const sent: string[] = [];
     const el = await mount(sent);
     await setValue(el, "deploy with ");
     await paste(el, SECRET);
+    // The guard is inside the box, not under it.
+    expect(q("[data-slot=paste-guard]")!.parentElement!.contains(q("[data-slot=chat-composer-toolbar]"))).toBe(true);
     await setValue(q<HTMLInputElement>("[data-slot=paste-guard-name]")!, "stripe_key");
     await click(q("[data-slot=paste-guard-save]")!);
     expect(apiFake.secretSaves).toEqual([{ name: "stripe_key", scope: "chat", value: SECRET }]);
-    expect(sent).toEqual(["deploy with [secret chat/stripe_key stored]"]);
+    // A paste only adds the chip: nothing is sent yet, and the value is out of the text.
+    expect(sent).toEqual([]);
+    expect(el.value).not.toContain(SECRET);
+    const chip = q("[data-slot=composer-attachment][data-attachment=secret]")!;
+    expect(chip.textContent).toBe("stripe_key");
+    expect(container!.innerHTML).not.toContain(SECRET);
+    await enter(el);
+    expect(sent).toEqual(["deploy with\n\n[secret chat/stripe_key stored]"]);
     expect(sent.join()).not.toContain(SECRET);
+    expect(q("[data-attachment=secret]")).toBeNull(); // the chip went with the message
+  });
+
+  test("a send the guard held goes on after Save as secret, with the chip", async () => {
+    const sent: string[] = [];
+    const el = await mount(sent);
+    await setValue(el, `use ${SECRET}`);
+    await enter(el);
+    expect(sent).toEqual([]);
+    await setValue(q<HTMLInputElement>("[data-slot=paste-guard-name]")!, "k");
+    await click(q("[data-slot=paste-guard-save]")!);
+    expect(sent).toEqual(["use\n\n[secret chat/k stored]"]);
+    expect(q("[data-attachment=secret]")).toBeNull();
   });
 
   test("a typed key is held at send too; ordinary text is not", async () => {
