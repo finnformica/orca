@@ -54,6 +54,14 @@ describe("the static pages", () => {
     expect(page("terms.html")).toContain("finnformica@gmail.com");
   });
 
+  test("dark, with the ASCII sea behind every page: hidden from screen readers, CSS only, still under reduced motion", () => {
+    const pages = readdirSync(dir).filter((f) => f.endsWith(".html"));
+    for (const name of pages) expect(page(name)).toContain('<div class="sea" aria-hidden="true">');
+    const css = page("styles.css");
+    expect(css).toContain("background: #000;");
+    expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)[^}]*animation-play-state: paused/);
+  });
+
   test("no external requests: no script, and every src or stylesheet is a path on this site", () => {
     for (const name of readdirSync(dir).filter((f) => f.endsWith(".html") || f.endsWith(".css"))) {
       const body = page(name);
