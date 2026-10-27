@@ -1486,7 +1486,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     }
     await gh.mergePr(repo.repoPath, body.pr);
     if (body.branch) await db.archive(repo.name, body.branch); // finished, not forgotten — the chat history stays
-    if (body.worktreePath) await git.removeWorktree(repo.repoPath, body.worktreePath).catch(() => {});
+    if (body.worktreePath) await git.removeWorktree(repo.repoPath, body.worktreePath, `merge PR #${body.pr}`).catch(() => {});
     return json({ ok: true });
   }
   if (req.method === "POST" && p === "/api/prs/close") {
@@ -1495,7 +1495,7 @@ async function api(req: Request, url: URL): Promise<Response> {
       agent.stop(body.worktreePath);
       await agent.killInWorktree(body.worktreePath);
       preview.stop(body.worktreePath, true); // teardown: drop this preview's DB
-      await git.removeWorktree(repo.repoPath, body.worktreePath).catch(() => {});
+      await git.removeWorktree(repo.repoPath, body.worktreePath, `close PR #${body.pr}`).catch(() => {});
     }
     if (body.branch) await git.deleteBranch(repo.repoPath, body.branch);
     if (body.branch) await db.archive(repo.name, body.branch);
@@ -1565,7 +1565,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     return json(await git.syncWorktrees(repo.repoPath, repo.worktreeRoot));
   }
   if (req.method === "POST" && p === "/api/worktrees/remove") {
-    await removeWorktree(repo, body.worktreePath, body.branch, Boolean(body.deleteBranch)); // never deletes a branch with an open PR
+    await removeWorktree(repo, body.worktreePath, body.branch, Boolean(body.deleteBranch), "discard route"); // never deletes a branch with an open PR
     return json({ ok: true });
   }
   if (req.method === "GET" && p === "/api/agents") {
@@ -1610,7 +1610,7 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (req.method === "POST" && p === "/api/merge-local") {
     await git.mergeLocal(repo.repoPath, repo.baseBranch, body.branch);
     if (body.branch) await db.archive(repo.name, body.branch);
-    if (body.worktreePath) await git.removeWorktree(repo.repoPath, body.worktreePath).catch(() => {});
+    if (body.worktreePath) await git.removeWorktree(repo.repoPath, body.worktreePath, "merge-local").catch(() => {});
     return json({ ok: true });
   }
   if (req.method === "POST" && p === "/api/agents/run") {

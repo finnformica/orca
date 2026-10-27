@@ -251,12 +251,12 @@ export class BusyError extends Error {
 /** Stop a worktree's agent and preview and remove it, deleting (and archiving) its branch when asked
  *  — the Discard button's body, also the route's own, so a second caller can't drift from it. Never
  *  deletes a branch with an open PR. */
-export async function removeWorktree(repo: RepoConfig, worktreePath: string, branch: string | undefined, deleteBranch: boolean): Promise<void> {
+export async function removeWorktree(repo: RepoConfig, worktreePath: string, branch: string | undefined, deleteBranch: boolean, why = "discard"): Promise<void> {
   agent.stop(worktreePath);
   await agent.killInWorktree(worktreePath);
   preview.stop(worktreePath);
   await procs.stopBridgesIn(worktreePath); // a branch preview's bridge preview.stop doesn't track
-  await git.removeWorktree(repo.repoPath, worktreePath).catch(() => {});
+  await git.removeWorktree(repo.repoPath, worktreePath, why).catch(() => {});
   if (deleteBranch && branch) await git.deleteBranch(repo.repoPath, branch);
   if (deleteBranch && branch) await db.archive(repo.name, branch);
 }
@@ -268,7 +268,7 @@ export async function archiveWorkstream(repo: RepoConfig, branch: string): Promi
   await db.dropQueuedMessages(repo.name, branch); // before stopping, so a racing exit handler can't claim one
   const hasPr = (await gh.listPrs(repo.repoPath)).some((p) => p.branch === branch);
   const existing = (await git.listWorktrees(repo.repoPath, repo.worktreeRoot)).find((w) => w.branch === branch);
-  if (existing) await removeWorktree(repo, existing.worktreePath, branch, !hasPr); // no worktree, nothing can run in it
+  if (existing) await removeWorktree(repo, existing.worktreePath, branch, !hasPr, "archive"); // no worktree, nothing can run in it
   await db.archive(repo.name, branch); // idempotent — a no-op if removeWorktree already archived it
 }
 
@@ -403,7 +403,7 @@ export async function moveWorkstream(cfg: OrcaConfig, repo: RepoConfig, branch: 
   if (agent.isRunning(wt.worktreePath)) throw new Error(`${repo.name}/${branch} has an agent running; wait for it (or stop it) before moving`);
   if (!(await git.hasRemote(repo.repoPath))) throw new Error(`${repo.name} has no remote to carry the branch across`);
   await git.pushBranch(wt.worktreePath, branch);
-  await git.removeWorktree(repo.repoPath, wt.worktreePath);
+  await git.removeWorktree(repo.repoPath, wt.worktreePath, `move to ${to}`);
   const res = await fetch(new URL("/api/worktrees/adopt", base), {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ repo: repo.name, branch, instance: to }),
   });
@@ -429,7 +429,7 @@ async function reapWorktree(repo: RepoConfig, w: { branch: string; worktreePath:
   preview.stop(w.worktreePath, true); // reaped → drop its preview DB too
   await procs.stopBridgesIn(w.worktreePath); // a branch preview's bridge preview.stop doesn't track
   await db.clearPreviewPlacement(w.worktreePath).catch(() => {});
-  await git.removeWorktree(repo.repoPath, w.worktreePath);
+  await git.removeWorktree(repo.repoPath, w.worktreePath, `reap: PR ${pr ? `#${pr} ` : ""}${reason}`);
   if (reason === "merged") await git.deleteBranch(repo.repoPath, w.branch);
   // The PR's hosted screenshots (server/prShots.ts) are only for reviewing it.
   if (pr) await prShots.deletePrAssets(repo.repoPath, pr).catch((e) => console.warn(`orca: PR #${pr}'s pr-assets refs not deleted: ${(e as Error).message.split("\n")[0]}`));
@@ -444,12 +444,22 @@ async function reapWorktree(repo: RepoConfig, w: { branch: string; worktreePath:
  *  worktree whose HEAD differs from the PR's last head may simply be BEHIND it (its last push
  *  landed from somewhere else and this worktree never fetched it) — `git.isAncestor` is the only
  *  way to tell that from a genuinely reused branch, and git is available here. */
-async function doneIsHistory(repoPath: string, pr: gh.DonePr, w: { branch: string; worktreePath: string; head?: string }, live: { open: boolean; queued: number }): Promise<boolean> {
-  const headBehindPr = w.head && pr.head && w.head !== pr.head ? await git.isAncestor(repoPath, w.head, pr.head, w.branch) : undefined;
+async function doneIsHistory(repo: RepoConfig, pr: gh.DonePr, w: { branch: string; worktreePath: string; head?: string }, live: { open: boolean; queued: number }): Promise<boolean> {
+  const headBehindPr = w.head && pr.head && w.head !== pr.head ? await git.isAncestor(repo.repoPath, w.head, pr.head, w.branch) : undefined;
   return mergedPrIsHistory({ mergedAt: pr.at !== undefined ? new Date(pr.at).toISOString() : undefined, headSha: pr.head }, {
     agentStatus: agent.isRunning(w.worktreePath) ? "running" : agent.status(w.worktreePath).status,
-    agentStartedAt: agent.status(w.worktreePath).startedAt, queued: live.queued, head: w.head, headBehindPr, openPr: live.open,
+    agentStartedAt: await lastRunStart(repo, w), queued: live.queued, head: w.head, headBehindPr, openPr: live.open,
   });
+}
+
+/** When the branch's newest run started: this bridge's run, else the newest turn in the database.
+ *  A bridge restart forgets its runs, and a send after the merge (new work on the branch) must still
+ *  read as new work, or the restarted bridge reaps a live worktree. A database error falls back to
+ *  the bridge's own value. */
+async function lastRunStart(repo: RepoConfig, w: { branch: string; worktreePath: string }): Promise<number | undefined> {
+  const here = agent.status(w.worktreePath).startedAt;
+  const stored = await db.turnPage(repo.name, w.branch, { limit: 1 }).then((p) => p.turns.at(-1)?.startedAt, () => undefined);
+  return Math.max(here ?? 0, stored ?? 0) || undefined;
 }
 
 export type CleanupResult = { branch: string; worktreePath: string; reason: git.ReapReason; action: "reaped" | "flagged" | "waiting"; why?: string };
@@ -475,12 +485,15 @@ export function cleanupRepo(repo: RepoConfig, opts: { now?: number; graceMs?: nu
     for (const w of await git.listWorktrees(repo.repoPath, repo.worktreeRoot)) {
       const pr = done.get(w.branch);
       if (!pr) continue;
-      live ??= {
-        open: new Set((await gh.listPrs(repo.repoPath).catch(() => [])).map((p) => p.branch)),
-        queued: await db.queuedCounts(repo.name).catch(() => new Map<string, number>()),
-      };
+      if (!live) {
+        // Open PRs unknown (a GitHub error) → reap nothing this pass: a branch reused for a new open
+        // PR would read as finished, and its live worktree would go.
+        const open = await gh.listPrs(repo.repoPath).catch(() => null);
+        if (!open) return out;
+        live = { open: new Set(open.map((p) => p.branch)), queued: await db.queuedCounts(repo.name).catch(() => new Map<string, number>()) };
+      }
       // A branch reused since its PR finished (the orchestrator sent new work to it) is not done.
-      if (await doneIsHistory(repo.repoPath, pr, w, { open: live.open.has(w.branch), queued: live.queued.get(w.branch) ?? 0 })) continue;
+      if (await doneIsHistory(repo, pr, w, { open: live.open.has(w.branch), queued: live.queued.get(w.branch) ?? 0 })) continue;
       const facts = { doneAt: pr.at, now: opts.now ?? Date.now(), graceMs: opts.graceMs, running: agent.isRunning(w.worktreePath) };
       let d = cleanupDecision({ ...facts, dirty: [], unpushed: 0 }); // timing first — the git probes only once due
       if (d.action === "reap") d = cleanupDecision({ ...facts, ...(await git.worktreeSafety(repo.repoPath, w, { base: repo.baseBranch, head: pr.head, ignore: orcaPaths(repo) })) });
@@ -537,7 +550,7 @@ export async function sweep(cfg: OrcaConfig, opts: { confirm?: boolean; now?: nu
       const pr = done.get(w.branch);
       const reason: git.ReapReason | undefined = pr?.reason ?? (archived.has(w.branch) ? "archived" : undefined);
       if (!reason || open.has(w.branch)) continue; // not finished, or a newer PR reuses the branch
-      if (pr && await doneIsHistory(repo.repoPath, pr, w, { open: false, queued: queued.get(w.branch) ?? 0 })) continue; // reused since its PR finished
+      if (pr && await doneIsHistory(repo, pr, w, { open: false, queued: queued.get(w.branch) ?? 0 })) continue; // reused since its PR finished
       const d = cleanupDecision({
         now: opts.now ?? Date.now(), graceMs: 0, running: agent.isRunning(w.worktreePath),
         ...(await git.worktreeSafety(repo.repoPath, w, { base: repo.baseBranch, head: pr?.head, ignore: orcaPaths(repo) })),

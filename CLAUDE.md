@@ -760,7 +760,12 @@ so the gate can never loop. The conversational prompts also open with a session-
   (10 min, from `mergedAt`/`closedAt`) and never while an agent runs on it — preview stopped, placement
   cleared, a merged branch deleted (a closed one kept), the card archived. **Nothing that would lose
   work is removed** (`cleanupDecision`): uncommitted changes, or commits on no remote, not in base and
-  not the PR's last head (`git.worktreeSafety`), flag the card (`cleanupBlocked`) instead. `orca
+  not the PR's last head (`git.worktreeSafety`), flag the card (`cleanupBlocked`) instead. A pass
+  with the open PRs unknown reaps nothing. A run that started after the merge is new work: its start
+  comes from the newest turn in the database, so a restart does not forget it. Each worktree removal
+  logs one `orca: removing worktree <path> (<cause>)` line. The `node_modules` copy
+  (`git.linkToWorktree`) runs in a child process at `ionice -c3` / `nice -n 19` and never blocks the
+  bridge. `orca
   archive` goes to the worktree's home instance (`/api/workstreams/archive`). **`orca sweep
   [--confirm]`** (`/api/cleanup/sweep`, fanned out to every instance) is the one-off: finished
   worktrees, previews with nothing behind them and Orca's own branches left with no worktree or open
