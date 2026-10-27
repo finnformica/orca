@@ -8,7 +8,7 @@
 // orchestrator's panel or quick-ask. It is a small pill, not a tile, and a send goes to it.
 import { FileText, Lock, Paperclip, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { AgentAvatar } from "@/components/AgentAvatar";
+import { AgentPill } from "@/components/AgentPill";
 import { ExpandableImage } from "@/components/ExpandableImage";
 import { Tip } from "@/components/ui/tip";
 import { cn } from "@/lib/utils";
@@ -33,9 +33,9 @@ export function ComposerAttachment({ item, onRemove, look = "tile" }: { item: At
   if (item.kind === "agent") {
     return (
       <span data-slot={look === "tile" ? "composer-attachment" : "attachment-agent"} data-attachment="agent" data-agent={item.name} aria-label={label}
-        className="bg-muted/40 text-foreground inline-flex h-7 max-w-48 items-center gap-1.5 self-center rounded-md border pr-1 pl-1.5 text-xs">
-        <AgentAvatar name={item.name} size={16} />
-        <span className="truncate"><span className="text-muted-foreground">To </span>{item.label}</span>
+        className="bg-muted/40 text-foreground inline-flex h-7 max-w-56 min-w-0 items-center gap-1 self-center rounded-md border pr-1 pl-1.5 text-xs">
+        <span className="text-muted-foreground shrink-0">To </span>
+        <AgentPill name={item.name} label={item.label} />
         {onRemove && (
           <Button type="button" variant="ghost" size="icon" aria-label={`Remove ${label}`} data-slot="composer-attachment-remove" onClick={onRemove}
             className="text-muted-foreground hover:text-foreground size-5 shrink-0 rounded-sm p-0">

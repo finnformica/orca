@@ -1,7 +1,7 @@
 import * as React from "react";
 import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu";
 import { CheckIcon, ChevronRightIcon, CircleIcon } from "lucide-react";
-import { cn, POPPER_EDGE_PADDING } from "@/lib/utils";
+import { cn, POPPER_EDGE_PADDING, PortalContainer } from "@/lib/utils";
 
 const DropdownMenu = DropdownMenuPrimitive.Root;
 const DropdownMenuTrigger = DropdownMenuPrimitive.Trigger;
@@ -26,7 +26,7 @@ function DropdownMenuSubTrigger({ className, children, ...props }: React.Compone
 
 function DropdownMenuSubContent({ className, sideOffset = 4, collisionPadding = POPPER_EDGE_PADDING, ...props }: React.ComponentProps<typeof DropdownMenuPrimitive.SubContent>) {
   return (
-    <DropdownMenuPrimitive.Portal>
+    <DropdownMenuPrimitive.Portal container={React.useContext(PortalContainer)}>
       <DropdownMenuPrimitive.SubContent
         sideOffset={sideOffset}
         collisionPadding={collisionPadding}
@@ -39,7 +39,7 @@ function DropdownMenuSubContent({ className, sideOffset = 4, collisionPadding = 
 
 function DropdownMenuContent({ className, sideOffset = 4, collisionPadding = POPPER_EDGE_PADDING, ...props }: React.ComponentProps<typeof DropdownMenuPrimitive.Content>) {
   return (
-    <DropdownMenuPrimitive.Portal>
+    <DropdownMenuPrimitive.Portal container={React.useContext(PortalContainer)}>
       <DropdownMenuPrimitive.Content
         sideOffset={sideOffset}
         collisionPadding={collisionPadding}

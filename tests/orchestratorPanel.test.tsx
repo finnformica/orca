@@ -12,7 +12,7 @@ import { getDefaultStore } from "jotai";
 import { AskOrchestrator, ORCHESTRATOR_WINDOW_NAME, ORCHESTRATOR_WINDOW_URL, OrchestratorPage, OrchestratorPanel, OrchestratorWindow, isOrchestratorWindow } from "@/components/Terminal";
 import { Dock } from "@/components/Shell";
 import { SLIDE_MS } from "@/components/SidePanel";
-import { orchestratorActivityAtom, orchestratorOpenAtom, orchestratorPrefillAtom } from "@/lib/atoms";
+import { orchestratorActivityAtom, orchestratorOpenAtom, orchestratorPrefillAtom, orchestratorTabAtom } from "@/lib/atoms";
 import { DOCK_PAGE_MIN_W, NAV_RAIL_W, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, PANEL_MIN_W, clampPanelWidth, dayLabel } from "@/workstream";
 import { openTip } from "./tip";
 import { NARROW_QUERY } from "@/lib/viewport";
@@ -51,6 +51,15 @@ const closeButton = (root: ParentNode = container!) => root.querySelector<HTMLBu
 const click = async (el: Element) => { await act(async () => { el.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); }); };
 const DAY = 86_400_000;
 /** The status poll starts once the slide is over (useSlideSettled), not in its frames. */
+const pointerdown = async (el: Element) => { await act(async () => { el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 })); await flush(); await flush(); }); };
+// The header's agent menu (shadcn DropdownMenu): the trigger shows the chosen agent's pill.
+const agentMenu = () => panel()!.querySelector<HTMLElement>('[data-slot="agent-menu"]');
+const menuChosen = () => agentMenu()?.querySelector('[data-slot="agent-pill"]')?.getAttribute("data-agent");
+const agentOptions = () => [...document.body.querySelectorAll<HTMLElement>('[data-slot="agent-option"]')];
+const pickAgent = async (name: string) => {
+  await pointerdown(agentMenu()!);
+  await click(agentOptions().find((o) => o.dataset.agent === name)!);
+};
 const afterSlide = () => act(async () => { await new Promise((r) => setTimeout(r, SLIDE_MS + 60)); await flush(); await flush(); });
 
 test("Ask the orchestrator opens its conversation in a side panel over the page, and the composer sends to it", async () => {
@@ -528,7 +537,7 @@ test("the PiP window never reads its own narrow width as a phone for the compose
   } finally { void pip; }
 });
 
-test("named agents: a tab per agent with its state dot, the Chief of Staff first; a tab is the same chat over its own branch", async () => {
+test("named agents: the header's agent menu lists each agent's pill and state dot, the Chief of Staff first; a pick is the same chat over its own branch", async () => {
   const now = Date.now();
   apiFake.turnsData.set("@orca::orchestrator", [{ id: "run-c", provider: "claude", instruction: "ship it", prompt: "p", response: "Spawned r/ship.", startedAt: now - 1000, finishedAt: now }]);
   apiFake.turnsData.set("@orca::assistant", [{ id: "run-a", provider: "claude", instruction: "triage #ops", prompt: "p", response: "Two questions, one for the chief.", startedAt: now - 500, finishedAt: now }]);
@@ -536,16 +545,24 @@ test("named agents: a tab per agent with its state dot, the Chief of Staff first
   await mount(<Entry />);
   await click(launcher());
   await afterSlide();
-  const tabs = () => [...panel()!.querySelectorAll<HTMLElement>('[data-slot="agent-tab"]')];
-  expect(tabs().map((t) => t.textContent)).toEqual(["Chief of Staff", "Assistant"]);
-  expect(tabs()[0]!.dataset.state).toBe("active"); // the default
-  expect(tabs()[1]!.querySelector('[data-slot="status-dot"]')!.getAttribute("data-tone")).toBe("warning"); // waiting
+  // No tab row any more: the header's title is the menu, the chosen agent's pill (its avatar inside),
+  // and the old placeholder icon is gone.
+  expect(panel()!.querySelector('[data-slot="agent-tabs"]')).toBeNull();
+  expect(panel()!.querySelector("#orchestrator-title")!.textContent).toBe("Chief of Staff");
+  expect(menuChosen()).toBe("chief"); // the default
+  expect(agentMenu()!.querySelector('svg[data-slot="agent-avatar"]')!.getAttribute("data-agent")).toBe("chief");
+  expect(panel()!.querySelector('[data-slot="orchestrator-handle"] .lucide-bot')).toBeNull();
+  await pointerdown(agentMenu()!);
+  expect(agentOptions().map((o) => o.querySelector('[data-slot="agent-pill"]')!.textContent)).toEqual(["Chief of Staff", "Assistant"]);
+  expect(agentOptions()[0]!.getAttribute("aria-checked")).toBe("true");
+  expect(agentOptions()[1]!.querySelector('[data-slot="status-dot"]')!.getAttribute("data-tone")).toBe("warning"); // waiting
+  await act(async () => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); await flush(); });
   expect(panel()!.textContent).toContain("Spawned r/ship.");
   expect(panel()!.querySelector('[data-slot="agent-chat"]')).toBeNull(); // mounted only when chosen
 
-  // Radix tabs switch on mousedown.
-  await act(async () => { tabs()[1]!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 })); await flush(); await flush(); });
+  await pickAgent("assistant");
   await afterSlide();
+  expect(menuChosen()).toBe("assistant");
   const chat = panel()!.querySelector<HTMLElement>('[data-slot="agent-chat"][data-agent="assistant"]')!;
   expect(chat.hidden).toBe(false);
   expect(chat.textContent).toContain("Two questions, one for the chief.");
@@ -565,18 +582,19 @@ test("named agents: a tab per agent with its state dot, the Chief of Staff first
   // Ask Orca (and O, and the quick-ask pill: every open path) opens the Chief of Staff again.
   await click(closeButton());
   await click(launcher());
-  expect(tabs()[0]!.dataset.state).toBe("active");
+  expect(menuChosen()).toBe("chief");
   expect(panel()!.querySelector<HTMLElement>('[data-slot="agent-chat"][data-agent="assistant"]')!.hidden).toBe(true);
 });
 
-test("@agent in the panel: a recipient chip sends to that agent only, the view stays on its tab, Open switches", async () => {
+test("@agent in the panel: a recipient chip sends to that agent only, the view stays on its agent, Open switches", async () => {
   apiFake.extraAgents = [{ agent: "research", displayName: "Research", branch: "research", state: "idle", running: false, paused: false, notes: "", model: "claude-sonnet-5-5", key: "/state/agents/research" }];
   await mount(<Entry />);
   await click(launcher());
   await afterSlide();
-  const tabs = () => [...panel()!.querySelectorAll<HTMLElement>('[data-slot="agent-tab"]')];
-  // Each tab carries its agent's identicon.
-  expect(tabs().map((t) => t.querySelector('svg[data-slot="agent-avatar"]')?.getAttribute("data-agent"))).toEqual(["chief", "research"]);
+  // Each option of the agent menu carries its agent's identicon.
+  await pointerdown(agentMenu()!);
+  expect(agentOptions().map((o) => o.querySelector('svg[data-slot="agent-avatar"]')?.getAttribute("data-agent"))).toEqual(["chief", "research"]);
+  await act(async () => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); await flush(); });
   const textarea = panel()!.querySelector("textarea")!;
   const typeIn = async (text: string) => {
     await act(async () => {
@@ -589,25 +607,47 @@ test("@agent in the panel: a recipient chip sends to that agent only, the view s
   const press = async (k: string) => { await act(async () => { textarea.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true })); await flush(); await flush(); }); };
   await typeIn("@res");
   expect(panel()!.querySelector('[role="option"]')!.getAttribute("data-mention")).toBe("agent");
+  // The picker's row is the agent's pill.
+  expect(panel()!.querySelector('[role="option"] [data-slot="agent-pill"]')!.textContent).toBe("Research");
   await press("Enter");
   expect(textarea.value).toBe("");
   expect(panel()!.querySelector('[data-attachment="agent"]')!.textContent).toBe("To Research");
+  expect(panel()!.querySelector('[data-attachment="agent"] [data-slot="agent-pill"]')!.getAttribute("data-agent")).toBe("research");
   await typeIn("check the flaky test");
   await press("Enter");
   await act(async () => { await flush(); await flush(); await flush(); });
   // Only to Research: nothing went to the Chief of Staff, and the panel stays on its tab.
   expect(apiFake.orchestratorMessages).toEqual([{ text: "check the flaky test", attachments: [], agent: "research" }]);
-  expect(tabs()[0]!.dataset.state).toBe("active");
+  expect(menuChosen()).toBe("chief");
   const receipt = panel()!.querySelector('[data-slot="chat-composer-sent-to"]')!;
   expect(receipt.textContent).toBe("Sent to Research·Open");
   await click(receipt.querySelector("button")!);
   await afterSlide();
-  expect(tabs()[1]!.dataset.state).toBe("active");
+  expect(menuChosen()).toBe("research");
 });
 
-test("with only the Chief of Staff (an older bridge, or no other agent) there is no tab row", async () => {
+test("with only the Chief of Staff (an older bridge, or no other agent) there is no agent menu", async () => {
   await mount(<Entry />);
   await click(launcher());
   await afterSlide();
-  expect(panel()!.querySelector('[data-slot="agent-tabs"]')).toBeNull();
+  expect(panel()!.querySelector('[data-slot="agent-menu"]')).toBeNull();
+  expect(panel()!.querySelector("#orchestrator-title")!.textContent).toBe("Orca");
+});
+
+test("the phone's Orca page has the same agent menu in its header; a pick shows that agent's chat", async () => {
+  const now = Date.now();
+  apiFake.turnsData.set("@orca::assistant", [{ id: "run-a", provider: "claude", instruction: "triage #ops", prompt: "p", response: "Two questions, one for the chief.", startedAt: now - 500, finishedAt: now }]);
+  apiFake.extraAgents = [{ agent: "assistant", displayName: "Assistant", branch: "assistant", state: "idle", running: false, paused: false, notes: "", model: "claude-sonnet-5-5", key: "/state/agents/assistant" }];
+  await mount(<OrchestratorPage />);
+  await act(async () => { await flush(); await flush(); });
+  const page = container!.querySelector<HTMLElement>('[data-slot="orchestrator-page"]')!;
+  const menu = () => page.querySelector<HTMLElement>('[data-slot="agent-menu"]')!;
+  expect(menu().querySelector('[data-slot="agent-pill"]')!.textContent).toBe("Chief of Staff");
+  expect(page.querySelector('[data-slot="agent-chat"]')).toBeNull();
+  await pointerdown(menu());
+  await click([...document.body.querySelectorAll<HTMLElement>('[data-slot="agent-option"]')].find((o) => o.dataset.agent === "assistant")!);
+  await act(async () => { await flush(); await flush(); });
+  expect(menu().querySelector('[data-slot="agent-pill"]')!.getAttribute("data-agent")).toBe("assistant");
+  expect(page.querySelector('[data-slot="agent-chat"][data-agent="assistant"]')!.textContent).toContain("Two questions, one for the chief.");
+  getDefaultStore().set(orchestratorTabAtom, "chief");
 });

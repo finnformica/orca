@@ -20,6 +20,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Tip } from "@/components/ui/tip";
+import { AgentPill } from "@/components/AgentPill";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
@@ -360,8 +361,8 @@ function LinkRowView({ link: l, events, agents, onEdit, onChange }: { link: Link
           <div data-slot="link-agent" className="mr-2 flex items-center gap-2">
             <Label htmlFor={`link-agent-${l.id}`} className="text-muted-foreground text-xs font-normal">Agent</Label>
             <Select value={linkAgentValue(l)} onValueChange={(v) => void act(`Send ${name} to the ${agentLabel(v, agents)}`, "links/save", { ...l, agent: v === "assistant" ? "" : v }, onChange)}>
-              <SelectTrigger id={`link-agent-${l.id}`} size="sm" aria-label={`Agent for ${name}`} className="w-36 max-sm:h-10"><SelectValue>{agentLabel(linkAgentValue(l), agents)}</SelectValue></SelectTrigger>
-              <SelectContent>{agents.map((a) => <SelectItem key={a.name} value={a.name}>{a.displayName}</SelectItem>)}</SelectContent>
+              <SelectTrigger id={`link-agent-${l.id}`} size="sm" aria-label={`Agent for ${name}`} className="w-44 max-sm:h-10"><SelectValue><AgentPill name={linkAgentValue(l)} label={agentLabel(linkAgentValue(l), agents)} /></SelectValue></SelectTrigger>
+              <SelectContent>{agents.map((a) => <SelectItem key={a.name} value={a.name}><AgentPill name={a.name} label={a.displayName} /></SelectItem>)}</SelectContent>
             </Select>
           </div>
         )}
@@ -882,7 +883,7 @@ function SubscriptionDialog({ data, onClose, onSaved }: { data: Overview; onClos
           <Field label="Agent" htmlFor="sub-agent">
             <Select value={targetId} onValueChange={setTargetId}>
               <SelectTrigger id="sub-agent" className="w-full"><SelectValue /></SelectTrigger>
-              <SelectContent>{(data.agents ?? []).map((a) => <SelectItem key={a.name} value={a.name}>{a.displayName}</SelectItem>)}</SelectContent>
+              <SelectContent>{(data.agents ?? []).map((a) => <SelectItem key={a.name} value={a.name}><AgentPill name={a.name} label={a.displayName} /></SelectItem>)}</SelectContent>
             </Select>
           </Field>
         )}
