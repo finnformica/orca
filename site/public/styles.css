@@ -1,0 +1,53 @@
+/* The public Orca page: black and white, centred, no framework, no external requests. */
+@font-face {
+  font-family: "Unbounded";
+  src: url("/fonts/unbounded-700.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  min-height: 100vh;
+  min-height: 100dvh;
+  background: #fff;
+  color: #000;
+  font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+a { color: #000; text-underline-offset: 3px; }
+a:hover { text-decoration-thickness: 2px; }
+
+.home {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 28px;
+  padding: 32px 24px;
+  text-align: center;
+}
+.logo { width: 112px; height: 112px; display: block; }
+.wordmark {
+  margin: 0;
+  font-family: "Unbounded", ui-sans-serif, system-ui, sans-serif;
+  font-weight: 700;
+  font-size: clamp(56px, 14vw, 128px);
+  line-height: 1;
+  letter-spacing: -0.04em;
+}
+.links { display: flex; gap: 28px; font-size: 15px; }
+
+.doc { max-width: 680px; margin: 0 auto; padding: 48px 24px 72px; }
+.doc .brand { display: inline-flex; align-items: center; gap: 12px; margin-bottom: 40px; text-decoration: none; }
+.doc .brand svg { width: 32px; height: 32px; }
+.doc .brand span { font-family: "Unbounded", ui-sans-serif, system-ui, sans-serif; font-weight: 700; font-size: 22px; letter-spacing: -0.03em; }
+.doc h1 { font-size: 32px; line-height: 1.2; margin: 0 0 8px; }
+.doc h2 { font-size: 19px; margin: 32px 0 8px; }
+.doc .date { color: #000; opacity: 0.6; margin: 0 0 24px; font-size: 14px; }
+.doc ul { padding-left: 22px; }
+.doc li { margin: 4px 0; }
+.doc footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid #000; display: flex; gap: 24px; font-size: 14px; }

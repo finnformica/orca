@@ -1,0 +1,16 @@
+// The public Orca page (site/README.md). Static files from public/; the Worker answers only /api/*
+// (the Google OAuth callback bounce). No account id and no routes here: Workers Builds names the
+// account, and the custom domain is added in the dashboard. ORCA_ORIGIN is a dashboard variable.
+{
+  "name": "orca-site",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "html_handling": "drop-trailing-slash",
+    "not_found_handling": "404-page",
+    "run_worker_first": ["/api/*"]
+  },
+  "observability": { "enabled": false }
+}
