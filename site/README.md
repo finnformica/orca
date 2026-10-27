@@ -21,11 +21,16 @@ Use these settings in the Cloudflare dashboard (**Workers & Pages > Create > Imp
 | Repository | `finnformica/orca` |
 | Branch | `main` |
 | Root directory | `site` |
-| Build watch paths | `site/**` |
+| Build watch paths | include `site/*` |
 | Build command | (empty) |
 | Deploy command | `npx wrangler deploy` |
+| Builds for non-production branches | on |
+| Non-production branch deploy command | `npx wrangler versions upload` |
 
-Each push to `main` that changes a file under `site/` deploys the Worker again.
+Each push to `main` that changes a file under `site/` deploys the Worker again. A push to another
+branch that changes `site/` uploads a version only. It does not change the live site. A change outside
+`site/` (another Orca PR) does not build `orca-site`. In the watch path, `*` matches every file under
+`site/`, also in subfolders.
 
 `wrangler.jsonc` holds no account id and no routes. Workers Builds gives the account. Add the custom
 domain in the dashboard: open the Worker, then **Settings > Domains & Routes > Add > Custom domain**.
