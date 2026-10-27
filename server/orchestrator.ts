@@ -58,7 +58,7 @@ import type { ReflectionTrigger } from "../shared/memory";
 import { AGENT_REPLIED, isScheduledWake, parseScheduledWake } from "../shared/scheduledWake";
 import { providerOfModel } from "../shared/models";
 import {
-  ASSISTANT_DEFAULT_MODEL, BUILTIN_AGENTS, SET_STATES, agentListText, agentMessage, agentMessageFrom, agentState, agentVerbRefusal, authoredPost, clearsOnUserMessage, cleanReportsTo,
+  FALLBACK_CHIEF, SET_STATES, agentListText, agentMessage, agentMessageFrom, agentState, agentVerbRefusal, authoredPost, clearsOnUserMessage, cleanReportsTo,
   type AgentDef, type AgentStateName,
 } from "../shared/agents";
 import { attachmentIdOf, attachmentRefusal, catchAllPostRefusal, deleteRefusal, grantKey, grantRefusal, outboundRefusal, postsAsUser, repoScoped, type Grant, type ReplyTo } from "../shared/integrations";
@@ -94,12 +94,14 @@ export function dir(name: string = CHIEF): string {
  *  its workstream branch under ORCHESTRATOR_REPO, its directory and its definition. */
 export type AgentRef = { name: string; branch: string; dir: string; def: AgentDef };
 const refOf = (def: AgentDef): AgentRef => ({ name: def.name, branch: def.branch, dir: dir(def.name), def });
-/** The Chief of Staff: today's orchestrator. Built in, so its path needs no read of the agent table. */
-const chiefRef = (): AgentRef => refOf(BUILTIN_AGENTS[0]!);
-/** The agent named `name` (none = the Chief of Staff). Throws for an unknown name. */
+/** The Chief of Staff's IDENTITY (name, branch, directory) with no read of the agent table: for the
+ *  blob, the queue and the run key only. Its definition (role, model, tools) is `agentRef()`'s, read
+ *  from its row; this ref's def is the database-down fallback, which may run nothing. */
+const chiefRef = (): AgentRef => refOf(FALLBACK_CHIEF);
+/** The agent named `name` (none = the Chief of Staff), with its definition read from its row on every
+ *  call, so an edit in Settings applies at once. Throws for an unknown name. */
 export async function agentRef(name?: string): Promise<AgentRef> {
-  if (!name || name === CHIEF) return chiefRef();
-  const def = await agents.get(name);
+  const def = await agents.get(name || CHIEF);
   if (!def) throw new Error(`no agent "${name}" (orca agent list)`);
   return refOf(def);
 }
@@ -109,7 +111,6 @@ export async function agentRefs(): Promise<AgentRef[]> {
 }
 /** The agent whose run key (its directory) is `key`, if any: Stop and lease adoption ask. */
 export async function agentByDir(key: string): Promise<AgentRef | undefined> {
-  if (key === dir()) return chiefRef();
   return (await agentRefs()).find((a) => a.dir === key);
 }
 
@@ -147,12 +148,12 @@ type Blob = {
  *  stays for the work itself where Opus has failed. Always a Claude model: its tool permissions are
  *  Claude Code's. (The user's call: Sonnet was tried first.) */
 export const ORCHESTRATOR_DEFAULT_MODEL = "claude-opus-5-5";
-/** The model an agent runs on: its pin (the composer's picker), else its definition's, else the
- *  default — Opus for the Chief of Staff, Sonnet for any other agent. Always a Claude model. */
-const modelOf = (_cfg: OrcaConfig, b: Blob, ag: AgentRef = chiefRef()): string =>
+/** The model an agent runs on: its pin (the composer's picker), else its row's, else the default
+ *  (Opus) for a row with no model. Always a Claude model. */
+const modelOf = (_cfg: OrcaConfig, b: Blob, ag: AgentRef): string =>
   (providerOfModel(b.preferredModel) === "claude" ? b.preferredModel! : undefined)
   ?? (providerOfModel(ag.def.model) === "claude" ? ag.def.model! : undefined)
-  ?? (ag.name === CHIEF ? ORCHESTRATOR_DEFAULT_MODEL : ASSISTANT_DEFAULT_MODEL);
+  ?? ORCHESTRATOR_DEFAULT_MODEL;
 const blob = async (ag: AgentRef = chiefRef()): Promise<Blob> => ((await db.enrichment(ORCHESTRATOR_REPO))[ag.branch] ?? {}) as Blob;
 const patch = (ag: AgentRef, fields: db.Fields) => db.patchEnrichment(ORCHESTRATOR_REPO, ag.branch, fields);
 const enqueue = (ag: AgentRef, instruction: string, attachments: string[] = [], grant?: Grant | null, replyTo?: ReplyTo | null) =>
@@ -189,8 +190,7 @@ export async function status(cfg: OrcaConfig, name?: string): Promise<AgentStatu
   const b = await blob(ag);
   const running = agent.isRunning(ag.dir);
   const paused = (b.wakes ?? 0) >= MAX_WAKES;
-  // The state the agent set is in the agent table; the Chief of Staff's path reads it only here.
-  const def = ag.name === CHIEF ? await agents.get(CHIEF).catch(() => undefined) ?? ag.def : ag.def;
+  const def = ag.def; // its row: the state it set lives there too
   const visible = agentState({ running, paused, stored: def.state, ...(def.stateNote ? { note: def.stateNote } : {}) });
   return {
     key: ag.dir, running, paused, notes: b.notes ?? "",
@@ -309,7 +309,7 @@ export async function onRunFinished(cfg: OrcaConfig, run: agent.RunFinished): Pr
   const { repo, branch } = run.options;
   if (!repo || !branch) return;
   if (repo === ORCHESTRATOR_REPO) {
-    const ag = branch === ORCHESTRATOR_BRANCH ? chiefRef() : await agents.byBranch(branch).then((d) => d && refOf(d));
+    const ag = await agents.byBranch(branch).then((d) => d && refOf(d));
     if (!ag) return;
     const exit = run.options.action === "compact" ? undefined : wakeExit(cfg, run); // a compact is no wake
     let askers: string[] = []; // the agents whose `orca ask` this wake answered (`--on agent:<name>`)
@@ -588,7 +588,9 @@ async function wake(cfg: OrcaConfig, ag: AgentRef, fresh: string[], grant?: Gran
     const prompt = orchestratorPrompt({
       fresh: !next.resume, notes: b.notes, notesMoved: Boolean(b.notesMigratedAt), memory: memoryText,
       board: boardText(await board(cfg)), messages, shell, cutOff: b.cutOff, cutOffProgress: b.cutOffProgress,
-      ...(ag.name === CHIEF ? {} : { agent: { name: ag.name, displayName: ag.def.displayName, ...(ag.def.role ? { role: ag.def.role } : {}), verbs: ag.def.tools.verbs } }),
+      // Its row's role and verbs (server/agents.ts), read for this wake: an edit applies at once.
+      ...(ag.def.role ? { role: ag.def.role } : {}), verbs: ag.def.tools.verbs,
+      ...(ag.name === CHIEF ? {} : { agent: { name: ag.name, displayName: ag.def.displayName } }),
     });
     const receipt = await agent.launch(ag.dir, ag.dir, prompt, {
       ...next, provider: "claude", repo: ORCHESTRATOR_REPO, branch: ag.branch,
@@ -884,9 +886,9 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       const { conn, caps } = await linkCaps(link.integrationId);
       const kind = conn?.kind ?? "this";
       if (caps) { const refusal = outboundRefusal(kind, caps); if (refusal) throw new Error(refusal); }
-      // On an adapter that posts as the user (Slack), only the Chief of Staff may post: another agent
-      // never writes in the user's name (§7.3).
-      if (ag.name !== CHIEF && postsAsUser(kind)) throw new Error(`refused: on ${kind} a post is in the user's name, and the ${ag.def.displayName} may not post as the user. Ask the Chief of Staff: orca ask chief "<what and why>"`);
+      // On an adapter that posts as the user (Slack), only an agent whose row has every verb may
+      // post: a limited agent never writes in the user's name (§7.3).
+      if (ag.def.tools.verbs !== "all" && postsAsUser(kind)) throw new Error(`refused: on ${kind} a post is in the user's name, and the ${ag.def.displayName} may not post as the user. Ask the Chief of Staff: orca ask chief "<what and why>"`);
       if (deleteId && caps) { const refusal = deleteRefusal(kind, caps); if (refusal) throw new Error(refusal); }
       if (newThreadName && caps && !caps.threads) throw new Error(`--new-thread: the ${kind} adapter has no threads`);
       // A wake an outside sender caused attaches stored ids only: a path would let a message ask Orca
@@ -1343,9 +1345,9 @@ async function agentVerb(cfg: OrcaConfig, ag: AgentRef, words: string[], args: T
     const name = words[1] ?? "";
     const role = typeof args.role === "string" ? args.role : "";
     const def = await agents.add({ name, displayName: typeof args.display === "string" ? args.display : "", role, ...(typeof args.model === "string" ? { model: args.model } : {}) });
-    return `Added the agent ${def.name} (${def.displayName}): no shell, the Assistant's verbs. Its tab is in the side panel.`;
+    return `Added the agent ${def.name} (${def.displayName}): no shell and no verbs yet. The user gives it verbs in Settings > Agents. Its tab is in the side panel.`;
   }
-  throw new Error('usage: orca agent list | orca agent state <state> [--note "<…>"] | orca agent add <name> --display "<name>" --role "<role text>" [--model <id>]');
+  throw new Error('usage: orca agent list | orca agent state <state> [--note "<…>"] | orca agent add <name> --display "<name>" --role "<role text>" [--model <id>]. Edit and archive an agent in Settings > Agents.');
 }
 
 async function handoffVerb(cfg: OrcaConfig, words: string[], args: ToolArgs): Promise<string> {

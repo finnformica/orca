@@ -245,6 +245,10 @@ CREATE TABLE IF NOT EXISTS agent (
 CREATE UNIQUE INDEX IF NOT EXISTS agent_branch ON agent (user_id, branch) WHERE archived_at IS NULL;
 ```
 
+Named step `20261027-agent-definitions` adds `builtin BOOLEAN NOT NULL DEFAULT false`. The row is the
+single source of truth for an agent: no code adds to or overrides it (section 7.3). `builtin` only
+stops an archive.
+
 The Chief of Staff keeps `branch = 'orchestrator'`. So its whole chat history, its session and its
 queue stay where they are. Its name is `chief` from PR A on, so memories written in PR A have the
 right owner and need no rename later.
@@ -325,12 +329,24 @@ orca agent state <idle|working|waiting|blocked|done> [--note "<…>"]   (PR B)
 orca agent add <name> --display "<Display name>" --role @file [--model m]   (PR B, user only)
 ```
 
+There is no `orca agent edit` or `orca agent remove`. Edit and archive an agent in Settings > Agents
+only (`/settings#agents`, `POST /api/orchestrator/agent-defs/<name>[/archive]`).
+
 - `orca ask` queues a message on the other agent's queue, tagged `[from <caller>]`. It is not the
   user's input (`isUserMessage` is false), so it does not reset the wake count. The other agent's
   reply does not come back by itself. The caller sets `orca wake --on agent:<name>` if it wants it
   (a fourth pattern, added in PR B).
-- `orca agent add` and agent removal are user-only verbs. An agent cannot make another agent.
-  The Settings page and the user's own chat with the Chief of Staff can run them.
+- `orca agent add` is a user-only verb. An agent cannot make another agent. The Settings page and
+  the user's own chat with the Chief of Staff can run it. An agent it adds has no shell and no
+  verbs: only Settings gives it verbs. So no agent widens its own or another agent's tools.
+- `orca agent <anything else>` (edit, remove, archive) is refused for every agent, the Chief of
+  Staff included, even on the user's word (`agentVerbRefusal`).
+- The verb check runs on the server against the CALLER'S ROW, read on every call. A limited agent
+  (a verb list, not `all`) gets only the read part of `preview` (`--status`), `slack`, `cloudflare`,
+  `status` and `wake`. Only an agent whose row has `all` may post on an adapter that posts as the
+  user (Slack). The grant check, the reflection limits and the repos' `mergePolicy` apply as before.
+- Limit: the HTTP API has no auth. An agent with a shell can call the Settings routes with `curl`.
+  The verb check covers the `orca` command, not a shell.
 
 ### 3.4 The notes verbs
 
@@ -568,6 +584,21 @@ sets three:
 - A paused agent (`MAX_WAKES`) shows `blocked` with the note "paused: reply to resume".
 
 ### 7.3 The two agents
+
+Both agents are rows of `agent` (section 2.6). Named step `20261027-agent-definitions` seeds them
+once, with the values the code had (`server/agentSeed.ts`, frozen). From then on the code reads only
+the rows, and the user edits them in Settings > Agents: display name, role text, model, shell flag
+and verbs (a checklist of `AGENT_VERBS`, or "all"). The table below is the SEED, not a rule.
+
+- Seed details: `builtin = true` on both. A row the old code wrote keeps its state and model pin.
+- An agent the user added before keeps its row. One with no model pin gets Sonnet, its old default.
+- A row with no model runs on Opus 5.5 (`ORCHESTRATOR_DEFAULT_MODEL`).
+- An edit applies at once: the next `orca` call is checked against the row. The role text goes in
+  when a session starts, so a running session sees a new role after its next reset.
+- The database-down fallback is `FALLBACK_CHIEF` (`shared/agents.ts`): the Chief of Staff's name,
+  display name and branch, with no shell, no verbs and no role. A wake needs the database anyway.
+- Roll back: edit the row in Settings. Or revert the PR: the old code ignores the `builtin` column
+  and the role and tools of a built-in row.
 
 | | Chief of Staff (`chief`) | Assistant (`assistant`) |
 | --- | --- | --- |
@@ -865,9 +896,9 @@ The code changed these points of the plan. Each has its reason.
 - **Clean reports stay with the Chief of Staff by default.** `agents.cleanReportsTo` is `chief`
   unless the app config sets `assistant`. Finn has not chosen to move them. A problem report always
   goes to `chief` (`orchestrator.reportTarget`).
-- **The built-in agents need no row.** `server/agents.ts` merges `BUILTIN_AGENTS` (`shared/agents.ts`)
-  with the `agent` table. A row is written the first time a built-in agent's state changes. So the
-  Chief of Staff's wake path reads no new table, and `tests/orchestrator.test.ts` passes unchanged.
+- **The built-in agents needed no row (superseded).** PR B merged code definitions with the
+  `agent` table, and the code's role and tools won over a row. Named step
+  `20261027-agent-definitions` replaced that: every agent is its row only (sections 2.6, 3.3, 7.3).
 - **One named step.** `20261025-team-agents` makes `agent`, adds `channel_link.agent` and widens the
   `subscription.target_kind` CHECK with `agent`. A step's name must sort after the steps above it,
   and `20261025-agent` sorts before `20261025-memory`.

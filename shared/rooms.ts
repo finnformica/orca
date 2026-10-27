@@ -8,7 +8,7 @@
 // and the turn's `origin` (#456). A turn that matches no rule is the person's: the main chat.
 import type { OriginMessage, TurnOrigin } from "./agent";
 import { isAutofix, isBackgroundResume } from "./agent";
-import { AGENTS_REPO, BUILTIN_AGENTS, CHIEF, agentMessageFrom, agentOfBranch, isAgentMessage } from "./agents";
+import { AGENTS_REPO, CHIEF, FALLBACK_CHIEF, agentMessageFrom, agentOfBranch, isAgentMessage } from "./agents";
 import { isScheduledWake, parseScheduledWake } from "./scheduledWake";
 import { isReflection } from "./memory";
 import { isOrcaEvent } from "./integrations";
@@ -200,13 +200,19 @@ export const UNREAD_DEFAULT_MS = 24 * 3600_000;
 export const roomUnseen = (lastAt: number, seenAt: number | undefined, now = Date.now()): boolean =>
   lastAt > (seenAt ?? now - UNREAD_DEFAULT_MS);
 
-const AGENT_NAMES: Record<string, string> = Object.fromEntries(BUILTIN_AGENTS.map((a) => [a.name, a.displayName]));
+/** The agents' display names, from their rows: the web sets them each time it reads the agents list
+ *  (api.ts `orchestratorAgents`). Until then only the Chief of Staff's fallback name is known. */
+const AGENT_NAMES: Record<string, string> = { [CHIEF]: FALLBACK_CHIEF.displayName };
+export function rememberAgentNames(agents: { agent?: string; name?: string; displayName?: string }[]): void {
+  for (const a of agents) { const n = a.agent ?? a.name; if (n && a.displayName) AGENT_NAMES[n] = a.displayName; }
+}
 const ORCA_NAMES: Record<string, string> = { autofix: "Orca · check failed", upkeep: "Orca · PR upkeep", background: "Orca · background tasks", reports: "Orca · worker reports" };
 
 /** A side as the chat names it. `names` adds agents the user made (`orca agent add`). */
 export function sideLabel(s: Side, names: Record<string, string> = {}): string {
   if (s.kind === "person") return "You";
-  if (s.kind === "agent") return names[s.id] ?? AGENT_NAMES[s.id] ?? s.id;
+  // An agent the web has not read yet: its name with a capital first letter ("assistant" → "Assistant").
+  if (s.kind === "agent") return names[s.id] ?? AGENT_NAMES[s.id] ?? `${s.id.charAt(0).toUpperCase()}${s.id.slice(1)}`;
   if (s.kind === "worker") return `Worker ${s.id.replace(/^[^/]+\//, "")}`;
   return ORCA_NAMES[s.id] ?? "Orca";
 }

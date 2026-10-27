@@ -920,6 +920,12 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   sweep, archive or Slack post (`agentVerbRefusal`), and escalates with `orca ask chief`. That
   message is `[from assistant] …`: not the user's, and it keeps an outside grant. Clean worker
   reports go to `agents.cleanReportsTo` (default `chief`, Finn's call); problems always to `chief`.
+  **Every agent is its `agent` row and nothing else** (named step `20261027-agent-definitions`
+  seeded both from the old code values, `server/agentSeed.ts`, frozen): role text, model, tools
+  (shell + verbs or `all`), max grant, `builtin` (only stops an archive). No code default wins over a
+  row; the DB-down fallback is `FALLBACK_CHIEF` (identity, no verbs). Settings > Agents
+  (`views/AgentSettings.tsx`, `/api/orchestrator/agent-defs`) is the ONLY editor: no `orca` verb
+  edits or archives an agent, and `orca agent add` makes one with no verbs.
   The runtime is one module over an `AgentRef` (`orchestrator.ts`): each agent its own blob, chain and
   lease; no name = `chief`, so every old caller and route works. `/api/orchestrator*?agent=`,
   `/api/orchestrator/agents`. The side panel has a shadcn Tabs row, one per agent; every open path

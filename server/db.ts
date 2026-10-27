@@ -31,6 +31,7 @@ import { hostname } from "os";
 import { join } from "path";
 import type { AgentOutcome, AgentProvider, AgentTurn, StopReason, TurnCheck, TurnOrigin, TurnSource } from "../shared/agent";
 import * as bus from "./bus";
+import { seedAgentsSql } from "./agentSeed";
 import { chatOwner, turnRoute, type Side, type TurnRoute } from "../shared/rooms";
 import type { Notification, NotificationInput } from "../shared/notifications";
 
@@ -1231,6 +1232,16 @@ export const MIGRATIONS: MigrationStep[] = [
       ALTER TABLE subscription DROP CONSTRAINT IF EXISTS subscription_target_kind_check,
         ADD CONSTRAINT subscription_target_kind_check CHECK (target_kind IN ('link','orchestrator','agent','workstream','web'));
     `,
+  },
+  {
+    name: "20261027-agent-definitions",
+    idempotent: true,
+    // Agents defined by rows only (server/agents.ts, docs/design/named-agents-and-memory.md §3, §7.3).
+    // `agent.builtin` marks the seeded agents, which cannot be archived. The step seeds the Chief of
+    // Staff and the Assistant with the role text, model and tools the code had (server/agentSeed.ts),
+    // so they behave the same on day one. From here on the code reads only the rows. A re-run changes
+    // no built-in row (the upsert's WHERE), so it never undoes an edit made in Settings > Agents.
+    sql: seedAgentsSql(),
   },
 ];
 

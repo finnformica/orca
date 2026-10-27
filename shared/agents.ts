@@ -19,12 +19,14 @@ export const STATE_NOTE_MAX = 200;
 /** What an agent may run: a shell or not, and its `orca` verbs ("all", or a list). */
 export type AgentTools = { shell: boolean; verbs: "all" | string[] };
 
+/** One named agent, as its `agent` row holds it (server/agents.ts). The row is the single source of
+ *  truth: nothing in code adds to or overrides it. */
 export type AgentDef = {
   name: string;
   displayName: string;
-  /** The role text sent when a session starts. Absent = the built-in role (web/src/workstream.ts). */
+  /** The role text sent when a session starts. */
   role?: string;
-  /** Pinned model; absent = the runtime default for that agent. */
+  /** Pinned model; absent = the runtime default (server/orchestrator.ts ORCHESTRATOR_DEFAULT_MODEL). */
   model?: string;
   branch: string;
   tools: AgentTools;
@@ -33,34 +35,50 @@ export type AgentDef = {
   /** The state the agent set (`orca agent state`), and its note. */
   state: AgentStateName;
   stateNote?: string;
+  /** A seeded agent (the Chief of Staff, the Assistant): it cannot be archived. Nothing else. */
   builtin: boolean;
 };
 
-/** The Assistant's verbs (§7.3): reads, posts on links, questions, memory, wakes, escalation. No
- *  spawn, send, address, merge, move, sweep, archive, stop, repo, secret, handoff or notes. */
-export const ASSISTANT_VERBS = [
-  "board", "channels", "machine", "chats", "read", "post", "thread", "ask-user", "ask-form",
-  "memory", "wake", "ask", "agent", "status", "preview", "slack", "gmail", "cloudflare",
+/** Every `orca` verb the tool route knows (server/orchestrator.ts `tool`): the checklist of Settings >
+ *  Agents and the check of an edited verb list. A vocabulary, not a permission: what each agent may
+ *  run is its row's `tools`. tests/agentDefs.test.ts keeps it equal to the tool route's verbs. */
+export const AGENT_VERBS = [
+  "address", "agent", "archive", "ask", "ask-form", "ask-user", "board", "channels", "chats", "cloudflare",
+  "gmail", "granola", "handoff", "machine", "memory", "merge", "move", "notes", "post", "pr-shots", "preview",
+  "read", "repo", "secret", "send", "slack", "spawn", "status", "stop", "sweep", "thread", "wake",
 ] as const;
 
-/** The Assistant runs on Sonnet unless the user pins another (§7.3). */
-export const ASSISTANT_DEFAULT_MODEL = "claude-sonnet-5-5";
+/** The ONLY definition in code, and only for when the database is down: the Chief of Staff's identity
+ *  (its name, display name and branch, so its chat and queue still resolve) with no shell, no verbs
+ *  and no role. A wake needs the database anyway, so this never widens what any agent may run. */
+export const FALLBACK_CHIEF: AgentDef = {
+  name: CHIEF, displayName: "Chief of Staff", branch: CHIEF_BRANCH, tools: { shell: false, verbs: [] }, maxGrant: "full", state: "idle", builtin: true,
+};
 
-export const BUILTIN_AGENTS: readonly AgentDef[] = [
-  { name: CHIEF, displayName: "Chief of Staff", branch: CHIEF_BRANCH, tools: { shell: true, verbs: "all" }, maxGrant: "full", state: "idle", builtin: true },
-  { name: ASSISTANT, displayName: "Assistant", branch: ASSISTANT, model: ASSISTANT_DEFAULT_MODEL, tools: { shell: false, verbs: [...ASSISTANT_VERBS] }, maxGrant: "full", state: "idle", builtin: true },
-];
+/** Why `tools` is not a valid tools value, or undefined: a shell flag and "all" or known verbs. */
+export function toolsProblem(tools: unknown): string | undefined {
+  if (!tools || typeof tools !== "object") return "tools: { shell, verbs }";
+  const t = tools as Record<string, unknown>;
+  if (typeof t.shell !== "boolean") return "tools.shell: true or false";
+  if (t.verbs === "all") return undefined;
+  if (!Array.isArray(t.verbs)) return 'tools.verbs: "all" or a list of verbs';
+  const unknown = t.verbs.filter((v) => !(AGENT_VERBS as readonly unknown[]).includes(v));
+  return unknown.length ? `tools.verbs: unknown verb ${unknown.map(String).join(", ")}` : undefined;
+}
 
 /** A slug: lower case, a letter first, 2 to 31 characters. Also the branch of a non-chief agent. */
 export const AGENT_NAME_RE = /^[a-z][a-z0-9-]{1,30}$/;
 export const agentBranch = (name: string): string => (name === CHIEF ? CHIEF_BRANCH : name);
 
-/** Why `def` may not run `verb`, or undefined. Server-side, beside the grant check: the Assistant's
- *  limits do not depend on its prompt. `agent add` is the user's alone (`fromUser`: the Chief of
- *  Staff's wake with only the user's messages). */
+/** Why `def` may not run `verb`, or undefined. Server-side, beside the grant check, and over the
+ *  agent's ROW (`def.tools`), so an agent's limits do not depend on its prompt. `agent add` is the
+ *  user's alone (`fromUser`: the Chief of Staff's wake with only the user's messages); no agent
+ *  edits or archives an agent: that is Settings > Agents only. A limited agent (a verb list, not
+ *  "all") gets only the read part of preview, slack, cloudflare, status and wake. */
 export function agentVerbRefusal(def: Pick<AgentDef, "name" | "displayName" | "tools">, verb: string, words: string[], args: Record<string, unknown>, ctx: { fromUser?: boolean } = {}): string | undefined {
   const sub = words[0] ?? "";
   if (verb === "agent" && sub !== "list" && sub !== "state") {
+    if (sub !== "add") return `refused: "agent ${sub}" is the user's alone: Settings > Agents`;
     if (def.name !== CHIEF || !ctx.fromUser) return `refused: "agent ${sub || "add"}" is the user's alone (Settings, or their own chat with the Chief of Staff)`;
     return undefined;
   }
