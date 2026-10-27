@@ -7,11 +7,13 @@
 import { useEffect, useRef, useState } from "react";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { Check, ChevronDown, FolderGit2, GitBranch, Server, SquareTerminal } from "lucide-react";
-import { api, type GithubAccount, type GoogleOAuthSettings } from "../api";
+import { api, type GithubAccount, type ServerKeysState } from "../api";
+import { needsNote, SERVER_KEYS, type ServerFeature } from "../../../shared/serverKeys";
 import { refreshVitals } from "@/lib/vitals";
 import { notifyLocal, setBrowserNotify } from "@/lib/notificationStore";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -30,7 +32,6 @@ import { cn } from "@/lib/utils";
 import { loadIdentity, useServerIdentity } from "@/lib/identity";
 import { IDENTITY_NAME_MAX, NEUTRAL, colorFromName, colorGrid, isNeutral, markBg, markColor, normalizeColor, normalizeTheme, swatchBackground, type GridCell } from "../../../shared/serverIdentity";
 import { RunningPreviews, TestMaster } from "./PreviewControl";
-import { StoredSecretSelect } from "./Integrations";
 
 /** A section of Settings with an anchor: `/settings#repos` (the old /repos) scrolls to it. */
 function SettingsSection({ id, title, children }: { id: string; title: string; children: React.ReactNode }) {
@@ -105,7 +106,7 @@ export function Settings() {
       <NotificationSettings />
       <MachineCostSettings />
       <InstancesSettings />
-      <GoogleSignInSettings />
+      <ServerKeysSettings />
       <ReposSection />
       <GitHubSection />
       <VCard slot="settings-config" title="Configuration" aside={<span className="text-muted-foreground text-xs">read-only · orca.config.ts</span>}>
@@ -165,51 +166,27 @@ function BoardSettings() {
   );
 }
 
-/** Settings → Google sign-in: the OAuth client behind Gmail's "Sign in with Google", set once by the
- *  operator (`googleOAuth` in the app config; docs/integrations/gmail.md). The client id (empty =
- *  ORCA_GOOGLE_OAUTH_CLIENT_ID), the client secret as a stored secret (none = the ORCA_SECRET_GOOGLE_OAUTH
- *  variable) and an optional fixed redirect origin. The Integrations page's Connect has no such fields. */
-function GoogleSignInSettings() {
-  const [saved, setSaved] = useState<GoogleOAuthSettings | null>(null);
-  const [form, setForm] = useState({ clientId: "", secretRef: "", redirectOrigin: "" });
-  const [busy, setBusy] = useState(false);
-  const load = () => api.config().then((c) => { if (c.googleOAuth) { setSaved(c.googleOAuth); setForm({ clientId: c.googleOAuth.clientId, secretRef: c.googleOAuth.secretRef, redirectOrigin: c.googleOAuth.redirectOrigin }); } }).catch(() => {});
-  useEffect(() => { void load(); }, []);
-  if (!saved) return null;
-  const stored = form.secretRef.startsWith("secret:") ? form.secretRef.slice("secret:".length) : "";
-  const changed = form.clientId !== saved.clientId || form.secretRef !== saved.secretRef || form.redirectOrigin !== saved.redirectOrigin;
-  const origin = (form.redirectOrigin.trim() || window.location.origin).replace(/\/+$/, "");
-  const save = async () => {
-    setBusy(true);
-    try { await api.setGoogleOAuth(form); await load(); }
-    catch (e) {
-      const error = e instanceof Error ? e.message : String(e);
-      notifyLocal({ kind: "action_failed", repo: "", title: "Google sign-in", label: "Google sign-in setting failed", body: error, copy: `Action: Save the Google OAuth client\nError:\n${error}`, ask: `Saving the Google OAuth client failed: ${error}. Please investigate and fix.` });
-    }
-    finally { setBusy(false); }
-  };
+/** Settings → Server keys: read only. The credentials Orca itself owns (an OAuth client, a bot
+ *  token, a signing secret) come only from the server's environment (shared/serverKeys.ts), so there
+ *  is nothing to type here. Each row says whether THIS server has the variables; a feature without
+ *  them is greyed out with the variable it needs. */
+function ServerKeysSettings() {
+  const [keys, setKeys] = useState<ServerKeysState | null>(null);
+  useEffect(() => { void api.config().then((c) => setKeys(c.serverKeys ?? null)).catch(() => {}); }, []);
+  if (!keys) return null;
   return (
-    <VCard slot="settings-google-oauth" title="Google sign-in" aside={<span className="text-muted-foreground text-xs">Gmail · set once</span>}>
-      <div className="space-y-4 p-4 text-sm">
-        <p className="text-muted-foreground text-xs">The OAuth client for Sign in with Google. Make a Web client in Google Cloud and add this redirect URI: <span className="font-mono break-all">{origin}/api/integrations/oauth/google/callback</span></p>
-        <div className="space-y-1.5">
-          <Label htmlFor="google-client-id">Client ID</Label>
-          <Input id="google-client-id" data-slot="google-client-id" className="font-mono" value={form.clientId} onChange={(e) => setForm({ ...form, clientId: e.target.value })}
-            placeholder={saved.envClientId ? "empty = ORCA_GOOGLE_OAUTH_CLIENT_ID (set)" : "1234-abc.apps.googleusercontent.com"} />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="google-client-secret">Client secret</Label>
-          <StoredSecretSelect id="google-client-secret" value={stored} noneLabel={`None: use ${saved.defaultSecretRef} in .env`}
-            onChange={(v) => setForm({ ...form, secretRef: v ? `secret:${v}` : "" })} />
-          {form.secretRef && !stored && <div className="text-muted-foreground text-xs">Variable <span className="font-mono">{form.secretRef}</span></div>}
-          <div className="text-muted-foreground text-xs">Save the secret first with /secret in the chat. Orca stores only its name here.</div>
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="google-redirect-origin">Redirect origin (optional)</Label>
-          <Input id="google-redirect-origin" className="font-mono" value={form.redirectOrigin} onChange={(e) => setForm({ ...form, redirectOrigin: e.target.value })} placeholder="empty = the page's own https origin" />
-        </div>
-        <div className="flex justify-end"><Button size="sm" disabled={busy || !changed} onClick={() => void save()} data-slot="google-oauth-save">Save</Button></div>
-      </div>
+    <VCard slot="settings-server-keys" title="Server keys" aside={<span className="text-muted-foreground text-xs">read-only · server environment</span>} bodyClass="divide-y">
+      {(Object.keys(SERVER_KEYS) as ServerFeature[]).filter((f) => keys[f]).map((f) => {
+        const k = keys[f]!;
+        return (
+          <div key={f} data-slot={`server-key-${f}`} data-configured={k.configured} className={k.configured ? undefined : "opacity-60"}>
+            <Setting label={SERVER_KEYS[f].label} hint={SERVER_KEYS[f].env.join(", ")}
+              note={k.configured ? undefined : <div className="text-muted-foreground mt-1 text-xs">{needsNote(k)}</div>}>
+              <Badge variant={k.configured ? "success" : "secondary"}>{k.configured ? "set" : "not set"}</Badge>
+            </Setting>
+          </div>
+        );
+      })}
     </VCard>
   );
 }

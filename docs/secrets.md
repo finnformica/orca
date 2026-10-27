@@ -128,6 +128,10 @@ sits right before it.
   The scrub reads an in-memory cache of the values this bridge can decrypt. Orca reads the cache at
   connect, every minute, and at once after a store or a delete. A value shorter than 6 characters is
   not scrubbed, because the scrub would cut ordinary words.
+- **Not for server keys.** A credential that Orca itself owns (the Google OAuth client, the Discord
+  bot token, the webhook signing secret, Slack's app-level token) comes only from the bridge's
+  environment. The store does not hold it. See docs/SETUP.md "Server keys". The store holds the keys
+  that a person gives for their own account, for example the Granola key or a Cloudflare token.
 - **Who can use the store.** `orca secret` is owner-only: a wake that an outside sender caused
   (Discord, Slack, a webhook) cannot list, use or delete a secret. `orca ask-form` is allowed at the
   "ask" level, like `orca ask-user`.

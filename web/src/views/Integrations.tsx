@@ -29,6 +29,7 @@ import {
   SUBSCRIPTION_PRESETS, connectOriginProblem, deadTargetLabel, filterText, healthLine, healthTone, identityLabel, identityProblem, instanceText, newPersonId as personId, integrationProblem, linkProblem, parseFilter, targetLabel,
   type IntegrationCard, type InstanceOption, type IntegrationsOverview, type LinkRow, type Pairing, type PersonRow, type AgentOption, agentLabel, linkAgentValue,
 } from "../../../shared/integrationSettings";
+import { needsNote, serverKeyRefusal } from "../../../shared/serverKeys";
 import { ACCESS_LABEL, ACCESS_VALUES, AUTO_INSTANCE, apiKeyProblem, CATCH_ALL, EVENTS_LABEL, EVENTS_VALUES, LEVEL_LABEL, LINK_LEVELS as LEVELS, STORED_SECRET_PREFIX, effectiveNotify, isAutomatic, repoScoped, storedSecretName, type AdapterMeta, type EventsMode, type LinkLevel } from "../../../shared/integrations";
 
 type Overview = IntegrationsOverview;
@@ -467,14 +468,24 @@ function IntegrationDialog({ kinds, options, existing, onClose, onSaved }: { kin
   // it in the secret store. Empty on an edit keeps the stored key.
   const [apiKey, setApiKey] = useState("");
   const body = { id: autoId, kind, name, instance, secretRef: secretRef || (existing ? "" : meta?.secretDefault ?? ""), config, enabled: existing?.enabled ?? true, ...(meta?.apiKey && apiKey.trim() ? { apiKey: apiKey.trim() } : {}) };
-  const problem = integrationProblem(body, kinds.map((k) => k.kind), STRIPPED)
+  // A kind whose secret is a server key (shared/serverKeys.ts): env only, and greyed out with the
+  // variable it needs while this server lacks it.
+  const serverKey = meta?.serverKey;
+  const keyMissing = !!serverKey && !serverKey.configured && !existing;
+  const problem = integrationProblem(body, kinds.map((k) => k.kind), STRIPPED) ?? serverKeyRefusal(body)
+    ?? (keyMissing ? needsNote(serverKey!) : undefined)
     ?? (meta?.apiKey && (apiKey.trim() || !existing) ? apiKeyProblem(meta, apiKey) : undefined);
   const save = async () => { setBusy(true); const r = await act(existing ? `Save ${name}` : `Connect ${name}`, "save", body, onSaved); setBusy(false); if (r) onClose(); };
   const kindSelect = (
     <Field label="Kind" htmlFor="int-kind">
       <Select value={kind} onValueChange={setKind} disabled={!!existing}>
         <SelectTrigger id="int-kind" className="w-full"><SelectValue /></SelectTrigger>
-        <SelectContent>{kinds.map((k) => <SelectItem key={k.kind} value={k.kind}><BrandIcon kind={k.kind} className="mr-2" />{k.label}</SelectItem>)}</SelectContent>
+        <SelectContent>{kinds.map((k) => (
+          <SelectItem key={k.kind} value={k.kind}>
+            <BrandIcon kind={k.kind} className="mr-2" />{k.label}
+            {k.serverKey && !k.serverKey.configured && <span data-slot="kind-not-set-up" className="text-muted-foreground ml-2 text-xs">not set up</span>}
+          </SelectItem>
+        ))}</SelectContent>
       </Select>
     </Field>
   );
@@ -498,6 +509,8 @@ function IntegrationDialog({ kinds, options, existing, onClose, onSaved }: { kin
     <FormDialog title={existing ? `Edit ${existing.name}` : "Connect an integration"} problem={problem} busy={busy} onSubmit={() => void save()} onClose={onClose}
       description={meta?.help ?? "The token stays in the instance's environment. Orca stores only the variable name."}>
       {kindSelect}
+      {keyMissing && <p data-slot="server-key-missing" className="text-muted-foreground rounded-md bg-muted p-3 text-xs">{needsNote(serverKey!)}</p>}
+      <fieldset disabled={keyMissing} data-slot="integration-fields" className="space-y-4 disabled:opacity-50">
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Name" htmlFor="int-name"><Input id="int-name" value={name} onChange={(e) => setName(e.target.value)} placeholder={`Work ${meta?.label ?? ""}`.trim()} /></Field>
         <Field label="Id" htmlFor="int-id"><Input id="int-id" value={existing ? existing.id : id} disabled={!!existing} onChange={(e) => setId(e.target.value)} placeholder={autoId || "work-slack"} className="font-mono" /></Field>
@@ -532,12 +545,16 @@ function IntegrationDialog({ kinds, options, existing, onClose, onSaved }: { kin
       {!meta?.oauth && !meta?.apiKey && <>
       <Field label="Secret variable" htmlFor="int-secret" hint={storedSecretName(secretRef) !== undefined
         ? <>From Orca&apos;s secret store. The bridge decrypts it in memory when the integration starts.</>
-        : <>Set it in the <span className="font-mono">.env</span> of {isAutomatic(instance) ? "each server that can run it" : "that server"}. It must start with <span className="font-mono">ORCA_SECRET_</span>, so agents never see it. Or choose a stored secret below.</>}>
+        : serverKey
+          ? <>A server key: set it in the <span className="font-mono">.env</span> of {isAutomatic(instance) ? "each server that can run it" : "that server"}. Empty = <span className="font-mono">{meta?.secretDefault}</span>.</>
+          : <>Set it in the <span className="font-mono">.env</span> of {isAutomatic(instance) ? "each server that can run it" : "that server"}. It must start with <span className="font-mono">ORCA_SECRET_</span>, so agents never see it. Or choose a stored secret below.</>}>
         <Input id="int-secret" value={secretRef} onChange={(e) => setSecretRef(secretRefInput(e.target.value))} placeholder={meta?.secretExample ?? "ORCA_SECRET_…"} className="font-mono" />
       </Field>
-      <Field label="Stored secret" htmlFor="int-stored-secret">
-        <StoredSecretSelect id="int-stored-secret" value={storedSecretName(secretRef) ?? ""} onChange={(v) => setSecretRef(v ? `${STORED_SECRET_PREFIX}${v}` : storedSecretName(secretRef) !== undefined ? "" : secretRef)} />
-      </Field>
+      {!serverKey && (
+        <Field label="Stored secret" htmlFor="int-stored-secret">
+          <StoredSecretSelect id="int-stored-secret" value={storedSecretName(secretRef) ?? ""} onChange={(v) => setSecretRef(v ? `${STORED_SECRET_PREFIX}${v}` : storedSecretName(secretRef) !== undefined ? "" : secretRef)} />
+        </Field>
+      )}
       </>}
       {meta?.config?.map((f) => meta.switches && f.key in meta.switches
         ? (
@@ -551,6 +568,7 @@ function IntegrationDialog({ kinds, options, existing, onClose, onSaved }: { kin
             <Input id={`int-cfg-${f.key}`} value={config[f.key] ?? ""} placeholder={f.placeholder} onChange={(e) => setConfig({ ...config, [f.key]: e.target.value })} />
           </Field>
         ))}
+      </fieldset>
     </FormDialog>
   );
 }
@@ -749,7 +767,12 @@ function IdentityDialog({ person: p, kinds, onClose, onSaved }: { person: Person
       <Field label="Platform" htmlFor="identity-adapter">
         <Select value={adapter} onValueChange={setAdapter}>
           <SelectTrigger id="identity-adapter" className="w-full"><SelectValue /></SelectTrigger>
-          <SelectContent>{kinds.map((k) => <SelectItem key={k.kind} value={k.kind}><BrandIcon kind={k.kind} className="mr-2" />{k.label}</SelectItem>)}</SelectContent>
+          <SelectContent>{kinds.map((k) => (
+          <SelectItem key={k.kind} value={k.kind}>
+            <BrandIcon kind={k.kind} className="mr-2" />{k.label}
+            {k.serverKey && !k.serverKey.configured && <span data-slot="kind-not-set-up" className="text-muted-foreground ml-2 text-xs">not set up</span>}
+          </SelectItem>
+        ))}</SelectContent>
         </Select>
       </Field>
       <div className="grid gap-4 sm:grid-cols-2">

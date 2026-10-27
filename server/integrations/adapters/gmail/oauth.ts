@@ -14,23 +14,22 @@
 //    `integrations/gmail.<id>.refresh_token`.
 // The access token stays in memory. A refresh token Google refuses (revoked, expired) marks the row
 // "reconnect needed" and is not tried again until a new Connect stores another one.
-// The OAuth client is server config, set once by the operator (app config `googleOAuth`, Settings >
-// Google sign-in): the client id (else ORCA_GOOGLE_OAUTH_CLIENT_ID) and the client secret's ref (else
-// ORCA_SECRET_GOOGLE_OAUTH): a variable, or secret:<stored name> through the core's shared secret
-// refs (../../secretRefs.ts). A row made before that (config.clientId, its own secret_ref) keeps them.
+// The OAuth client is a server key (shared/serverKeys.ts), read ONLY from the bridge's environment:
+// ORCA_GOOGLE_OAUTH_CLIENT_ID, ORCA_SECRET_GOOGLE_OAUTH and the optional
+// ORCA_GOOGLE_OAUTH_REDIRECT_ORIGIN. A missing variable disables the sign-in, never the bridge. An
+// old `googleOAuth` in the app config, or a row's own client id or secret_ref, is ignored with a log line.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import * as db from "../../../db";
 import * as secrets from "../../../secrets";
 import type { Connection } from "../../adapter";
-import * as secretRefs from "../../secretRefs";
 import * as store from "../../store";
 import { connectOriginProblem } from "../../../../shared/integrationSettings";
-import { AUTO_INSTANCE, storedSecretName, type Access, type EventsMode } from "../../../../shared/integrations";
-import { loadConfig, type GoogleOAuthConfig } from "../../../config";
+import { AUTO_INSTANCE, type Access, type EventsMode } from "../../../../shared/integrations";
+import { GOOGLE_API_BASE_ENV, GOOGLE_CLIENT_ID_ENV, GOOGLE_CLIENT_SECRET_ENV, GOOGLE_REDIRECT_ORIGIN_ENV } from "../../../../shared/serverKeys";
 import { authorizeUrl, endpoints, exchangeCode, Gmail, GoogleError, pkce, redirectUriFor, refreshAccess, revoke, SCOPE, consentScopes, missingScopes, type GmailAccess } from "./google";
 
-export const CLIENT_SECRET_DEFAULT = "ORCA_SECRET_GOOGLE_OAUTH";
-export const CLIENT_ID_ENV = "ORCA_GOOGLE_OAUTH_CLIENT_ID";
+export const CLIENT_SECRET_DEFAULT = GOOGLE_CLIENT_SECRET_ENV;
+export const CLIENT_ID_ENV = GOOGLE_CLIENT_ID_ENV;
 /** A new Gmail account's policy (docs/integrations/POLICY.md section 6): read, events off until you
  *  set them on the card. The registry's `meta.policyDefaults` is this too. */
 export const GMAIL_POLICY_DEFAULTS: { access: Access; events: EventsMode } = { access: "read", events: "off" };
@@ -63,58 +62,49 @@ export function cardOAuth(c: Pick<Connection, "kind"> & { access?: unknown }, s:
   return { ...s, missing: s.account ? missingScopes(gmailAccess(c), s.scopes) : [] };
 }
 
-/** The server's Google OAuth client (app config `googleOAuth`), {} when the config cannot be read. */
-export async function serverClient(): Promise<GoogleOAuthConfig> {
-  try { return (await loadConfig()).googleOAuth ?? {}; } catch { return {}; }
-}
+const ENDPOINT_KEYS = ["authUrl", "tokenUrl", "apiUrl", "revokeUrl"] as const;
 
-/** The client a sign-in uses: a row's own (an older row: config.clientId, secret_ref) wins, then the
- *  server config, then the environment. The endpoints too (a test's fake Google). Pure. */
-export function resolveClient(server: GoogleOAuthConfig, row?: Pick<Connection, "config" | "secretRef">, env: Record<string, string | undefined> = process.env):
+/** The client a sign-in uses, from the environment only. The endpoints are Google's, unless
+ *  ORCA_GOOGLE_API_BASE (a fake Google in the tests, or a proxy) or the row's own endpoint keys name
+ *  others. They are not secrets. Pure. */
+export function resolveClient(row?: Pick<Connection, "config">, env: Record<string, string | undefined> = process.env):
   { clientId?: string; secretRef: string; redirectOrigin?: string; endpoints: Record<string, unknown> } {
   const s = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
-  const clientId = s(row?.config.clientId) ?? s(server.clientId) ?? s(env[CLIENT_ID_ENV]);
-  const redirectOrigin = s(row?.config.redirectOrigin) ?? s(server.redirectOrigin);
+  const clientId = s(env[CLIENT_ID_ENV]);
+  const redirectOrigin = s(env[GOOGLE_REDIRECT_ORIGIN_ENV]);
+  const base = s(env[GOOGLE_API_BASE_ENV])?.replace(/\/+$/, "");
+  const fromRow = Object.fromEntries(ENDPOINT_KEYS.filter((k) => row?.config[k] !== undefined).map((k) => [k, row!.config[k]]));
   return {
-    ...(clientId ? { clientId } : {}), secretRef: s(row?.secretRef) ?? s(server.secretRef) ?? CLIENT_SECRET_DEFAULT,
-    ...(redirectOrigin ? { redirectOrigin } : {}), endpoints: { ...server, ...(row?.config ?? {}) },
+    ...(clientId ? { clientId } : {}), secretRef: CLIENT_SECRET_DEFAULT, ...(redirectOrigin ? { redirectOrigin } : {}),
+    endpoints: { ...(base ? { authUrl: `${base}/auth`, tokenUrl: `${base}/token`, apiUrl: base, revokeUrl: `${base}/revoke` } : {}), ...fromRow },
   };
 }
 type Client = ReturnType<typeof resolveClient>;
-const clientOf = async (row?: Connection): Promise<Client> => resolveClient(await serverClient(), row);
+const clientOf = async (row?: Connection): Promise<Client> => resolveClient(row);
 
 /** Why "Sign in with Google" cannot work on this bridge yet, in one line, or undefined when it can.
- *  Reads names only (`readable`: the stored secrets this bridge's key decrypts), never a value. Pure. */
-export function setupProblem(c: Pick<Client, "clientId" | "secretRef">, readable: Set<string>, env: Record<string, string | undefined> = process.env): string | undefined {
-  if (!c.clientId) return "Gmail sign-in is not set up: the server has no Google OAuth client ID.";
-  const stored = storedSecretName(c.secretRef);
-  if (stored !== undefined ? !readable.has(stored) : !env[c.secretRef]) return `Gmail sign-in is not set up: the client secret ${c.secretRef} is not on this server.`;
-  return undefined;
+ *  Reads names only, never a value. Pure. */
+export function setupProblem(c: Pick<Client, "clientId">, env: Record<string, string | undefined> = process.env): string | undefined {
+  const missing = [...(c.clientId ? [] : [CLIENT_ID_ENV]), ...(env[CLIENT_SECRET_DEFAULT]?.trim() ? [] : [CLIENT_SECRET_DEFAULT])];
+  return missing.length ? `Gmail sign-in is not set up: set ${missing.join(" and ")} in the server's environment.` : undefined;
 }
 
 /** The server client on this bridge, for the Connect dialog: its setup problem, and whether it names
  *  a fixed redirect origin (then the page's own origin does not matter). */
 export async function serverSetup(): Promise<{ problem?: string; fixedOrigin: boolean }> {
   const c = await clientOf();
-  const readable = storedSecretName(c.secretRef) !== undefined ? await secretRefs.readable().catch(() => new Set<string>()) : new Set<string>();
-  const problem = setupProblem(c, readable);
+  const problem = setupProblem(c);
   return { ...(problem ? { problem } : {}), fixedOrigin: !!c.redirectOrigin };
 }
 
 function clientId(c: Client, id?: string): string {
-  if (!c.clientId) throw new OAuthError(`Gmail sign-in is not set up: set the Google OAuth client ID in Settings > Google sign-in (or ${CLIENT_ID_ENV})`, "config", id);
+  if (!c.clientId) throw new OAuthError(`Gmail sign-in is not set up: set ${CLIENT_ID_ENV} in the server's environment`, "config", id);
   return c.clientId;
 }
 
-async function clientSecret(c: Client, id?: string): Promise<string> {
-  // The client's secret ref, through the core's shared secret refs: a variable, or secret:<stored
-  // name> (decrypted into this bridge's memory; ensureLoaded, since a sign-in may run on a bridge
-  // that does not run the adapter).
-  const ref = c.secretRef;
-  try { await secretRefs.ensureLoaded({ id: id ?? "google-oauth", kind: "gmail", secretRef: ref, config: {} }); }
-  catch (e) { throw new OAuthError(e instanceof Error ? e.message : String(e), "config", id); }
-  const value = secretRefs.secretValue(ref);
-  if (!value) throw new OAuthError(`Gmail sign-in is not set up: the client secret ${ref} is not set on this bridge. Point Settings > Google sign-in at a stored secret, or put ${ref} in the bridge's .env`, "config", id);
+function clientSecret(c: Client, id?: string): string {
+  const value = process.env[c.secretRef]?.trim();
+  if (!value) throw new OAuthError(`Gmail sign-in is not set up: set ${c.secretRef} in the server's environment`, "config", id);
   return value;
 }
 
@@ -128,7 +118,7 @@ const hash = (s: string) => createHash("sha256").update(s).digest("hex").slice(0
 const sameText = (a: string, b: string) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 
 /** The origin Google sends the browser back to: the configured `redirectOrigin` (a public base URL:
- *  the server's googleOAuth, or an older row's), else the page's own Origin. Only https on a domain
+ *  ORCA_GOOGLE_OAUTH_REDIRECT_ORIGIN), else the page's own Origin. Only https on a domain
  *  name: never 127.0.0.1:8787 or plain http (`connectOriginProblem`). A refusal names the https
  *  address to open (ORCA_SERVER_URL) when known. */
 export function redirectOrigin(c: { redirectOrigin?: string }, pageOrigin: string | undefined, serverUrl = process.env.ORCA_SERVER_URL): string {
@@ -137,7 +127,7 @@ export function redirectOrigin(c: { redirectOrigin?: string }, pageOrigin: strin
   let https: string | undefined;
   try { const u = serverUrl ? new URL(serverUrl) : undefined; https = u?.protocol === "https:" ? u.origin : undefined; } catch { /* not a URL */ }
   const why = connectOriginProblem(o, https);
-  if (why) throw new OAuthError(fixed ? `redirectOrigin: ${why}` : why, "config");
+  if (why) throw new OAuthError(fixed ? `${GOOGLE_REDIRECT_ORIGIN_ENV}: ${why}` : why, "config");
   return new URL(o).origin;
 }
 

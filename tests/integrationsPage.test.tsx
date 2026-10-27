@@ -210,7 +210,7 @@ describe("the Integrations page", () => {
   });
 
   test("Connect > Gmail when the server has no OAuth client: one line with the setup guide, no button", async () => {
-    const setup = "Gmail sign-in is not set up: the server has no Google OAuth client ID.";
+    const setup = "Gmail sign-in is not set up: set ORCA_GOOGLE_OAUTH_CLIENT_ID and ORCA_SECRET_GOOGLE_OAUTH in the server's environment.";
     apiFake.integrationsData = { ...overview(), kinds: [{ ...fixedKind, oauth: { ...fixedKind.oauth, setup } }], integrations: [], links: [], pairings: [] };
     await open("/integrations");
     await click(all("integration-connect")[0]!);
@@ -350,18 +350,39 @@ describe("the Integrations page", () => {
     expect(brandTitle("granola")).toBe("Granola");
   });
 
-  test("Settings > Google sign-in: the operator sets the client id and points the secret at a stored secret", async () => {
-    apiFake.googleOAuthData = { clientId: "", secretRef: "", redirectOrigin: "", envClientId: false, defaultSecretRef: "ORCA_SECRET_GOOGLE_OAUTH" };
+  test("Settings > Server keys: read only; a key this server lacks is greyed out with the variable it needs, nothing to type", async () => {
+    apiFake.serverKeysData = {
+      googleSignIn: { configured: false, needs: "ORCA_GOOGLE_OAUTH_CLIENT_ID, ORCA_SECRET_GOOGLE_OAUTH" },
+      discord: { configured: true },
+    };
     apiFake.holdConfig = false; // another file may leave config held (reset() keeps it)
     await open("/settings");
-    // The card reads /api/config on mount: wait for it (bounded).
-    for (let i = 0; i < 50 && !all("settings-google-oauth").length; i++) await act(async () => { await flush(); });
-    const card = all("settings-google-oauth")[0]!;
-    expect(card.textContent).toContain("/api/integrations/oauth/google/callback");
-    expect(card.textContent).toContain("None: use ORCA_SECRET_GOOGLE_OAUTH in .env");
-    await type(card.querySelector<HTMLInputElement>('[data-slot="google-client-id"]')!, "cid.apps.googleusercontent.com");
-    await click(all("google-oauth-save", card)[0]!);
-    expect(apiFake.setGoogleOAuthCalls).toEqual([{ clientId: "cid.apps.googleusercontent.com", secretRef: "", redirectOrigin: "" }]);
+    for (let i = 0; i < 50 && !all("settings-server-keys").length; i++) await act(async () => { await flush(); });
+    const card = all("settings-server-keys")[0]!;
+    expect(card.querySelectorAll("input")).toHaveLength(0);
+    expect(all("settings-google-oauth")).toHaveLength(0); // the old editable card is gone
+    const google = all("server-key-googleSignIn", card)[0]!;
+    expect(google.getAttribute("data-configured")).toBe("false");
+    expect(google.className).toContain("opacity-60");
+    expect(google.textContent).toContain("not set");
+    expect(google.textContent).toContain("set ORCA_GOOGLE_OAUTH_CLIENT_ID, ORCA_SECRET_GOOGLE_OAUTH in the server's environment");
+    const discord = all("server-key-discord", card)[0]!;
+    expect(discord.getAttribute("data-configured")).toBe("true");
+    expect(discord.textContent).toContain("ORCA_SECRET_DISCORD_BOT");
+  });
+
+  test("Connect > Discord when the server lacks ORCA_SECRET_DISCORD_BOT: shown but greyed out with the variable; no stored-secret choice", async () => {
+    const discord = { kind: "discord", label: "Discord", caps: {}, place: "channel", secretDefault: "ORCA_SECRET_DISCORD_BOT", serverKey: { configured: false, needs: "ORCA_SECRET_DISCORD_BOT" } };
+    apiFake.integrationsData = { ...overview(), kinds: [discord], integrations: [], links: [], pairings: [] };
+    await open("/integrations");
+    await click(all("integration-connect")[0]!);
+    const d = dialog()!;
+    expect(d.querySelector("#int-kind")!.textContent).toContain("not set up");
+    expect(all("server-key-missing", d)[0]!.textContent).toContain("set ORCA_SECRET_DISCORD_BOT in the server's environment");
+    expect(all("integration-fields", d)[0]!.hasAttribute("disabled")).toBe(true);
+    expect(d.querySelector("#int-stored-secret")).toBeNull();
+    await act(async () => { d.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); await flush(); });
+    expect(apiFake.integrationPosts).toEqual([]);
   });
 
   test("a connected Gmail card names the account and scopes; a refused grant says reconnect needed and offers Reconnect", async () => {

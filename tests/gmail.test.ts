@@ -24,7 +24,7 @@ import { defaultQuery, GMAIL_CAPS, GMAIL_VERBS, gmailConfig, gmailGate, matchQue
 import { authorizeUrl, CALLBACK_PATH, endpoints, fromBase64Url, GOOGLE, pkce, SCOPE, consentScopes, missingScopes, scopesFor, tokenError } from "../server/integrations/adapters/gmail/google";
 import * as oauth from "../server/integrations/adapters/gmail/oauth";
 import { gmailTool } from "../server/gmailTool";
-import { invalidateConfig, parseConfigDocument, saveConfigDocument, setGoogleOAuth } from "../server/config";
+import { invalidateConfig, loadConfig, parseConfigDocument, resetRetiredNote } from "../server/config";
 import * as orchestrator from "../server/orchestrator";
 import { grantRefusal, integrationAccessRefusal } from "../shared/integrations";
 import { connectOriginProblem } from "../shared/integrationSettings";
@@ -297,6 +297,7 @@ describe("against a fake Google", () => {
     stateDir = await mkdtemp(join(tmpdir(), "orca-gmail-"));
     process.env.ORCA_STATE_DIR = stateDir;
     process.env.ORCA_SECRET_GOOGLE_OAUTH = "client-secret";
+    process.env.ORCA_GOOGLE_OAUTH_CLIENT_ID = "cid";
     pg = await freshSchema("gmail");
     process.env.ORCA_DATABASE_URL = pg.url;
     await db.close();
@@ -316,13 +317,13 @@ describe("against a fake Google", () => {
     await db.close();
     await pg.drop();
     await rm(stateDir, { recursive: true, force: true });
-    delete process.env.ORCA_SECRET_GOOGLE_OAUTH;
+    for (const k of ["ORCA_SECRET_GOOGLE_OAUTH", "ORCA_GOOGLE_OAUTH_CLIENT_ID", "ORCA_GOOGLE_API_BASE", "ORCA_GOOGLE_OAUTH_REDIRECT_ORIGIN"]) delete process.env[k];
     for (const [k, v] of Object.entries(prev)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   });
 
   const conn = (extra: Record<string, unknown> = {}): Connection => ({
     id: "gm", kind: "gmail", name: "smfstudio", instance: "local", enabled: true, access: "read", events: "trigger",
-    config: { clientId: "cid", pollSeconds: "0.05", authUrl: `${g.base}/auth`, tokenUrl: `${g.base}/token`, apiUrl: g.base, revokeUrl: `${g.base}/revoke`, ...extra },
+    config: { pollSeconds: "0.05", authUrl: `${g.base}/auth`, tokenUrl: `${g.base}/token`, apiUrl: g.base, revokeUrl: `${g.base}/revoke`, ...extra },
   });
   const setup = async (extra: Record<string, unknown> = {}) => {
     const c = conn(extra);
@@ -377,29 +378,31 @@ describe("against a fake Google", () => {
     expect((await admin.overview()).kinds.find((k) => k.kind === "gmail")).toMatchObject({ oauth: { provider: "google", label: "Sign in with Google", docs: expect.stringContaining("docs/integrations/gmail.md") }, switches: { checkAuth: true }, policyDefaults: { access: "read", events: "off" } });
   });
 
-  test("the client secret by the core's shared secret refs: secret_ref secret:<scope>/<name> (a /secret value) wins over the env var", async () => {
-    delete process.env.ORCA_SECRET_GOOGLE_OAUTH;
-    await secrets.store({ scope: "chat", name: "google-oauth-secret", value: "client-secret", who: "test" });
-    const c: Connection = { ...conn(), secretRef: "secret:chat/google-oauth-secret" };
-    await store.addIntegration(c);
+  test("the client secret is a server key: only ORCA_SECRET_GOOGLE_OAUTH counts; a row's own client id or stored secret_ref is ignored", async () => {
+    await secrets.store({ scope: "chat", name: "google-oauth-secret", value: "wrong-secret", who: "test" });
+    // A row saved before the move: its own client id and a stored client secret.
+    await store.addIntegration({ ...conn({ clientId: "old-row-client" }), secretRef: "secret:chat/google-oauth-secret" });
+    const row = (await store.integration("gm"))!;
+    expect(row.secretRef).toBeUndefined();
+    expect(row.config.clientId).toBeUndefined();
+    const { url } = await oauth.begin("gm", "https://orca.example.ts.net");
+    expect(new URL(url).searchParams.get("client_id")).toBe("cid");
     expect((await connect()).account).toBe(ACCOUNT);
-    process.env.ORCA_SECRET_GOOGLE_OAUTH = "wrong-secret";
     oauth.resetTokens();
-    expect(await oauth.accessToken(c)).toMatch(/^at-/);
-    await store.addIntegration({ ...conn(), id: "gm3", secretRef: "secret:chat/nope" });
-    await expect(oauth.begin("gm3", "https://orca.example.ts.net")).rejects.toThrow('no secret "chat/nope"');
+    expect(await oauth.accessToken(row)).toMatch(/^at-/); // the env secret, not the stored "wrong-secret"
   });
 
   test("a missing client secret or client id fails at Start, before the user goes to Google; a denied consent says so", async () => {
     await setup();
     delete process.env.ORCA_SECRET_GOOGLE_OAUTH;
-    await expect(oauth.begin("gm", "https://orca.example.ts.net")).rejects.toThrow("ORCA_SECRET_GOOGLE_OAUTH is not set");
+    await expect(oauth.begin("gm", "https://orca.example.ts.net")).rejects.toThrow("set ORCA_SECRET_GOOGLE_OAUTH in the server's environment");
     process.env.ORCA_SECRET_GOOGLE_OAUTH = "client-secret"; // the variable path: unchanged
     const { url } = await oauth.begin("gm", "https://orca.example.ts.net");
     const denied = new URLSearchParams({ error: "access_denied", state: new URL(url).searchParams.get("state")! });
     await expect(oauth.finish(denied)).rejects.toThrow("you did not allow access");
-    await store.addIntegration({ ...conn({ clientId: "" }), id: "gm2" });
-    await expect(oauth.begin("gm2", "https://x.ts.net")).rejects.toThrow("set the Google OAuth client ID in Settings > Google sign-in");
+    delete process.env.ORCA_GOOGLE_OAUTH_CLIENT_ID;
+    await expect(oauth.begin("gm", "https://x.ts.net")).rejects.toThrow("set ORCA_GOOGLE_OAUTH_CLIENT_ID in the server's environment");
+    process.env.ORCA_GOOGLE_OAUTH_CLIENT_ID = "cid";
     await expect(oauth.begin("gm", "not an origin")).rejects.toThrow("is not one");
     // Never the bridge's own loopback or plain http; the message names the https address to open.
     process.env.ORCA_SERVER_URL = "https://orca.example.ts.net";
@@ -408,10 +411,11 @@ describe("against a fake Google", () => {
       await expect(oauth.begin("gm", "http://orca.example.ts.net")).rejects.toThrow("(plain http)");
     } finally { delete process.env.ORCA_SERVER_URL; }
     // A configured public base (redirectOrigin) wins over the page's origin.
-    await store.addIntegration({ ...conn({ redirectOrigin: "https://orca.example.ts.net/" }), id: "gm4" });
-    expect((await oauth.begin("gm4", "http://127.0.0.1:8787")).redirectUri).toBe(`https://orca.example.ts.net${CALLBACK_PATH}`);
-    await store.addIntegration({ ...conn({ redirectOrigin: "http://orca.example.ts.net" }), id: "gm5" });
-    await expect(oauth.begin("gm5", "https://orca.example.ts.net")).rejects.toThrow("redirectOrigin: ");
+    process.env.ORCA_GOOGLE_OAUTH_REDIRECT_ORIGIN = "https://orca.example.ts.net/";
+    expect((await oauth.begin("gm", "http://127.0.0.1:8787")).redirectUri).toBe(`https://orca.example.ts.net${CALLBACK_PATH}`);
+    process.env.ORCA_GOOGLE_OAUTH_REDIRECT_ORIGIN = "http://orca.example.ts.net";
+    await expect(oauth.begin("gm", "https://orca.example.ts.net")).rejects.toThrow("ORCA_GOOGLE_OAUTH_REDIRECT_ORIGIN: ");
+    delete process.env.ORCA_GOOGLE_OAUTH_REDIRECT_ORIGIN;
   });
 
   test("the poll: starts at now, reads only mail the query matches, gates it, and hands it to the core as ext.gmail.message", async () => {
@@ -529,23 +533,21 @@ describe("against a fake Google", () => {
     expect((await admin.overview()).integrations.find((x) => x.id === "gm")!.oauth).toMatchObject({ account: ACCOUNT, reconnect: null });
   });
 
-  test("Sign in with Google: the server's client, no row first; each sign-in adds one account named by its address", async () => {
-    const google = { authUrl: `${g.base}/auth`, tokenUrl: `${g.base}/token`, apiUrl: g.base, revokeUrl: `${g.base}/revoke` };
-    const doc = { repos: [{ name: "app", repoPath: "/tmp/app", worktreeRoot: "/tmp/app/.worktrees", baseBranch: "main" }], portRange: [30000, 40000], staleHours: 24 };
-    // Not set up: Connect says so in one line (the overview's kind meta), and Start refuses.
-    await saveConfigDocument(parseConfigDocument({ ...doc, googleOAuth: google }).config!);
-    invalidateConfig();
-    const gmailKind = async () => (await admin.overview()).kinds.find((k) => k.kind === "gmail")!;
-    expect((await gmailKind()).oauth!.setup).toBe("Gmail sign-in is not set up: the server has no Google OAuth client ID.");
-    await expect(oauth.begin(undefined, "https://orca.example.ts.net")).rejects.toThrow("set the Google OAuth client ID in Settings > Google sign-in");
-    // The operator sets the client once (Settings > Google sign-in): the id, and the secret as a stored secret.
-    await secrets.store({ scope: "chat", name: "google-oauth-secret", value: "client-secret", who: "test" });
+  test("Sign in with Google: the server's client from env, no row first; each sign-in adds one account named by its address", async () => {
+    // Not set up: Connect says so in one line naming the variables (the overview's kind meta), and Start refuses.
+    delete process.env.ORCA_GOOGLE_OAUTH_CLIENT_ID;
     delete process.env.ORCA_SECRET_GOOGLE_OAUTH;
-    await setGoogleOAuth({ ...google, clientId: "cid" });
-    expect((await gmailKind()).oauth!.setup).toBe("Gmail sign-in is not set up: the client secret ORCA_SECRET_GOOGLE_OAUTH is not on this server.");
-    await setGoogleOAuth({ ...google, clientId: "cid", secretRef: "secret:chat/google-oauth-secret" });
+    process.env.ORCA_GOOGLE_API_BASE = g.base;
+    const gmailKind = async () => (await admin.overview()).kinds.find((k) => k.kind === "gmail")!;
+    expect((await gmailKind()).oauth!.setup).toBe("Gmail sign-in is not set up: set ORCA_GOOGLE_OAUTH_CLIENT_ID and ORCA_SECRET_GOOGLE_OAUTH in the server's environment.");
+    expect((await gmailKind()).serverKey).toEqual({ configured: false, needs: "ORCA_GOOGLE_OAUTH_CLIENT_ID, ORCA_SECRET_GOOGLE_OAUTH" });
+    await expect(oauth.begin(undefined, "https://orca.example.ts.net")).rejects.toThrow("set ORCA_GOOGLE_OAUTH_CLIENT_ID in the server's environment");
+    // The operator sets the variables on the server; the bridge reads them per request, no restart in the test.
+    process.env.ORCA_GOOGLE_OAUTH_CLIENT_ID = "cid";
+    expect((await gmailKind()).oauth!.setup).toBe("Gmail sign-in is not set up: set ORCA_SECRET_GOOGLE_OAUTH in the server's environment.");
+    process.env.ORCA_SECRET_GOOGLE_OAUTH = "client-secret";
     expect((await gmailKind()).oauth!.setup).toBeUndefined();
-    await expect(setGoogleOAuth({ clientId: "cid", secretRef: "MY_SECRET" })).rejects.toThrow("must start with ORCA_SECRET_");
+    expect((await gmailKind()).serverKey).toEqual({ configured: true });
 
     // One click: no row, no name, no client fields. Google lets the user pick the account.
     const signIn = async (account: string, refresh: string) => {
@@ -589,10 +591,8 @@ describe("against a fake Google", () => {
     // The OAuth app's redirect domain is public (site/ on Cloudflare); the box is on the tailnet only.
     const PUBLIC = "https://orca.example.com";
     const BOX = "https://box.example.ts.net";
-    const google = { authUrl: `${g.base}/auth`, tokenUrl: `${g.base}/token`, apiUrl: g.base, revokeUrl: `${g.base}/revoke` };
-    const doc = { repos: [{ name: "app", repoPath: "/tmp/app", worktreeRoot: "/tmp/app/.worktrees", baseBranch: "main" }], portRange: [30000, 40000], staleHours: 24 };
-    await saveConfigDocument(parseConfigDocument({ ...doc, googleOAuth: { ...google, clientId: "cid", redirectOrigin: `${PUBLIC}/` } }).config!);
-    invalidateConfig();
+    process.env.ORCA_GOOGLE_API_BASE = g.base;
+    process.env.ORCA_GOOGLE_OAUTH_REDIRECT_ORIGIN = `${PUBLIC}/`;
     expect((await admin.overview()).kinds.find((k) => k.kind === "gmail")!.oauth!.setup).toBeUndefined();
     expect(await oauth.serverSetup()).toMatchObject({ fixedOrigin: true });
 
@@ -615,18 +615,43 @@ describe("against a fake Google", () => {
     expect(g.st.log.filter((l) => l.startsWith("redirect_uri "))).toEqual([`redirect_uri ${PUBLIC}${CALLBACK_PATH}`]);
   });
 
-  test("the account id: the address with @ as -, made unique; the client: a row's own wins over the server's, then the env", () => {
+  test("the account id: the address with @ as -, made unique; the client comes from env only; an old googleOAuth still parses", () => {
     expect(oauth.accountId("Finn@Example.com", new Set())).toBe("finn-example.com");
     expect(oauth.accountId("finn@example.com", new Set(["finn-example.com", "finn-example.com-2"]))).toBe("finn-example.com-3");
     expect(oauth.accountId("+tag@x.test", new Set())).toBe("tag-x.test");
-    expect(oauth.resolveClient({ clientId: "srv", secretRef: "secret:chat/g" }, undefined, {})).toMatchObject({ clientId: "srv", secretRef: "secret:chat/g" });
-    expect(oauth.resolveClient({}, { config: { clientId: "row" }, secretRef: "ORCA_SECRET_ROW" }, { ORCA_GOOGLE_OAUTH_CLIENT_ID: "env" })).toMatchObject({ clientId: "row", secretRef: "ORCA_SECRET_ROW" });
-    expect(oauth.resolveClient({}, { config: {} }, { ORCA_GOOGLE_OAUTH_CLIENT_ID: "env" })).toMatchObject({ clientId: "env", secretRef: "ORCA_SECRET_GOOGLE_OAUTH" });
-    expect(oauth.setupProblem({ clientId: "c", secretRef: "ORCA_SECRET_G" }, new Set(), { ORCA_SECRET_G: "x" })).toBeUndefined();
-    expect(oauth.setupProblem({ clientId: "c", secretRef: "secret:chat/g" }, new Set(["chat/g"]), {})).toBeUndefined();
-    expect(oauth.setupProblem({ clientId: "c", secretRef: "secret:chat/g" }, new Set(), {})).toContain("secret:chat/g is not on this server");
-    expect(parseConfigDocument({ repos: [{ name: "a", repoPath: "/a", worktreeRoot: "/a/w", baseBranch: "main" }], googleOAuth: { clientId: 1, other: "x" } }).errors)
-      .toEqual(["googleOAuth.other is not a known key (clientId, secretRef, redirectOrigin, authUrl, tokenUrl, apiUrl, revokeUrl)", "googleOAuth.clientId must be a string"]);
+    const env = { ORCA_GOOGLE_OAUTH_CLIENT_ID: "env", ORCA_GOOGLE_OAUTH_REDIRECT_ORIGIN: "https://orca.example.com" };
+    expect(oauth.resolveClient({ config: { clientId: "row", redirectOrigin: "https://row.example.com" } }, env))
+      .toMatchObject({ clientId: "env", secretRef: "ORCA_SECRET_GOOGLE_OAUTH", redirectOrigin: "https://orca.example.com" });
+    expect(oauth.resolveClient(undefined, {})).toEqual({ secretRef: "ORCA_SECRET_GOOGLE_OAUTH", endpoints: {} });
+    expect(oauth.resolveClient(undefined, { ORCA_GOOGLE_API_BASE: "http://g.test/" }).endpoints)
+      .toEqual({ authUrl: "http://g.test/auth", tokenUrl: "http://g.test/token", apiUrl: "http://g.test", revokeUrl: "http://g.test/revoke" });
+    expect(oauth.setupProblem({ clientId: "c" }, { ORCA_SECRET_GOOGLE_OAUTH: "x" })).toBeUndefined();
+    expect(oauth.setupProblem({}, { ORCA_SECRET_GOOGLE_OAUTH: "x" })).toBe("Gmail sign-in is not set up: set ORCA_GOOGLE_OAUTH_CLIENT_ID in the server's environment.");
+    // Back-compat: a stored document that still holds googleOAuth (any shape) loads, and the key is dropped.
+    const old = parseConfigDocument({ repos: [{ name: "a", repoPath: "/a", worktreeRoot: "/a/w", baseBranch: "main" }], googleOAuth: { clientId: 1, other: "x" } });
+    expect(old.errors).toEqual([]);
+    expect(old.config).not.toHaveProperty("googleOAuth");
+  });
+
+  test("an old googleOAuth in the stored config is ignored with ONE log line naming the variables", async () => {
+    await db.saveConfig({ repos: [{ name: "app", config: { repoPath: "/tmp/app", worktreeRoot: "/tmp/app/.worktrees", baseBranch: "main" } }], app: { portRange: [30000, 40000], staleHours: 24, googleOAuth: { clientId: "stored-cid", secretRef: "secret:chat/g" } } });
+    const warn = console.warn;
+    const lines: string[] = [];
+    console.warn = (...a: unknown[]) => { lines.push(a.map(String).join(" ")); };
+    try {
+      resetRetiredNote();
+      invalidateConfig();
+      const cfg = await loadConfig();
+      invalidateConfig();
+      await loadConfig();
+      expect(cfg).not.toHaveProperty("googleOAuth");
+    } finally { console.warn = warn; }
+    const notes = lines.filter((l) => l.includes("googleOAuth"));
+    expect(notes).toHaveLength(1); // two loads, one line
+    expect(notes[0]).toContain("Set ORCA_GOOGLE_OAUTH_CLIENT_ID, ORCA_SECRET_GOOGLE_OAUTH");
+    // The stored client id does not reach a sign-in: the env's does.
+    const { url } = await oauth.begin(undefined, "https://orca.example.ts.net");
+    expect(new URL(url).searchParams.get("client_id")).toBe("cid");
   });
 
   test("a new Gmail row is read + events off unless the form says otherwise; an edit keeps the stored policy", async () => {

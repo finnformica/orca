@@ -1,10 +1,10 @@
 import { heavyQueueProblems, type HeavyQueueConfig } from "./heavy";
 import * as db from "./db";
-import { ORCA_SECRETS, setGithubAccounts } from "./env";
-import { secretRefRefusal } from "../shared/integrations";
+import { setGithubAccounts } from "./env";
 import { readJsonSync, statePath, writeJsonSync } from "./state";
 import { AGENT_PROVIDERS, type AgentProvider } from "../shared/agent";
 import { MERGE_WHEN_GREEN, type MergePolicy } from "../web/src/workstream";
+import { GOOGLE_CLIENT_ID_ENV, GOOGLE_CLIENT_SECRET_ENV, GOOGLE_REDIRECT_ORIGIN_ENV } from "../shared/serverKeys";
 import { serverSwitcherProblems, type ServerSwitcherConfig } from "./servers";
 import { serverIdentityProblems, type ServerIdentityConfig } from "../shared/serverIdentity";
 import { remotePreviewProblems, type RemotePreviewConfig } from "../shared/remotePreview";
@@ -159,25 +159,18 @@ export type RepoConfig = {
 
 export type UiOptions = { showBoard?: boolean };
 
-/** The Google OAuth client for "Sign in with Google" (Gmail; docs/integrations/gmail.md). The
- *  operator sets it once: the client id (else ORCA_GOOGLE_OAUTH_CLIENT_ID), the client secret's ref
- *  (`secret:<stored name>` or an ORCA_SECRET_* variable; else ORCA_SECRET_GOOGLE_OAUTH), and an
- *  optional fixed public base URL for the redirect (else the page's own https origin). */
-export type GoogleOAuthConfig = { clientId?: string; secretRef?: string; redirectOrigin?: string; authUrl?: string; tokenUrl?: string; apiUrl?: string; revokeUrl?: string };
-// authUrl, tokenUrl, apiUrl and revokeUrl point the flow at a fake Google (the tests) or a proxy.
-const GOOGLE_OAUTH_KEYS = ["clientId", "secretRef", "redirectOrigin", "authUrl", "tokenUrl", "apiUrl", "revokeUrl"] as const;
-
-/** What is wrong with a `googleOAuth` value, if anything. Pure. */
-export function googleOAuthProblems(v: unknown): string[] {
-  if (v === undefined) return [];
-  if (!v || typeof v !== "object" || Array.isArray(v)) return ["googleOAuth must be { clientId?, secretRef?, redirectOrigin? }"];
-  const g = v as Record<string, unknown>;
-  const out: string[] = [];
-  for (const k of Object.keys(g)) if (!(GOOGLE_OAUTH_KEYS as readonly string[]).includes(k)) out.push(`googleOAuth.${k} is not a known key (${GOOGLE_OAUTH_KEYS.join(", ")})`);
-  for (const k of GOOGLE_OAUTH_KEYS) if (g[k] !== undefined && typeof g[k] !== "string") out.push(`googleOAuth.${k} must be a string`);
-  const refusal = typeof g.secretRef === "string" ? secretRefRefusal(g.secretRef, ORCA_SECRETS) : undefined;
-  if (refusal) out.push(`googleOAuth.${refusal}`);
-  return out;
+/** The app-config key the Google sign-in client lived under before it became a server key
+ *  (shared/serverKeys.ts). A stored document may still hold it: parsing accepts it, loading ignores it
+ *  with ONE log line that names the variables to set, and the next save drops it. */
+export const RETIRED_GOOGLE_OAUTH_KEY = "googleOAuth";
+let retiredLogged = false;
+/** Log the retired-key line again (tests). */
+export function resetRetiredNote(): void { retiredLogged = false; }
+/** The log line for a stored `googleOAuth`, once per process; undefined after the first time or when absent. */
+export function retiredGoogleOAuthNote(app: Record<string, unknown>): string | undefined {
+  if (app[RETIRED_GOOGLE_OAUTH_KEY] === undefined || retiredLogged) return undefined;
+  retiredLogged = true;
+  return `orca: config: ${RETIRED_GOOGLE_OAUTH_KEY} in the stored config is ignored: Google sign-in is a server key now. Set ${GOOGLE_CLIENT_ID_ENV}, ${GOOGLE_CLIENT_SECRET_ENV} (and optionally ${GOOGLE_REDIRECT_ORIGIN_ENV}) in the environment.`;
 }
 
 export type OrcaConfig = {
@@ -201,9 +194,6 @@ export type OrcaConfig = {
   /** Console options shared by every browser. `showBoard`: the Board view's nav entry and route
    *  (on unless false). Settings sets it (`/api/config/ui`). */
   ui?: UiOptions;
-  /** The Google OAuth client for Gmail's "Sign in with Google". Settings sets it
-   *  (`/api/config/google-oauth`); see `GoogleOAuthConfig`. */
-  googleOAuth?: GoogleOAuthConfig;
   /** Repos Orca manages; the first is the default. */
   repos: RepoConfig[];
   /** Inclusive [min, max] port range for preview services (shared across repos). */
@@ -454,7 +444,7 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
     const ok = ui && typeof ui === "object" && !Array.isArray(ui) && (ui.showBoard === undefined || typeof ui.showBoard === "boolean");
     if (!ok) errors.push("ui must be { showBoard?: true | false }");
   }
-  errors.push(...googleOAuthProblems(d.googleOAuth));
+  // d.googleOAuth (RETIRED_GOOGLE_OAUTH_KEY) is accepted and ignored: an old document must still load.
   errors.push(...heavyQueueProblems(d.heavyQueue));
   errors.push(...serverSwitcherProblems(d.serverSwitcher));
   errors.push(...serverIdentityProblems(d.serverIdentity));
@@ -483,7 +473,6 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
       serverSwitcher: d.serverSwitcher as ServerSwitcherConfig | undefined,
       serverIdentity: d.serverIdentity as ServerIdentityConfig | undefined,
       ui: d.ui as UiOptions | undefined,
-      googleOAuth: d.googleOAuth as GoogleOAuthConfig | undefined,
     },
   };
 }
@@ -599,6 +588,8 @@ async function loadFromDb(): Promise<OrcaConfig> {
     }
   }
   const app = await db.appConfig();
+  const retired = retiredGoogleOAuthNote(app);
+  if (retired) console.warn(retired);
   const config: OrcaConfig = {
     repos: rows.map((r) => {
       const c = r.config as unknown as RepoConfig;
@@ -630,7 +621,6 @@ async function loadFromDb(): Promise<OrcaConfig> {
     serverSwitcher: app.serverSwitcher as ServerSwitcherConfig | undefined,
     serverIdentity: app.serverIdentity as ServerIdentityConfig | undefined,
     ui: app.ui as UiOptions | undefined,
-    googleOAuth: app.googleOAuth as GoogleOAuthConfig | undefined,
   };
   cached = config;
   cachedAt = Date.now();
@@ -676,7 +666,6 @@ export async function saveConfigDocument(config: OrcaConfig): Promise<void> {
       ...(config.serverSwitcher === undefined ? {} : { serverSwitcher: config.serverSwitcher as unknown as db.Fields }),
       ...(config.serverIdentity === undefined ? {} : { serverIdentity: config.serverIdentity as unknown as db.Fields }),
       ...(config.ui === undefined ? {} : { ui: config.ui as unknown as db.Fields }),
-      ...(config.googleOAuth === undefined ? {} : { googleOAuth: config.googleOAuth as unknown as db.Fields }),
     },
   });
   invalidateConfig();
@@ -714,20 +703,6 @@ export async function setUiOptions(ui: UiOptions): Promise<void> {
   const { config, errors } = parseConfigDocument(await configDocument());
   if (!config) throw new Error(`the stored config does not parse: ${errors.join("; ")}`);
   await saveConfigDocument({ ...config, ...(current.terminal ? { terminal: current.terminal } : {}), ui: { ...config.ui, ...ui } });
-}
-
-/** Set the Google OAuth client — Settings' Google sign-in card. An empty field clears that key; an
- *  empty object removes the entry. Same path as `setUiOptions`, so nothing else in the document changes. */
-export async function setGoogleOAuth(next: GoogleOAuthConfig): Promise<void> {
-  const problems = googleOAuthProblems(next);
-  if (problems.length) throw new Error(problems.join("; "));
-  invalidateConfig();
-  const current = await loadConfig();
-  const { config, errors } = parseConfigDocument(await configDocument());
-  if (!config) throw new Error(`the stored config does not parse: ${errors.join("; ")}`);
-  const g = Object.fromEntries(GOOGLE_OAUTH_KEYS.map((k) => [k, next[k]?.trim()]).filter(([, v]) => v)) as GoogleOAuthConfig;
-  const { googleOAuth: _old, ...rest } = config;
-  await saveConfigDocument({ ...rest, ...(current.terminal ? { terminal: current.terminal } : {}), ...(Object.keys(g).length ? { googleOAuth: g } : {}) });
 }
 
 /** The document as stored (paths still templated) — what the settings UI shows you to edit. */

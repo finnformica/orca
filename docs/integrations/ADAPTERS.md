@@ -344,7 +344,7 @@ no public address, because the browser makes both redirects.
 |---|---|---|
 | Slack two-way (done: [slack.md](slack.md)) | `ingest`, `inboundEnvelope`, `thread`, `source.parents`, thread links, `caps.edits`. | A poll in `start` (`inbound: "poll"`, a JSON cursor) with your user token `SLACK_TOKEN` alone; Socket Mode only when `SLACK_APP_TOKEN` is set, so Orca posts as you and never posts by itself (`postsAsUser`). `postAsUser` keeps "post as me". |
 | Discord | The same as Slack. | Gateway in `start`. Automatic or pinned: only one bridge runs it (section 6.1). |
-| Gmail (done: [gmail.md](gmail.md)) | Its own MIME parse (`gmail/mime.ts`), `cursor` (a History API `historyId`), Gmail thread ids as `thread`, shared secret refs (`secretRefs.ts`; the client secret as `secret:<name>`), a stored secret it writes itself (the refresh token). | Sign in with Google (OAuth code + PKCE, `meta.oauth`; the client is server config, `googleOAuth`), one row per sign-in named by its address, read only (`caps.outbound: false`), the core's policy (`meta.verbs`, `meta.policyDefaults`: read, off; no poll with events `off`), the query match by Gmail itself. |
+| Gmail (done: [gmail.md](gmail.md)) | Its own MIME parse (`gmail/mime.ts`), `cursor` (a History API `historyId`), Gmail thread ids as `thread`, a stored secret it writes itself (the refresh token). | Sign in with Google (OAuth code + PKCE, `meta.oauth`; the client is a server key: ORCA_GOOGLE_OAUTH_CLIENT_ID, ORCA_SECRET_GOOGLE_OAUTH), one row per sign-in named by its address, read only (`caps.outbound: false`), the core's policy (`meta.verbs`, `meta.policyDefaults`: read, off; no poll with events `off`), the query match by Gmail itself. |
 | Granola (done: [granola.md](granola.md)) | `cursor` (`from`, `since`, the seen note ids and Granola's page cursor), shared secret refs (the key as `secret:integrations/granola.<id>.api_key`). | A pasted API key (`meta.apiKey`: the save stores it, the row names it), read only (`caps.outbound: false`, in `TAKES_NO_POSTS`), the core's policy (`meta.verbs`, `meta.policyDefaults`: read, off; no poll with events `off`), one event per new finished meeting, a Viewer `*` link on the first Connect. |
 | Settings UI | `store.ts` (every table), `registry.health()`, `store.retryDead()`, `GET /api/integrations`, the pairing routes (section 10). | Routes to write rows. A Test button that calls `publish` with a test key. An Approve / Deny list over `GET /api/integrations/pairing`. |
 | GitHub poller | `cursor` (an ETag or a timestamp), `ingest` without `actor`, topics `orca.pr.*` or `ext.github.*`. | A poll loop in `start` (`inbound: "poll"`). |
@@ -514,9 +514,14 @@ Rules:
 - No value goes to a file, a log, the environment or an agent's spawn. `secrets.scrub` masks a
   stored value in tool output and posts.
 - A `secret:` ref never falls back to a variable, and a variable never falls back to the store.
-- The Connect form has a **Stored secret** Select for every kind with a secret (not an OAuth kind:
-  Gmail's client secret is server config, Settings > Google sign-in). It lists the store's names,
-  never a value, and writes `secret:<name>` as the secret_ref. For a config ref, type `secret:<name>`.
+- The Connect form has a **Stored secret** Select for every kind with a user-side secret. It lists
+  the store's names, never a value, and writes `secret:<name>` as the secret_ref. For a config ref,
+  type `secret:<name>`.
+- A server key is env only (`shared/serverKeys.ts`, docs/SETUP.md "Server keys"): Gmail's OAuth
+  client, Discord's bot token, the webhook signing secret and Slack's `appTokenRef`. Those kinds
+  have no Stored secret Select, a save of a `secret:` ref for them is refused (`serverKeyRefusal`),
+  and an old one on a row reads as the kind's variable with one log line (`serverKeyRow`). The
+  overview's `meta.serverKey` (`configured`, `needs`) greys out the kind in the Connect dialog.
 - An `orca <kind>` verb gets the account's stored secrets from `policy.useAccount` (section 13): it
   loads any that this bridge has not loaded yet, or that changed (`secretRefs.ensureLoaded`), and
   `policy.accountEnv` reads them through `secretValue`.
