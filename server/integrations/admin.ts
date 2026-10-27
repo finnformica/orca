@@ -5,7 +5,7 @@
 // the /api/integrations/pairing/approve|deny routes the page posts to).
 import * as db from "../db";
 import { ORCA_SECRETS } from "../env";
-import { ACCESS_VALUES, CATCH_ALL, CATCH_ALL_SEND_ERROR, EVENTS_VALUES, integrationAccessRefusal, isAutomatic, leaseHolder, secretRefRefusal, LINK_LEVELS, type Access, type EventsMode, type Level, type LinkLevel, type Subscription, type TargetKind } from "../../shared/integrations";
+import { ACCESS_VALUES, apiKeyProblem, apiKeySecret, CATCH_ALL, CATCH_ALL_SEND_ERROR, EVENTS_VALUES, integrationAccessRefusal, isAutomatic, leaseHolder, secretRefRefusal, LINK_LEVELS, type Access, type EventsMode, type Level, type LinkLevel, type Subscription, type TargetKind } from "../../shared/integrations";
 import {
   identityProblem, integrationProblem, linkProblem,
   type DeadRow, type IntegrationCard, type IntegrationsOverview, type PersonRow,
@@ -18,6 +18,7 @@ import * as agents from "../agents";
 import * as secretRefs from "./secretRefs";
 import type { Connection } from "./adapter";
 import * as gmailOauth from "./adapters/gmail/oauth";
+import * as secrets from "../secrets";
 
 const user = () => db.currentUser();
 type Status = { oauth?: IntegrationCard["oauth"] | null; ok?: boolean; detail?: string; at?: number; startedAt?: number; error?: string | null; lastEventAt?: number; lastPollAt?: number; secretSet?: boolean; secretMissing?: Record<string, number> };
@@ -106,8 +107,11 @@ export async function overview(here = db.instanceName(), now = Date.now()): Prom
 export class AdminError extends Error {}
 const fail = (msg: string): never => { throw new AdminError(msg); };
 
-/** Connect (or edit) one integration. The secret is a variable NAME; the value never reaches here. */
+/** Connect (or edit) one integration. The secret is a variable NAME, or for a kind that takes a
+ *  pasted key (`meta.apiKey`: Granola) the `apiKey` value: it goes to the secret store at once and
+ *  the row names it (`secret:integrations/<kind>.<id>.api_key`). The value is never returned. */
 export async function saveIntegration(b: Record<string, unknown>): Promise<void> {
+  if (typeof b.apiKey === "string" && b.apiKey.trim()) b = { ...b, secretRef: await storeApiKey(b), apiKey: undefined };
   const c = {
     id: String(b.id ?? "").trim(), kind: String(b.kind ?? ""), name: String(b.name ?? "").trim(), instance: String(b.instance ?? "").trim(),
     // An empty secret field takes the kind's default variable (Cloudflare: ORCA_SECRET_CLOUDFLARE).
@@ -126,6 +130,18 @@ export async function saveIntegration(b: Record<string, unknown>): Promise<void>
   await store.addIntegration(c);
   if (isNew) await registry.onConnect(c);
   await registry.sync().catch(() => {});
+}
+
+/** Store a pasted API key; the ref the row names. Checked first, so a bad paste stores nothing. */
+async function storeApiKey(b: Record<string, unknown>): Promise<string> {
+  const kind = String(b.kind ?? ""), id = String(b.id ?? "").trim();
+  const meta = registry.meta(kind);
+  const problem = apiKeyProblem(meta, String(b.apiKey)) ?? integrationProblem({ id, kind, name: String(b.name ?? ""), instance: String(b.instance ?? "") }, registry.kinds().map((k) => k.kind), ORCA_SECRETS);
+  if (problem) fail(problem);
+  const s = apiKeySecret(kind, id);
+  try { await secrets.store({ scope: s.scope, name: s.name, value: String(b.apiKey).trim(), who: "user (Integrations)", source: `${kind} connect (${id})` }); }
+  catch (e) { fail(`the API key was not stored: ${e instanceof Error ? e.message : String(e)}`); }
+  return s.ref;
 }
 
 /** An account's access and events from a body (docs/integrations/POLICY.md): each one only when set. */
@@ -153,7 +169,13 @@ export async function setEnabled(id: string, on: boolean): Promise<void> {
 /** Remove the row, its links and the subscriptions that post to them. Events and deliveries stay. */
 export async function removeIntegration(id: string): Promise<void> {
   // An OAuth kind: revoke the grant at Google and delete the stored refresh token first.
-  if ((await store.integration(id))?.kind === "gmail") await gmailOauth.disconnect(id, "integration removed").catch(() => {});
+  const row = await store.integration(id);
+  if (row?.kind === "gmail") await gmailOauth.disconnect(id, "integration removed").catch(() => {});
+  // A pasted API key (Granola): delete the stored secret the row owns.
+  if (row && registry.meta(row.kind)?.apiKey && row.secretRef === apiKeySecret(row.kind, id).ref) {
+    const s = apiKeySecret(row.kind, id);
+    await secrets.remove(`${s.scope}/${s.name}`, "user (Integrations)").catch(() => {});
+  }
   await db.withRetry(async (sql) => {
     await sql.begin(async (tx: Bun.SQL) => {
       const ls = await tx`DELETE FROM channel_link WHERE user_id = ${user()} AND integration_id = ${id} RETURNING id`;

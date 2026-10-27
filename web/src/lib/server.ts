@@ -38,7 +38,20 @@ export type ServersAnswer = {
   self: ServerRef & IdentityFields; servers: { name: string; url: string; online: boolean; self: boolean }[];
   enabled?: boolean; source?: string; tailscaleApi?: boolean;
 };
-export type Probe = { health: "online"; answer: ServersAnswer } | { health: "offline" | "refused" };
+/** `at`: the address the probe was made at when it differs from the listed one (`probeAddress`). */
+export type Probe = { health: "online"; answer: ServersAnswer; at?: string } | { health: "offline" | "refused" };
+
+/** Where to probe a listed server from this page. A page on HTTPS cannot call a plain-http address
+ *  (mixed content: the browser blocks it before it leaves), and a box with an HTTPS front door
+ *  (`tailscale serve` 443 → 8787) still advertises `http://<host>:8787` unless ORCA_SERVER_URL says
+ *  otherwise — so from an HTTPS page an http address is probed at `https://<host>`, and that is the
+ *  address the row switches to. Any other case probes the address as listed. Pure. */
+export function probeAddress(url: string, pageProtocol: string = typeof location === "undefined" ? "http:" : location.protocol): string {
+  try {
+    const u = new URL(url);
+    return pageProtocol === "https:" && u.protocol === "http:" ? `https://${u.hostname}` : url;
+  } catch { return url; }
+}
 
 /** A new key: a choice stored under the old Settings switch (off by default) is never applied now. */
 export const CHOICE_KEY = persistedKey("server.choice");
@@ -230,12 +243,15 @@ export function mergeServers(
     for (const p of Object.values(probes)) if (p.health === "online") candidates.push(p.answer.self, ...p.answer.servers.filter((s) => !s.self));
   }
   for (const c of candidates) {
-    const url = serverOrigin(c.url);
-    if (!url || origins.has(url) || isLocalOrigin(url)) continue;
-    const probe = probes[url];
+    const listed = serverOrigin(c.url);
+    if (!listed || origins.has(listed) || isLocalOrigin(listed)) continue;
+    const probe = probes[listed];
+    // A server that answered at another address (its HTTPS door, `probeAddress`) is listed there.
+    const url = probe?.health === "online" && probe.at ? probe.at : listed;
+    if (url !== listed && origins.has(url)) continue;
     const name = probe?.health === "online" ? probe.answer.self.name : c.name || defaultServerName(url);
     if (names.has(name.toLowerCase())) continue;
-    origins.add(url);
+    origins.add(listed); origins.add(url);
     names.add(name.toLowerCase());
     if (probe?.health === "online") { const own = serverOrigin(probe.answer.self.url); if (own) origins.add(own); }
     out.push({ name, url, health: probe?.health ?? "checking", ...identityOf(probe?.health === "online" ? probe.answer.self : { name }) });

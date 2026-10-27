@@ -27,7 +27,7 @@ import {
   SUBSCRIPTION_PRESETS, connectOriginProblem, deadTargetLabel, filterText, healthLine, healthTone, identityLabel, identityProblem, instanceText, newPersonId as personId, integrationProblem, linkProblem, parseFilter, targetLabel,
   type IntegrationCard, type InstanceOption, type IntegrationsOverview, type LinkRow, type Pairing, type PersonRow, type AgentOption, agentLabel, linkAgentValue,
 } from "../../../shared/integrationSettings";
-import { ACCESS_LABEL, ACCESS_VALUES, AUTO_INSTANCE, CATCH_ALL, EVENTS_LABEL, EVENTS_VALUES, LEVEL_LABEL, LINK_LEVELS as LEVELS, STORED_SECRET_PREFIX, effectiveNotify, isAutomatic, repoScoped, storedSecretName, type AdapterMeta, type EventsMode, type LinkLevel } from "../../../shared/integrations";
+import { ACCESS_LABEL, ACCESS_VALUES, AUTO_INSTANCE, apiKeyProblem, CATCH_ALL, EVENTS_LABEL, EVENTS_VALUES, LEVEL_LABEL, LINK_LEVELS as LEVELS, STORED_SECRET_PREFIX, effectiveNotify, isAutomatic, repoScoped, storedSecretName, type AdapterMeta, type EventsMode, type LinkLevel } from "../../../shared/integrations";
 
 type Overview = IntegrationsOverview;
 // Friendly names (Notify, Viewer, Editor, Admin); the stored values stay notify / ask / work / admin.
@@ -448,8 +448,12 @@ function IntegrationDialog({ kinds, options, existing, onClose, onSaved }: { kin
   const [config, setConfig] = useState<Record<string, string>>(() => Object.fromEntries(Object.entries(existing?.config ?? {}).map(([k, v]) => [k, String(v)])));
   const [busy, setBusy] = useState(false);
   const autoId = id || name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-  const body = { id: autoId, kind, name, instance, secretRef: secretRef || (existing ? "" : meta?.secretDefault ?? ""), config, enabled: existing?.enabled ?? true };
-  const problem = integrationProblem(body, kinds.map((k) => k.kind), STRIPPED);
+  // A kind that takes a pasted key (Granola): the value goes to the save once, and the server stores
+  // it in the secret store. Empty on an edit keeps the stored key.
+  const [apiKey, setApiKey] = useState("");
+  const body = { id: autoId, kind, name, instance, secretRef: secretRef || (existing ? "" : meta?.secretDefault ?? ""), config, enabled: existing?.enabled ?? true, ...(meta?.apiKey && apiKey.trim() ? { apiKey: apiKey.trim() } : {}) };
+  const problem = integrationProblem(body, kinds.map((k) => k.kind), STRIPPED)
+    ?? (meta?.apiKey && (apiKey.trim() || !existing) ? apiKeyProblem(meta, apiKey) : undefined);
   const save = async () => { setBusy(true); const r = await act(existing ? `Save ${name}` : `Connect ${name}`, "save", body, onSaved); setBusy(false); if (r) onClose(); };
   const kindSelect = (
     <Field label="Kind" htmlFor="int-kind">
@@ -504,7 +508,13 @@ function IntegrationDialog({ kinds, options, existing, onClose, onSaved }: { kin
           </SelectContent>
         </Select>
       </Field>
-      {!meta?.oauth && <>
+      {meta?.apiKey && (
+        <Field label={meta.apiKey.label} htmlFor="int-api-key" hint={meta.apiKey.hint}>
+          <Input id="int-api-key" data-slot="integration-api-key" type="password" autoComplete="off" spellCheck={false} value={apiKey} onChange={(e) => setApiKey(e.target.value)}
+            placeholder={existing ? "Stored. Paste a new key to replace it." : meta.apiKey.placeholder} className="font-mono" />
+        </Field>
+      )}
+      {!meta?.oauth && !meta?.apiKey && <>
       <Field label="Secret variable" htmlFor="int-secret" hint={storedSecretName(secretRef) !== undefined
         ? <>From Orca&apos;s secret store. The bridge decrypts it in memory when the integration starts.</>
         : <>Set it in the <span className="font-mono">.env</span> of {isAutomatic(instance) ? "each server that can run it" : "that server"}. It must start with <span className="font-mono">ORCA_SECRET_</span>, so agents never see it. Or choose a stored secret below.</>}>

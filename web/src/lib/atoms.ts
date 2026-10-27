@@ -1,7 +1,7 @@
 import { atom } from "jotai";
 import { atomWithStorage } from "jotai/utils";
-import { isBoolean, isNumber, isString, isStringArray, oneOf, persistedAtom } from "./persisted";
-import { TERMINAL_PANEL_INITIAL, type TerminalPanelState } from "../workstream";
+import { isBoolean, isNumber, isString, isStringArray, oneOf, persistedAtom, persistedKey, writePersisted } from "./persisted";
+import { HISTORY_RANGES, TERMINAL_PANEL_INITIAL, type TerminalPanelState } from "../workstream";
 
 // New-draft composer's selected repo, persisted. The prompt + attachments are persisted by
 // ChatComposer itself (see lib/composerDraft), so a reload never loses an in-progress draft.
@@ -33,6 +33,37 @@ export const instanceScopeAtom = persistedAtom("instanceScope", "all", isString,
 export const agentQueryAtom = atom("");
 // The Usage card (Overview and Usage page alike): just the fleet + Codex, or every hydra login too. Persisted.
 export const usageExpandedAtom = persistedAtom("usageExpanded", false, isBoolean, "orca.usageExpanded");
+
+const isHistoryRange = (v: unknown): v is number => HISTORY_RANGES.some((r) => r.hours === v);
+// Every instance card's history-chart range (1h/6h/24h/7d), ONE choice for every machine, persisted
+// and shared live across every mounted card in the tab (an atom, not per-component useState — Finn
+// wants picking 6h on one card to move every other card at once). Before this, each card kept its
+// own `orca.ui.v1.instanceRange:<instance>` key; an old value under one of those keys still starts
+// the shared range (the first one found, alphabetically by instance) when no shared value is stored
+// yet, so nobody's saved choice is silently dropped.
+export const instanceRangeAtom = atomWithStorage<number>(persistedKey("instanceRange"), 24, {
+  getItem: (key, init) => {
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw !== null) {
+        const v: unknown = JSON.parse(raw);
+        if (isHistoryRange(v)) return v;
+      }
+    } catch { /* ignore */ }
+    try {
+      for (const k of Object.keys(localStorage).sort()) {
+        if (!k.startsWith(`${key}:`)) continue;
+        try {
+          const v: unknown = JSON.parse(localStorage.getItem(k) ?? "null");
+          if (isHistoryRange(v)) return v;
+        } catch { /* ignore */ }
+      }
+    } catch { /* ignore */ }
+    return init;
+  },
+  setItem: (key, v) => writePersisted(key, v),
+  removeItem: (key) => { try { localStorage.removeItem(key); } catch { /* ignore */ } },
+}, { getOnInit: true });
 
 // Overlays any key, the palette or a button can open (components/Shortcuts.tsx). The orchestrator's
 // window is open or closed here, so the top bar's "Ask the orchestrator", O and the palette all drive

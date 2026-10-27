@@ -42,6 +42,7 @@ import { CLOUDFLARE_ACCOUNT_ENV, CLOUDFLARE_TOKEN_ENV, cloudflareTool, cloudflar
 import { recordOwnWrite as recordCloudflareWrite } from "./integrations/adapters/cloudflare";
 import { slackTool } from "./slackTool";
 import { gmailTool } from "./gmailTool";
+import { granolaTool } from "./granolaTool";
 import * as policy from "./integrations/policy";
 import { featuresOf, runLimits, runsHere, type OrcaConfig, type RepoConfig } from "./config";
 import {
@@ -1191,6 +1192,8 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
     // `orca gmail search|read` (server/gmailTool.ts): both READ verbs (GMAIL_VERBS); `--account` picks
     // the account through the access policy (policy.useAccount), your own chat only (the grant check).
     case "gmail": return gmailTool(args);
+    // `orca granola search|read` (server/granolaTool.ts): both READ verbs (GRANOLA_VERBS), as gmail.
+    case "granola": return granolaTool(args);
     case "notes": {
       // After the move into memory the notes are read-only: printed, never set (server/memory.ts migrateNotes).
       if (words[0] !== "set") return b.notesMigratedAt
@@ -1209,7 +1212,7 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
     }
     case "ask": return askVerb(cfg, ag, b, words, args);
     case "agent": return agentVerb(cfg, ag, words, args);
-    default: throw new Error(`unknown command "${verb}". Commands: board, machine, spawn, send, address, archive, stop [--drop-queue], sweep [--confirm], merge --when-green, preview [--status | --push-to-template [--confirm]], status, chats, read, notes, memory, wake, ask, agent, handoff, cloudflare, slack, gmail`);
+    default: throw new Error(`unknown command "${verb}". Commands: board, machine, spawn, send, address, archive, stop [--drop-queue], sweep [--confirm], merge --when-green, preview [--status | --push-to-template [--confirm]], status, chats, read, notes, memory, wake, ask, agent, handoff, cloudflare, slack, gmail, granola`);
   }
 }
 

@@ -7,6 +7,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { getDefaultStore } from "jotai";
 import { apiFake } from "./apiFake";
 import { openTip } from "./tip";
 
@@ -14,12 +15,16 @@ apiFake.holdConfig = true; // before the store's import, so config is still in f
 const store = await import("@/store");
 const { Overview } = await import("@/views/Overview");
 const { InstanceCard, RefreshVitals } = await import("@/views/Vitals");
+const { instanceRangeAtom } = await import("@/lib/atoms");
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const flush = () => new Promise((r) => setTimeout(r, 0));
 let root: Root | undefined; let container: HTMLElement | undefined;
-afterEach(async () => { await act(async () => { root?.unmount(); }); container?.remove(); apiFake.reset(); localStorage.clear(); });
-
+afterEach(async () => {
+  await act(async () => { root?.unmount(); }); container?.remove(); apiFake.reset();
+  getDefaultStore().set(instanceRangeAtom, 24); // reset the shared range so it never leaks into the next test
+  localStorage.clear();
+});
 async function render(node: React.ReactNode) {
   container = document.createElement("div"); document.body.appendChild(container);
   await act(async () => { root = createRoot(container!); root.render(node); await flush(); });
@@ -100,31 +105,45 @@ test("the header stat equals the chart's last point when the recorded sample is 
   expect(linePoints(cpu).at(-1)!.split(",")[1]).toBe("3.6"); // 97% of a 120px axis, drawn raw
 });
 
-test("each machine's range is remembered per machine across a reload; bad JSON or an unknown range falls back to 24h", async () => {
-  const range = (label: string) => [...container!.querySelectorAll('[role="group"][aria-label="Range"] button')].find((b) => b.textContent === label)!;
-  await render(<InstanceCard instance="cloud" here={false} />);
+test("the range is ONE choice shared by every card: picking it on one moves every other mounted card at once, and it is remembered across a reload", async () => {
+  const rangeIn = (card: Element, label: string) => [...card.querySelectorAll('[role="group"][aria-label="Range"] button')].find((b) => b.textContent === label)!;
+  await render(<><InstanceCard instance="cloud" here={false} /><InstanceCard instance="laptop" here={false} /></>);
   await ready();
-  expect(range("24h").getAttribute("aria-pressed")).toBe("true"); // default when nothing is saved
-  await act(async () => { range("6h").dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); });
-  expect(localStorage.getItem("orca.ui.v1.instanceRange:cloud")).toBe("6");
-  // A reload: the remount restores 6h and fetches it straight away.
+  const cloud = container!.querySelector('[data-slot="instance-cloud"]')!;
+  const laptop = container!.querySelector('[data-slot="instance-laptop"]')!;
+  expect(rangeIn(cloud, "24h").getAttribute("aria-pressed")).toBe("true"); // default when nothing is saved
+  expect(rangeIn(laptop, "24h").getAttribute("aria-pressed")).toBe("true");
+  await act(async () => { rangeIn(cloud, "6h").dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); });
+  // The OTHER already-mounted card moves too, with no reload.
+  expect(rangeIn(laptop, "6h").getAttribute("aria-pressed")).toBe("true");
+  expect(apiFake.healthHistoryCalls).toContainEqual({ instance: "laptop", hours: 6 });
+  expect(localStorage.getItem("orca.ui.v1.instanceRange")).toBe("6");
+  // A reload: the remount restores 6h for both cards and fetches it straight away.
   await act(async () => { root?.unmount(); }); container?.remove(); apiFake.healthHistoryCalls.length = 0;
-  await render(<InstanceCard instance="cloud" here={false} />);
+  await render(<><InstanceCard instance="cloud" here={false} /><InstanceCard instance="laptop" here={false} /></>);
   await ready();
-  expect(range("6h").getAttribute("aria-pressed")).toBe("true");
-  expect(apiFake.healthHistoryCalls).toEqual([{ instance: "cloud", hours: 6 }]);
-  // Another machine keeps its own choice.
-  await act(async () => { root?.unmount(); }); container?.remove();
-  await render(<InstanceCard instance="laptop" here={false} />);
-  await ready();
-  expect(range("24h").getAttribute("aria-pressed")).toBe("true");
+  expect(rangeIn(container!.querySelector('[data-slot="instance-cloud"]')!, "6h").getAttribute("aria-pressed")).toBe("true");
+  expect(rangeIn(container!.querySelector('[data-slot="instance-laptop"]')!, "6h").getAttribute("aria-pressed")).toBe("true");
+  expect(apiFake.healthHistoryCalls).toContainEqual({ instance: "cloud", hours: 6 });
+});
+
+test("bad JSON or an unknown range falls back to 24h", async () => {
+  const range = (label: string) => [...container!.querySelectorAll('[role="group"][aria-label="Range"] button')].find((b) => b.textContent === label)!;
   for (const bad of ["{nope", "13", '"6"']) {
     await act(async () => { root?.unmount(); }); container?.remove();
-    localStorage.setItem("orca.ui.v1.instanceRange:cloud", bad);
+    localStorage.setItem("orca.ui.v1.instanceRange", bad);
     await render(<InstanceCard instance="cloud" here={false} />);
     await ready();
     expect(range("24h").getAttribute("aria-pressed")).toBe("true");
   }
+});
+
+test("an old per-machine key (orca.ui.v1.instanceRange:<instance>) still starts the shared range when none is saved yet", async () => {
+  const range = (label: string) => [...container!.querySelectorAll('[role="group"][aria-label="Range"] button')].find((b) => b.textContent === label)!;
+  localStorage.setItem("orca.ui.v1.instanceRange:cloud", "168");
+  await render(<InstanceCard instance="laptop" here={false} />);
+  await ready();
+  expect(range("7d").getAttribute("aria-pressed")).toBe("true");
 });
 
 test("no history yet says so instead of an empty chart", async () => {

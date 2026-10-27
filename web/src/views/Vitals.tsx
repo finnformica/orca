@@ -8,9 +8,8 @@ import { useState } from "react";
 import { useAtom } from "jotai";
 import { AlertTriangle, Check, ChevronDown, ChevronUp, Loader2, RefreshCw, Server, X } from "lucide-react";
 import { api } from "@/api";
-import { usageExpandedAtom } from "@/lib/atoms";
+import { instanceRangeAtom, usageExpandedAtom } from "@/lib/atoms";
 import { notifyLocal } from "@/lib/notificationStore";
-import { persistedKey, usePersisted } from "@/lib/persisted";
 import { useCoarse, useNarrow } from "@/lib/viewport";
 import { applyProfileToggle, optimisticProfileToggle, refreshUsageNow, refreshVitals, revertProfileToggle, useHealth, useHealthHistory, useHealthLive, useUsage, useUsageLoaded } from "@/lib/vitals";
 import { Button } from "@/components/ui/button";
@@ -244,8 +243,6 @@ function RefreshProfileButton({ name, instance }: { name: string; instance?: str
   );
 }
 
-const isRange = (v: unknown): v is number => HISTORY_RANGES.some((r) => r.hours === v);
-
 const fmtUptime = (s: number) => (s >= 86400 ? `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`);
 
 /** The Instances heading's refresh: every machine card's health and history, fetched now rather than
@@ -281,8 +278,9 @@ const MEM_BANDS: StackBand[] = [{ label: "Used", color: "var(--geist-green)" }, 
 
 /** One machine. `here`: the instance answering this page (its health needs no `?instance=`). */
 export function InstanceCard({ instance, here }: { instance: string; here: boolean }) {
-  // The range is remembered per machine (`orca.ui.v1.instanceRange:<instance>`).
-  const [hours, setHours] = usePersisted<number>(persistedKey("instanceRange", instance), 24, isRange);
+  // The range is ONE choice shared by every instance card (`orca.ui.v1.instanceRange`): picking
+  // 6h here moves every other mounted card too, and the choice persists across reloads.
+  const [hours, setHours] = useAtom(instanceRangeAtom);
   const reading = useHealth(here ? undefined : instance);
   const history = useHealthHistory(instance, hours);
   // Up to 6 hours: the bridge's own 15 s ring for CPU, memory and disk IO (false: an older bridge).

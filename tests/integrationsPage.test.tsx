@@ -176,6 +176,30 @@ describe("the Integrations page", () => {
     } finally { assign.mockRestore(); }
   });
 
+  test("Connect > Granola: ONE password field for the pasted key (no secret variable); Save sends it once, a bad paste is refused", async () => {
+    const granola = { kind: "granola", label: "Granola", caps: {}, apiKey: { label: "Granola API key", placeholder: "grn_…", prefix: "grn_", hint: "Make it in the Granola desktop app: Settings > Connectors > API keys." } };
+    apiFake.integrationsData = { ...overview(), kinds: [granola, ...kinds], integrations: [], links: [], pairings: [] };
+    await open("/integrations");
+    await click(all("integration-connect")[0]!);
+    const d = dialog()!;
+    expect(d.querySelector("#int-kind")!.textContent).toContain("Granola");
+    expect(d.querySelector("#int-secret, #int-stored-secret")).toBeNull();
+    const key = d.querySelector<HTMLInputElement>('[data-slot="integration-api-key"]')!;
+    expect(key.type).toBe("password");
+    expect(d.textContent).toContain("Settings > Connectors > API keys");
+    await type(d.querySelector<HTMLInputElement>("#int-name")!, "Granola");
+    const submit = () => act(async () => { d.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); await flush(); await flush(); });
+    await submit();
+    expect(d.textContent).toContain("paste the API key");
+    await type(key, "sk-wrong");
+    await submit();
+    expect(d.textContent).toContain("a Granola API key starts with grn_");
+    expect(apiFake.integrationPosts).toEqual([]);
+    await type(key, "grn_abc123");
+    await submit();
+    expect(apiFake.integrationPosts).toEqual([{ path: "save", body: expect.objectContaining({ id: "granola", kind: "granola", name: "Granola", apiKey: "grn_abc123", secretRef: "" }) }]);
+  });
+
   test("Connect > Gmail when the server has no OAuth client: one line with the setup guide, no button", async () => {
     const setup = "Gmail sign-in is not set up: the server has no Google OAuth client ID.";
     apiFake.integrationsData = { ...overview(), kinds: [{ ...fixedKind, oauth: { ...fixedKind.oauth, setup } }], integrations: [], links: [], pairings: [] };

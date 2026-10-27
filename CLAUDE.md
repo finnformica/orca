@@ -188,7 +188,7 @@ adapter: `docs/integrations/ADAPTERS.md`). Every event is a keyed envelope in `e
 writes one beside each NEW notification, same key). `subscription` rows plan `delivery` rows in the
 same transaction; the dispatcher (primary only) claims them `FOR UPDATE SKIP LOCKED`, backs off 5 s →
 1 h and marks a row dead after 6 attempts (`orca.integration.failed`, an `integration_failed`
-notification). Adapters (`web`, `webhook`, `slack`, `discord`, `gmail`, `linear`, `cloudflare`) start only on a primary bridge:
+notification). Adapters (`web`, `webhook`, `slack`, `discord`, `gmail`, `granola`, `linear`, `cloudflare`) start only on a primary bridge:
 the one of `integration.instance`, or for Automatic (`*`, the default) the primary with the secret
 that holds the row's lease (`status.auto`, 150 s, renewed each sync — the failover when it lapses). Secrets stay in env vars named `ORCA_SECRET_*` (stripped from agents) or in
 Orca's secret store; a row holds only the name. **Any secret ref** — `secret_ref` and every config key
@@ -280,6 +280,19 @@ each new mail), so other mail is read only as labels + Message-ID. Topic `ext.gm
 sender address, thread = Gmail thread id. A refused refresh token is `reconnect needed` on the card and
 is not tried again. `orca gmail search|read [--account <id or name>]` (`server/gmailTool.ts`; both READ
 verbs, `GMAIL_VERBS`; the account by `policy.useAccount`) is your own chat only.
+**Granola** (`adapters/granola.ts`, `server/granolaTool.ts`, `docs/integrations/granola.md`) is the
+user's meeting notes, READ ONLY, by the REST API (`public-api.granola.ai/v1`; its MCP needs a browser
+OAuth a headless box can't do) with a personal key (`Bearer grn_…`). The Connect form has ONE password
+field (`meta.apiKey`): `saveIntegration` stores the value as `integrations/granola.<id>.api_key` and the
+row names `secret:` it; Remove deletes it. New rows are `read` + `off`; the first Connect makes a Viewer
+`*` link. With events on it polls List Notes by `updated_after` every `pollSeconds` (300, at least 60):
+Granola lists a note only once its summary and transcript are done, so a note id seen for the first
+time is ONE `ext.granola.note` (title, time, attendees, summary; place `folder:<fol_id>` with parents,
+else `notes`). The cursor (`from`, `since`, `seen`, Granola's `page` at the 5-page cap) starts at the
+first poll and survives a restart. In `TAKES_NO_POSTS`. `orca granola search ["words"] [--since 7d]
+[--limit 10]` (List Notes has no text search: titles are filtered here) and `read <note id>
+[--transcript]` (a 413 pages Get Transcript) are your own chat only; their output opens with an
+outside-data line and a memory after them is untrusted.
 **Slack** (`adapters/slack.ts`, `docs/integrations/slack.md`) is two-way AS YOU: the row's token is your
 user token (`SLACK_TOKEN`, xoxp) — the ONLY token (Finn's call: no app-level token, no Socket Mode
 setup). Inbound POLLS every `pollSeconds` (60): DMs and group DMs by `conversations.history` (hot ones
