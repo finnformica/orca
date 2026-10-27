@@ -18,6 +18,7 @@ import { DISCORD_CAPS, discordAdapter } from "./adapters/discord";
 import { LINEAR_CAPS, linearAdapter } from "./adapters/linear";
 import { GMAIL_CAPS, GMAIL_VERBS, gmailAdapter } from "./adapters/gmail";
 import { GMAIL_POLICY_DEFAULTS } from "./adapters/gmail/oauth";
+import { GRANOLA_CAPS, GRANOLA_POLICY_DEFAULTS, GRANOLA_VERBS, granolaAdapter, ensureDefaults as granolaDefaults } from "./adapters/granola";
 import { CLOUDFLARE_CAPS, cloudflareAdapter, ensureDefaults as cloudflareDefaults } from "./adapters/cloudflare";
 import { SLACK_VERBS } from "../slackTool";
 import { CLOUDFLARE_VERBS } from "../cloudflare";
@@ -106,6 +107,19 @@ register("gmail", gmailAdapter, {
   ],
   help: "Your Gmail, read only. Sign in with Google: each sign-in adds one account, named by its address. Access is read (gmail.readonly); set Events on the card to poll. Setup: docs/integrations/gmail.md.",
 });
+
+register("granola", granolaAdapter, {
+  label: "Granola", caps: GRANOLA_CAPS, place: "folder (folder:<fol_id>, notes = no folder, * = every note)",
+  // The key is pasted on the Connect form and kept in Orca's secret store (apiKey), never the row.
+  apiKey: { label: "Granola API key", placeholder: "grn_…", prefix: "grn_", hint: "Make it in the Granola desktop app: Settings > Connectors > API keys. Orca keeps it encrypted in its secret store." },
+  // Read only, events off until you set them on the card (as Gmail).
+  policyDefaults: GRANOLA_POLICY_DEFAULTS,
+  verbs: GRANOLA_VERBS,
+  config: [
+    { key: "pollSeconds", label: "Poll every (seconds, at least 60; only with Events on)", placeholder: "300" },
+  ],
+  help: "Your Granola meeting notes, read only. Paste a personal API key, then Test. Set Events on the card to get one event for each new finished meeting. Setup: docs/integrations/granola.md.",
+}, granolaDefaults);
 
 /** Every registered kind with what the Settings page shows for it. A kind with no meta gets a plain one. */
 export function kinds(): AdapterMeta[] {
