@@ -71,7 +71,8 @@ describe("ComposerAttachment", () => {
     </div>);
     const tiles = qa("[data-slot=composer-attachment]");
     expect(tiles.map((t) => t.dataset.attachment)).toEqual(["image", "file", "secret"]);
-    expect(new Set(tiles.map((t) => t.className)).size).toBe(1); // one look
+    // One look: the same frame for every kind; only an image is held square.
+    expect(tiles.every((t) => t.className.includes("h-14 overflow-hidden rounded-md border"))).toBe(true);
     const secret = tiles[2]!;
     expect(secret.textContent).toBe("stripe_key");
     expect(secret.querySelector("svg.lucide-lock")).not.toBeNull();

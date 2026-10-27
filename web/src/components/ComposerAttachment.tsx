@@ -31,7 +31,7 @@ export function ComposerAttachment({ item, onRemove, look = "tile" }: { item: At
         </span>
       );
     }
-    const pill = "bg-muted text-foreground inline-flex max-w-56 items-center gap-1 rounded-md border px-2 py-1 text-[11px]";
+    const pill = "bg-muted text-foreground inline-flex max-w-56 self-start items-center gap-1 rounded-md border px-2 py-1 text-[11px]";
     if (item.kind === "secret") {
       return (
         <span {...slot} title={`Stored secret ${item.name}. The message holds only its name.`} aria-label={label} className={pill}>
@@ -50,15 +50,16 @@ export function ComposerAttachment({ item, onRemove, look = "tile" }: { item: At
   return (
     <div data-slot="composer-attachment" data-attachment={item.kind} aria-label={label}
       title={item.kind === "secret" ? `Stored secret ${item.name}. The message holds only its name.` : undefined}
-      className="group relative size-14 overflow-hidden rounded-md border">
+      // An image is a square; a file or a secret grows to show its name, up to a cap.
+      className={cn("group relative h-14 overflow-hidden rounded-md border", item.kind === "image" ? "w-14" : "max-w-36 min-w-14")}>
       {item.kind === "image"
         // The blob: URL is not made yet on the very first render, so the lightbox waits for it.
         ? (item.src && <ExpandableImage src={item.src} alt={item.name} downloadName={item.name} className="size-full" imgClassName="size-full object-cover" cornerClassName="bottom-1 right-1" />)
         : (
           <div data-slot={item.kind === "secret" ? "chat-composer-secret" : "chat-composer-file"}
-            className={cn("text-muted-foreground flex size-full flex-col items-center justify-center gap-0.5 p-1", item.kind === "secret" && "bg-muted/40")}>
+            className={cn("text-muted-foreground flex size-full flex-col items-center justify-center gap-0.5 px-2 py-1", item.kind === "secret" && "bg-muted/40")}>
             {item.kind === "secret" ? <Lock className="size-4 shrink-0" aria-hidden /> : <FileText className="size-4 shrink-0" aria-hidden />}
-            <span className={cn("w-full truncate text-center text-[10px]", item.kind === "secret" && "font-mono")}>{item.kind === "secret" ? secretLabel(item.name) : item.name}</span>
+            <span className={cn("max-w-full truncate text-center text-[10px]", item.kind === "secret" && "font-mono")}>{item.kind === "secret" ? secretLabel(item.name) : item.name}</span>
           </div>
         )}
       {onRemove && (
