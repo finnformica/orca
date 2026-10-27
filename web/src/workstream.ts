@@ -723,6 +723,28 @@ export function withoutAttachmentList(text: string): string {
   return text.replace(new RegExp(`\\n*${ATTACHED_FILES_HEADER.replace(/[()]/g, "\\$&")}(?:\\n- [^\\n]*)*`, "g"), "").trimEnd();
 }
 
+/** A stored secret in a message: the reference the composer sends for each secret chip (the paste
+ *  guard's "Save as secret"). The value is only in the encrypted store; the message holds this. */
+export const secretRefText = (ref: string) => `[secret ${ref} stored]`;
+const SECRET_REF_RE = /\[secret ([\w./-]+) stored\]/g;
+
+/** The message the composer sends: the text, then one reference for each secret chip. */
+export function withSecretRefs(text: string, refs: string[]): string {
+  if (!refs.length) return text;
+  const line = refs.map(secretRefText).join(" ");
+  return text ? `${text}\n\n${line}` : line;
+}
+
+/** A message split into its text and the secret references it holds (first occurrence of each), so a
+ *  bubble shows each one as a chip beside its files, not as text. An older message with an inline
+ *  reference reads the same way. */
+export function splitSecretRefs(text: string): { text: string; refs: string[] } {
+  const refs: string[] = [];
+  for (const m of text.matchAll(SECRET_REF_RE)) if (!refs.includes(m[1]!)) refs.push(m[1]!);
+  if (!refs.length) return { text, refs };
+  return { text: text.replace(SECRET_REF_RE, "").replace(/[ \t]+$/gm, "").replace(/\n{3,}/g, "\n\n").trim(), refs };
+}
+
 /** A message, formatted for the composer's Quote action: every line prefixed `> ` (a markdown
  *  blockquote), followed by a blank line so typing continues as ordinary text below it. */
 export function quoteMarkdown(text: string): string {

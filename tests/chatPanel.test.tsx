@@ -1101,6 +1101,24 @@ test("a sent message shows its attachments — a thumbnail for an image, a named
   expect(container.querySelector<HTMLImageElement>('[data-slot="chat-user"] [data-slot="expandable-image"] img')?.getAttribute("src")).toBe(`/api/attachments/${img}`);
 });
 
+test("a queued and a sent message show their image and secret chips under the bubble, never the reference as text", async () => {
+  const img = "77777777-7777-7777-7777-777777777777";
+  apiFake.turnsData.set("r::feat", [
+    { id: "run-1", provider: "claude", prompt: "", instruction: withAttachments("deploy with\n\n[secret chat/stripe_key stored]", [`orca-attachment://${img}/shot.png`]), attachments: [{ id: img, name: "shot.png" }], response: "ok", finishedAt: 2 },
+    { id: "run-2", provider: "claude", prompt: "big refactor", startedAt: 3 },
+  ]);
+  apiFake.queuedData.set("feat", [
+    { id: 8, repo: "r", branch: "feat", instruction: "then this\n\n[secret chat/gh_token stored]", attachments: [`orca-attachment://${img}/shot.png`], createdAt: 4 },
+  ]);
+  await mount({ ...base, agentStatus: "running" });
+  for (const [slot, name] of [["chat-user", "stripe_key"], ["chat-queued", "gh_token"]] as const) {
+    const bubble = container!.querySelector(`[data-slot="${slot}"]`)!;
+    expect(bubble.querySelector('[data-slot="message-attachments"] [data-attachment="image"] img')?.getAttribute("src")).toBe(`/api/attachments/${img}`);
+    expect(bubble.querySelector('[data-attachment="secret"]')?.textContent).toBe(name);
+    expect(bubble.textContent).not.toContain("[secret");
+  }
+});
+
 test("↑ in the composer recalls what you sent from the chat's transcript, not row.followUps", async () => {
   // No followUps on the row (the orchestrator never has any; nor does a message sent from quick-ask
   // or the palette) — the history is the conversation itself.

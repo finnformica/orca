@@ -8,7 +8,7 @@
 // Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every board
 // action uses.
 import { createContext, memo, startTransition, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { AlarmClock, ArrowDown, Bot, Check, ChevronRight, CloudMoon, Cog, Copy, Loader2, Paperclip, Quote as QuoteIcon, X } from "lucide-react";
+import { AlarmClock, ArrowDown, Bot, Check, ChevronRight, CloudMoon, Cog, Copy, Loader2, Quote as QuoteIcon, X } from "lucide-react";
 import { isScheduledWake } from "../../../shared/scheduledWake";
 import { isReflection } from "../../../shared/memory";
 import { cn, PipContext } from "@/lib/utils";
@@ -19,7 +19,7 @@ import remarkBreaks from "remark-breaks";
 import type { AgentStep, AgentTurn, OriginMessage, TurnOrigin } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, previewsEnabled, refresh, setCardModel, type Row } from "../store";
-import { ORCHESTRATOR_REPO, RECENT_FULL, TAIL_WINDOW, reportShots, turnHandoffs, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, firedLabel, longMessage, newestMessages, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, formatDuration, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, undeliveredQueued, composerHistory, integrationPreview, integrationState, anchorShift, eagerFrom, estimateItemHeight, withNotices, ORIGIN_MISSING, originAskedBy, originAt, originHead, originSkippedText, originTimeLabel } from "../workstream";
+import { ORCHESTRATOR_REPO, RECENT_FULL, TAIL_WINDOW, reportShots, turnHandoffs, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, splitSecretRefs, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, firedLabel, longMessage, newestMessages, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, formatDuration, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, undeliveredQueued, composerHistory, integrationPreview, integrationState, anchorShift, eagerFrom, estimateItemHeight, withNotices, ORIGIN_MISSING, originAskedBy, originAt, originHead, originSkippedText, originTimeLabel } from "../workstream";
 import { HandoffWidget } from "./Handoffs";
 import { FormCard } from "@/components/FormCard";
 import { stickToTail } from "@/lib/stickToTail";
@@ -34,6 +34,7 @@ import { activityCounts, closeOpenMarkdown, createHold, runLabel, stepDuration, 
 import { agentLabel, groupSteps, outcomeLead, withoutFinalEcho } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
 import { useSlashCommands } from "@/components/SlashCommands";
+import { ComposerAttachment } from "@/components/ComposerAttachment";
 import { ExpandableImage } from "@/components/ExpandableImage";
 import { ShotThumbs } from "@/components/Screenshots";
 import { snippetPre } from "@/components/Snippet";
@@ -389,11 +390,13 @@ const Facet = ({ title, items, tone }: { title: string; items: string[]; tone: s
   </div>
 );
 
-/** The files a message carried: a thumbnail for an image, a named chip for anything else. Each opens
- *  the stored file from the bridge (`/api/attachments/<id>`, read from Postgres), so it works from
- *  any instance, whichever one took the upload. */
-export function Attachments({ files, className = "" }: { files: AttachmentRef[]; className?: string }) {
-  if (!files.length) return null;
+/** The files a message carried: a thumbnail for an image, a named chip for anything else, and a
+ *  lock chip for each stored secret (`secrets`: its references, never a value) — the composer's own
+ *  attachment chips (ComposerAttachment), moved with the message. Each file opens the stored file
+ *  from the bridge (`/api/attachments/<id>`, read from Postgres), so it works from any instance,
+ *  whichever one took the upload. */
+export function Attachments({ files, secrets = [], className = "" }: { files: AttachmentRef[]; secrets?: string[]; className?: string }) {
+  if (!files.length && !secrets.length) return null;
   // Just the images, in order: the other images this message carried are this one's lightbox gallery.
   const images = files.filter((f) => isImageName(f.name)).map((f) => ({ src: apiUrl(`/api/attachments/${f.id}`), alt: f.name }));
   return (
@@ -401,17 +404,11 @@ export function Attachments({ files, className = "" }: { files: AttachmentRef[];
       {files.map((f) => {
         const href = apiUrl(`/api/attachments/${f.id}`);
         const imgIndex = images.findIndex((im) => im.src === href);
-        return isImageName(f.name) ? (
-          <ExpandableImage key={f.id} src={href} alt={f.name} downloadName={f.name}
-            gallery={images.length > 1 ? { images, index: imgIndex } : undefined}
-            imgClassName="max-h-32 max-w-48 rounded-md border object-cover" />
-        ) : (
-          <a key={f.id} href={href} target="_blank" rel="noreferrer" data-slot="attachment-file"
-            className="bg-muted text-foreground hover:bg-accent inline-flex max-w-56 items-center gap-1 rounded-md border px-2 py-1 text-[11px]">
-            <Paperclip className="size-3 shrink-0" /><span className="truncate">{f.name}</span>
-          </a>
-        );
+        return <ComposerAttachment key={f.id} look="chip" item={isImageName(f.name)
+          ? { kind: "image", name: f.name, src: href, gallery: images.length > 1 ? { images, index: imgIndex } : undefined }
+          : { kind: "file", name: f.name, href }} />;
       })}
+      {secrets.map((ref) => <ComposerAttachment key={ref} look="chip" item={{ kind: "secret", name: ref }} />)}
     </div>
   );
 }
@@ -488,6 +485,8 @@ function Queued({ message, onCancel }: { message: QueuedMessage; onCancel: () =>
 function UserBubble({ text, files, clamp, footer, pending, slot = "chat-user", textSlot = "chat-user-text", className = "mb-2" }: {
   text: string; files: AttachmentRef[]; clamp: boolean; footer: ReactNode; pending?: boolean; slot?: string; textSlot?: string; className?: string;
 }) {
+  // A secret the message carries is a chip beside its files, never text in the bubble.
+  const { text: shown, refs: secrets } = splitSecretRefs(text);
   return (
     <div className={cn("group flex justify-end", className)} data-slot={slot} data-pending={pending || undefined}>
       {/* Each child keeps its own width on the right: a queued message's long label must not widen
@@ -499,12 +498,12 @@ function UserBubble({ text, files, clamp, footer, pending, slot = "chat-user", t
             the column's cap — the bubble grew past the chat column and its start ran under
             whatever sits beside it. The cap lets the code's own horizontal scroll (Snippet.tsx)
             take over instead, and prose text wraps normally again. */}
-        {text && <div data-slot={textSlot} className={cn("bg-accent text-foreground max-w-full rounded-lg px-3 py-2", pending && "opacity-60")}>
+        {shown && <div data-slot={textSlot} className={cn("bg-accent text-foreground max-w-full rounded-lg px-3 py-2", pending && "opacity-60")}>
           <Clamp on={clamp} cut="max-h-[9rem]">
-            <ChatMarkdown tone="text-foreground" breaks>{text}</ChatMarkdown>
+            <ChatMarkdown tone="text-foreground" breaks>{shown}</ChatMarkdown>
           </Clamp>
         </div>}
-        <Attachments files={files} className={cn("mt-1 justify-end", pending && "opacity-60")} />
+        <Attachments files={files} secrets={secrets} className={cn("mt-1 justify-end", pending && "opacity-60")} />
         <div className="mt-0.5">{footer}</div>
       </div>
     </div>
