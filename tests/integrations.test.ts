@@ -190,9 +190,38 @@ describe("decisions (pure)", () => {
     ]);
     expect(planDeliveries({ topic: "orca.integration.failed", source: { adapter: "orca" }, scope: { repo: "r" } }, [{ ...subs[0]!, topicPattern: "*" }], links)).toEqual([]);
     const inbound = { topic: "ext.slack.message" as const, source: { adapter: "slack", linkId: "L1" }, grant: { level: "work" as const, repos: ["r"] } };
-    expect(planDeliveries(inbound, [{ ...subs[0]!, topicPattern: "*", filter: {} }], links)).toEqual([{ subscriptionId: null, target: { kind: "orchestrator" } }]); // no echo to L1
+    // With no link agent, an inbound message goes to the Assistant (named agents, §7.4).
+    expect(planDeliveries(inbound, [{ ...subs[0]!, topicPattern: "*", filter: {} }], links)).toEqual([{ subscriptionId: null, target: { kind: "agent", name: "assistant" } }]); // no echo to L1
     expect(planDeliveries(inbound, [], links, new Map(), { repo: "r", branch: "feat" })).toEqual([{ subscriptionId: null, target: { kind: "workstream", repo: "r", branch: "feat" } }]);
-    expect(planDeliveries({ ...inbound, grant: { level: "ask", repos: [] } }, [], links, new Map(), { repo: "r", branch: "feat" })).toEqual([{ subscriptionId: null, target: { kind: "orchestrator" } }]);
+    expect(planDeliveries({ ...inbound, grant: { level: "ask", repos: [] } }, [], links, new Map(), { repo: "r", branch: "feat" })).toEqual([{ subscriptionId: null, target: { kind: "agent", name: "assistant" } }]);
+  });
+
+  test("planning with named agents: agent subscriptions, the link's agent, @chief, an agent's thread", () => {
+    const links = new Map([["L1", { integrationId: "disc", adapter: "discord", externalId: "C1", agent: "chief" }], ["L2", { integrationId: "disc", adapter: "discord", externalId: "C2" }]]);
+    const inbound = (linkId: string, text: string, level: "ask" | "work" = "work") =>
+      ({ topic: "ext.discord.message" as const, source: { adapter: "discord", linkId }, grant: { level, repos: ["r"] }, actor: { external: { adapter: "discord", id: "U1" } }, text });
+    // A subscription to an agent by name; an old "orchestrator" one stays as it is (the Chief of Staff).
+    const subs: Subscription[] = [
+      { id: 1, topicPattern: "orca.pr.*", filter: {}, targetKind: "agent", targetId: "assistant" },
+      { id: 2, topicPattern: "orca.pr.merged", filter: {}, targetKind: "orchestrator" },
+      { id: 3, topicPattern: "orca.pr.*", filter: {}, targetKind: "agent" }, // no name: nothing
+    ];
+    expect(planDeliveries({ topic: "orca.pr.merged", source: { adapter: "orca" } }, subs, links)).toEqual([
+      { subscriptionId: 1, target: { kind: "agent", name: "assistant" } },
+      { subscriptionId: 2, target: { kind: "orchestrator" } },
+    ]);
+    // An agent subscription already takes it: no inbound default beside it.
+    expect(planDeliveries(inbound("L2", "hi"), [{ id: 4, topicPattern: "ext.*.message", filter: {}, targetKind: "agent", targetId: "scout" }], links))
+      .toEqual([{ subscriptionId: 4, target: { kind: "agent", name: "scout" } }]);
+    expect(planDeliveries(inbound("L1", "hi"), [], links)).toEqual([{ subscriptionId: null, target: { kind: "agent", name: "chief" } }]); // the link's agent
+    expect(planDeliveries(inbound("L2", "hi"), [], links)).toEqual([{ subscriptionId: null, target: { kind: "agent", name: "assistant" } }]); // the default
+    expect(planDeliveries(inbound("L2", "@chief hi"), [], links)).toEqual([{ subscriptionId: null, target: { kind: "agent", name: "chief" } }]);
+    expect(planDeliveries(inbound("L2", "@chief hi", "ask"), [], links)).toEqual([{ subscriptionId: null, target: { kind: "agent", name: "assistant" } }]);
+    // A thread an agent opened (thread_link to "@orca", its branch): back to that agent, on any link.
+    expect(planDeliveries(inbound("L1", "thanks"), [], links, new Map(), { repo: "@orca", branch: "assistant" })).toEqual([{ subscriptionId: null, target: { kind: "agent", name: "assistant" } }]);
+    expect(planDeliveries(inbound("L2", "thanks"), [], links, new Map(), { repo: "@orca", branch: "orchestrator" })).toEqual([{ subscriptionId: null, target: { kind: "agent", name: "chief" } }]);
+    // Notify agent off: no agent at all.
+    expect(planDeliveries({ ...inbound("L2", "hi"), notify: { me: true, agent: false } }, [], links)).toEqual([]);
   });
 });
 
@@ -274,7 +303,7 @@ describe("with Postgres", () => {
     expect(ev?.grant).toEqual({ level: "ask", repos: ["r"], linkId: "L1", principalId: "saajan" });
     expect(ev?.actor?.principalId).toBe("saajan");
     const accepted = (await store.deliveries()).filter((d) => d.envelope.key === "slack:e4").map((d) => d.target);
-    expect(accepted.map((t) => t.kind).sort()).toEqual(["orchestrator", "web"]); // web: the link's Notify me
+    expect(accepted.map((t) => t.kind).sort()).toEqual(["agent", "web"]); // the link's agent (the Assistant); web: the link's Notify me
     for (let i = 0; i < 18; i++) await router.ingest("slack-work", msg(`flood${i}`, "C1"));
     expect(await router.ingest("slack-work", msg("flood-over", "C1"))).toBe("rejected"); // 21st in 10 min
   });
@@ -371,7 +400,7 @@ describe("with Postgres", () => {
       expect(await ok.json()).toEqual({ status: "new" });
       expect(await (await post(body, sign("hook-secret", body))).json()).toEqual({ status: "duplicate" });
       expect(await store.event("webhook:repo-watch:push-abc123")).toMatchObject({ topic: "ext.webhook.message", text: "main moved to abc123", grant: { level: "ask" } });
-      expect((await store.deliveries()).map((d) => d.target.kind).sort()).toEqual(["orchestrator", "web"]); // web: the link's Notify me
+      expect((await store.deliveries()).map((d) => d.target.kind).sort()).toEqual(["agent", "web"]); // the link's agent (the Assistant); web: the link's Notify me
       expect((await registry.handle("elsewhere", new Request("http://x/", { method: "POST" }), "{}")).status).toBe(404);
       expect(verify("k", "b", sign("k", "b"))).toBe(true);
       expect(webhookEnvelope({ id: "h", kind: "webhook", name: "h", instance: "local", config: {}, enabled: true }, { text: "t", topic: "ext.webhook.push" }, "raw").topic).toBe("ext.webhook.push");

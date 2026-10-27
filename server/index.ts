@@ -34,6 +34,8 @@ import * as gmailOauth from "./integrations/adapters/gmail/oauth";
 import { CALLBACK_PATH as GOOGLE_CALLBACK_PATH } from "./integrations/adapters/gmail/google";
 import { deadNotification, webAdapter } from "./integrations/adapters/web";
 import * as orchestrator from "./orchestrator";
+import * as agents from "./agents";
+import { agentOfBranch, cleanReportsTo } from "../shared/agents";
 import * as scheduledWake from "./scheduledWake";
 import { handleMemory } from "./memoryRoutes";
 import * as primary from "./primary";
@@ -52,7 +54,7 @@ import * as verbs from "./verbs";
 import * as repos from "./repos";
 import { linkOrigins } from "./origin";
 import { BusyError, checkGate, compact, launchOptions, launchQueued, newWorktree, placement, removeWorktree, startPreview } from "./verbs";
-import { ORCHESTRATOR_REPO, attachmentRefs, workstreamShots, mergeSafe, prDescriptionPrompt, sweepText, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
+import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, attachmentRefs, workstreamShots, mergeSafe, prDescriptionPrompt, sweepText, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
 import { AGENT_PROVIDERS, attachCommand, isAgentProvider, providerBinary, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn } from "../shared/agent";
 import { providerOfModel } from "../shared/models";
 import * as prShots from "./prShots";
@@ -166,7 +168,9 @@ const bootReconcile = primary.whenUp(async () => {
   const { closed, recovered } = await reconcile();
   if (closed) console.log(`orca: closed ${closed} interrupted turn(s), recovered ${recovered} from the provider's session`);
   // A wake that was in flight when the previous bridge stopped: re-queue what it was handling.
-  await orchestrator.recover(await loadConfig(), reconcile);
+  // Each named agent's own (server/orchestrator.ts §7.1 step 8).
+  const cfg = await loadConfig();
+  for (const a of await orchestrator.agentRefs()) await orchestrator.recover(cfg, reconcile, { agent: a.name });
 }, "orca: boot reconcile failed");
 
 // Runs still going under a lease are adopted, not written off: when each exits, its turn is finished
@@ -175,7 +179,7 @@ primary.onPrimary(async () => {
   const adopted = agent.adoptLeases(async (runId, sessionId, worktreePath) => {
     const found = await backfillRun(runId, sessionId, worktreePath);
     return found?.response ? { response: found.response, structured: found.outcome } : undefined;
-  }, orchestrator.dir());
+  }, (await orchestrator.agentRefs()).map((a) => a.dir));
   if (adopted) console.log(`orca: adopted ${adopted} run(s) still going from the previous bridge`);
   // Became primary after the database was already up (a takeover): the boot-time reconcile is ours now.
   await bootReconcile();
@@ -220,12 +224,14 @@ setInterval(() => {
 }, mergeQueue.MERGE_POLL_MS).unref();
 // Self-set wakes (server/scheduledWake.ts): a due time wake fires from this minute tick; an event
 // wake fires when a matching event is published. Both reach the orchestrator as its own report.
-const deliverWake = async (text: string) => orchestrator.report(await loadConfig(), text);
+const deliverWake = async (text: string, agent: string) => orchestrator.report(await loadConfig(), text, undefined, agent);
 setInterval(() => {
   if (!primary.held()) return;
   void scheduledWake.tick(deliverWake).catch(db.logUnlessDown("orca: scheduled wake pass failed"));
-  // A reflection on the orchestrator's memory when one is due (shared/memory.ts reflectionDue).
-  void loadConfig().then((cfg) => orchestrator.maybeReflect(cfg)).catch(db.logUnlessDown("orca: reflection pass failed"));
+  // A reflection on each agent's memory when one is due (shared/memory.ts reflectionDue).
+  void loadConfig().then(async (cfg) => {
+    for (const a of await orchestrator.agentRefs()) await orchestrator.maybeReflect(cfg, Date.now(), a.name);
+  }).catch(db.logUnlessDown("orca: reflection pass failed"));
 }, 60_000).unref();
 onNewEvent((e) => { void scheduledWake.onEvent(e, deliverWake).catch(db.logUnlessDown("orca: scheduled wake match failed")); });
 // The heavy-command queue (server/heavy.ts): take back a slot past its max run time or whose
@@ -241,8 +247,9 @@ if (process.platform === "linux") setInterval(() => {
 // re-run here (orchestrator.evictForeignWake). Once a minute, on the primary.
 const FOREIGN_WAKE_POLL_MS = 60_000;
 primary.onPrimary(() => {
-  const check = () => void loadConfig().then((cfg) => orchestrator.evictForeignWake(cfg, reconcile))
-    .catch(db.logUnlessDown("orca: foreign-wake check failed"));
+  const check = () => void loadConfig().then(async (cfg) => {
+    for (const a of await orchestrator.agentRefs()) await orchestrator.evictForeignWake(cfg, reconcile, undefined, a.name);
+  }).catch(db.logUnlessDown("orca: foreign-wake check failed"));
   check();
   setInterval(() => { if (primary.held()) check(); }, FOREIGN_WAKE_POLL_MS).unref();
 });
@@ -337,8 +344,10 @@ dispatcher.configure({
   adapter: integrations.adapterFor,
   web: web.deliver,
   orchestrator: async (e) => inbox.toOrchestrator(await loadConfig(), e),
+  agent: async (name, e) => inbox.toAgent(await loadConfig(), name, e),
   workstream: async (repo, branch, e) => inbox.toWorkstream(await loadConfig(), repo, branch, e),
-  serves: (kind) => kind !== "orchestrator" || !lastOrchestratorOn || lastOrchestratorOn === db.instanceName(),
+  // The named agents live where the orchestrator does (orchestratorOn).
+  serves: (kind) => (kind !== "orchestrator" && kind !== "agent") || !lastOrchestratorOn || lastOrchestratorOn === db.instanceName(),
   dead: async (d, error) => { await notify.emit(deadNotification(d, error)); },
 });
 dispatcher.setRunning(integrations.runningIds);
@@ -993,7 +1002,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     // Kept as an alias: scripts now post to a webhook integration (/api/integrations/<id>/inbound),
     // which is signed and goes through the permission gate.
     if (typeof body.text !== "string") return json({ error: "text required" }, 400);
-    await orchestrator.deliverReport(cfg, body.text, typeof body.key === "string" ? body.key : undefined);
+    await orchestrator.deliverReport(cfg, body.text, typeof body.key === "string" ? body.key : undefined, typeof body.agent === "string" && body.agent ? body.agent : undefined);
     return json({ ok: true });
   }
   if (p === "/api/cleanup/sweep") {
@@ -1003,14 +1012,28 @@ async function api(req: Request, url: URL): Promise<Response> {
     const reports = body.local ? [await verbs.sweep(cfg, { confirm })] : await verbs.sweepAll(cfg, { confirm });
     return json({ reports, text: sweepText(reports) });
   }
-  if (req.method === "GET" && p === "/api/orchestrator") return json(await orchestrator.status(cfg));
-  if (req.method === "POST" && p === "/api/orchestrator/model") {
-    try { await orchestrator.setModel(body.model); } catch (e) { return json({ error: e instanceof Error ? e.message : String(e) }, 400); }
-    return json({ ok: true });
-  }
-  if (req.method === "POST" && p === "/api/orchestrator/message") {
-    if (typeof body.text !== "string" || !body.text.trim()) return json({ error: "text required" }, 400);
-    return json(await orchestrator.message(cfg, body.text, body.attachments ?? []));
+  // `?agent=<name>` (GET) or `agent` (POST body) names a named agent; none = the Chief of Staff, so an
+  // old browser keeps working (docs/design/named-agents-and-memory.md §7.1).
+  const agentName = (url.searchParams.get("agent") ?? (typeof body.agent === "string" ? body.agent : "")) || undefined;
+  try {
+    if (req.method === "GET" && p === "/api/orchestrator") return json(await orchestrator.status(cfg, agentName));
+    if (req.method === "GET" && p === "/api/orchestrator/agents") return json({ agents: await orchestrator.statuses(cfg), cleanReportsTo: cleanReportsTo(cfg) });
+    if (req.method === "POST" && p === "/api/orchestrator/agents") {
+      // Settings: add an agent (the user's alone; `orca agent add` is the same from their own chat).
+      const def = await agents.add({ name: String(body.name ?? ""), displayName: String(body.displayName ?? ""), role: String(body.role ?? ""), ...(typeof body.model === "string" && body.model ? { model: body.model } : {}) });
+      return json({ agent: def });
+    }
+    if (req.method === "POST" && p === "/api/orchestrator/model") {
+      await orchestrator.setModel(body.model, agentName);
+      return json({ ok: true });
+    }
+    if (req.method === "POST" && p === "/api/orchestrator/message") {
+      if (typeof body.text !== "string" || !body.text.trim()) return json({ error: "text required" }, 400);
+      return json(await orchestrator.message(cfg, body.text, body.attachments ?? [], { ...(agentName ? { agent: agentName } : {}) }));
+    }
+  } catch (e) {
+    if (e instanceof Error && /^no agent |^the orchestrator runs on|^the name is|^an agent named|^--display|^--role|^"orchestrator" is/.test(e.message)) return json({ error: e.message }, 400);
+    throw e;
   }
   // Forms in the chat (`orca ask-form`, server/forms.ts): the card reads one, then submits or cancels
   // it. The submit stores each secret field and wakes the orchestrator with the rest — never a value.
@@ -1071,8 +1094,9 @@ async function api(req: Request, url: URL): Promise<Response> {
   // carries `runsOn` as its home, the same fallback forwardToOwner already uses for a real repo's
   // default placement.
   const repoName = url.searchParams.get("repo") ?? body.repo;
+  const agentDir = repoName === ORCHESTRATOR_REPO ? orchestrator.dir(agentOfBranch(String(url.searchParams.get("branch") ?? body.branch ?? ORCHESTRATOR_BRANCH))) : "";
   const repo = repoName === ORCHESTRATOR_REPO
-    ? { name: ORCHESTRATOR_REPO, repoPath: orchestrator.dir(), worktreeRoot: orchestrator.dir(), baseBranch: "", previewServices: [], runsOn: cfg.orchestratorOn }
+    ? { name: ORCHESTRATOR_REPO, repoPath: agentDir, worktreeRoot: agentDir, baseBranch: "", previewServices: [], runsOn: cfg.orchestratorOn }
     : repoOf(cfg, repoName);
   // A repo this instance doesn't run is handled by the instance that does.
   const forwarded = await forwardToOwner(req, url, repo, cfg, body);
@@ -1082,7 +1106,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     // The context ring's Compact button: `/compact` in this conversation's own session. A busy
     // session (a run in flight, here or under a lease) is a 409 the button shows, never queued.
     try {
-      return json(repo.name === ORCHESTRATOR_REPO ? await orchestrator.compact(cfg) : await compact(cfg, repo as RepoConfig, String(body.branch ?? "")));
+      return json(repo.name === ORCHESTRATOR_REPO ? await orchestrator.compact(cfg, agentOfBranch(String(body.branch ?? ORCHESTRATOR_BRANCH))) : await compact(cfg, repo as RepoConfig, String(body.branch ?? "")));
     } catch (e) {
       const busy = e instanceof BusyError || (e instanceof Error && /already running/.test(e.message));
       return json({ error: busy ? new BusyError().message : e instanceof Error ? e.message : String(e) }, busy ? 409 : 400);
@@ -1783,7 +1807,8 @@ async function api(req: Request, url: URL): Promise<Response> {
     // going the wrong way" button — NOT Discard, which reaps the branch.
     if (!body.key) return json({ error: "key required" }, 400);
     // Stop then sends the next queued message at once, as a finished run does.
-    const runId = body.key === orchestrator.dir() ? await orchestrator.stop(await loadConfig()) : await agent.interrupt(body.key);
+    const named = await orchestrator.agentByDir(String(body.key));
+    const runId = named ? await orchestrator.stop(await loadConfig(), named.name) : await agent.interrupt(body.key);
     if (runId) void notify.stopped(runId); // the centre hears it from here: a stopped run never reaches the run-finished hook
     return json({ ok: true, runId });
   }

@@ -107,34 +107,37 @@ export async function markSecretMissing(id: string, here: string, missing: boole
 
 export type Link = { id: string; integrationId: string; externalId: string; label?: string; level: Exclude<Level, "full">; repos: string[]; requireMention: boolean;
   /** The link's switches (LinkNotify); absent on a write means on. */
-  notifyMe?: boolean; notifyAgent?: boolean };
-type LinkRow = { id: string; integration_id: string; external_id: string; label: string | null; level: Link["level"]; repos: string[]; require_mention: boolean; notify_me: boolean | null; notify_agent: boolean | null };
+  notifyMe?: boolean; notifyAgent?: boolean;
+  /** The named agent that takes this link's inbound messages; absent = the Assistant (§7.7). */
+  agent?: string };
+type LinkRow = { id: string; integration_id: string; external_id: string; label: string | null; level: Link["level"]; repos: string[]; require_mention: boolean; notify_me: boolean | null; notify_agent: boolean | null; agent?: string | null };
 const toLink = (r: LinkRow): Link => ({
   id: r.id, integrationId: r.integration_id, externalId: r.external_id, ...(r.label ? { label: r.label } : {}),
   level: r.level, repos: r.repos ?? [], requireMention: r.require_mention, notifyMe: r.notify_me !== false, notifyAgent: r.notify_agent !== false,
+  ...(r.agent ? { agent: r.agent } : {}),
 });
 
 export async function addLink(l: Link): Promise<void> {
   return db.withRetry(async (sql) => {
     await sql`
-      INSERT INTO channel_link (id, user_id, integration_id, external_id, label, level, repos, require_mention, notify_me, notify_agent)
-      VALUES (${l.id}, ${user()}, ${l.integrationId}, ${l.externalId}, ${l.label ?? null}, ${l.level}, ${sql.array(l.repos, "TEXT")}, ${l.requireMention}, ${l.notifyMe !== false}, ${l.notifyAgent !== false})
+      INSERT INTO channel_link (id, user_id, integration_id, external_id, label, level, repos, require_mention, notify_me, notify_agent, agent)
+      VALUES (${l.id}, ${user()}, ${l.integrationId}, ${l.externalId}, ${l.label ?? null}, ${l.level}, ${sql.array(l.repos, "TEXT")}, ${l.requireMention}, ${l.notifyMe !== false}, ${l.notifyAgent !== false}, ${l.agent ?? null})
       ON CONFLICT (user_id, id) DO UPDATE SET external_id = EXCLUDED.external_id, label = EXCLUDED.label,
         level = EXCLUDED.level, repos = EXCLUDED.repos, require_mention = EXCLUDED.require_mention,
-        notify_me = EXCLUDED.notify_me, notify_agent = EXCLUDED.notify_agent`;
+        notify_me = EXCLUDED.notify_me, notify_agent = EXCLUDED.notify_agent, agent = EXCLUDED.agent`;
   });
 }
 
 export async function links(): Promise<Link[]> {
   return db.withRetry(async (sql) => {
-    const rows = await sql`SELECT id, integration_id, external_id, label, level, repos, require_mention, notify_me, notify_agent FROM channel_link WHERE user_id = ${user()}`;
+    const rows = await sql`SELECT id, integration_id, external_id, label, level, repos, require_mention, notify_me, notify_agent, agent FROM channel_link WHERE user_id = ${user()}`;
     return (rows as LinkRow[]).map(toLink);
   });
 }
 
 export async function link(id: string): Promise<Link | undefined> {
   return db.withRetry(async (sql) => {
-    const rows = await sql`SELECT id, integration_id, external_id, label, level, repos, require_mention, notify_me, notify_agent FROM channel_link WHERE user_id = ${user()} AND id = ${id}`;
+    const rows = await sql`SELECT id, integration_id, external_id, label, level, repos, require_mention, notify_me, notify_agent, agent FROM channel_link WHERE user_id = ${user()} AND id = ${id}`;
     const r = (rows as LinkRow[])[0];
     return r ? toLink(r) : undefined;
   });
@@ -143,7 +146,7 @@ export async function link(id: string): Promise<Link | undefined> {
 /** The link for an external place on one integration (a Slack channel id, a mailbox). */
 export async function linkFor(integrationId: string, externalId: string): Promise<Link | undefined> {
   return db.withRetry(async (sql) => {
-    const rows = await sql`SELECT id, integration_id, external_id, label, level, repos, require_mention, notify_me, notify_agent FROM channel_link
+    const rows = await sql`SELECT id, integration_id, external_id, label, level, repos, require_mention, notify_me, notify_agent, agent FROM channel_link
       WHERE user_id = ${user()} AND integration_id = ${integrationId} AND external_id = ${externalId}`;
     const r = (rows as LinkRow[])[0];
     return r ? toLink(r) : undefined;
@@ -531,7 +534,7 @@ export async function noticeEvents(opts: { since: number; limit: number }): Prom
   return db.withRetry(async (sql) => {
     const rows = await sql`SELECT e.envelope FROM event e WHERE e.user_id = ${user()} AND e.topic LIKE 'ext.%' AND e.created_at >= ${opts.since}
       AND e.envelope ? 'notify' AND e.envelope->'notify'->>'me' = 'true'
-      AND NOT EXISTS (SELECT 1 FROM delivery d WHERE d.event_id = e.id AND d.target->>'kind' IN ('orchestrator', 'workstream'))
+      AND NOT EXISTS (SELECT 1 FROM delivery d WHERE d.event_id = e.id AND d.target->>'kind' IN ('orchestrator', 'agent', 'workstream'))
       ORDER BY e.id DESC LIMIT ${opts.limit}`;
     return (rows as { envelope: Envelope }[]).map((r) => r.envelope);
   });

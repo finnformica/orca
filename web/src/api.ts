@@ -118,6 +118,12 @@ export type RepoInfo = {
 };
 const q = (repo: string, extra = "") => `?repo=${encodeURIComponent(repo)}${extra}`;
 
+/** One named agent's status (`GET /api/orchestrator[?agent=]`, server/orchestrator.ts AgentStatus). */
+export type AgentStatus = {
+  key: string; running: boolean; paused: boolean; notes: string; model: string; contextPct?: number; shell?: boolean; lastWakeUsd?: number; hint?: string; startedAt?: number; queued?: number;
+  agent?: string; displayName?: string; branch?: string; state?: "idle" | "working" | "waiting" | "blocked" | "done"; stateNote?: string;
+};
+
 export const api = {
   config: (): Promise<{ repos: RepoInfo[]; staleHours: number; agentProviders: AgentProvider[]; apiPort: number; instance?: string; instances?: string[]; instanceHourlyUsd?: Record<string, number>; terminal?: Record<string, boolean>; voice?: boolean; ui?: { showBoard: boolean }; instanceUrls?: Record<string, string>; bridge?: BridgeInfo; googleOAuth?: GoogleOAuthSettings }> => get("/api/config").then(res),
   /** Settings' Machine cost: one instance's USD/hour; null clears it (back to the EC2 estimate / 0). */
@@ -258,10 +264,12 @@ export const api = {
   compact: (repo: string, branch: string): Promise<{ runId: string }> => post("/api/compact", { repo, branch }),
   // The orchestrator: one conversation that delegates to workstreams (server/orchestrator.ts). Its
   // turns are read through the ordinary chat routes under its reserved repo/branch.
-  orchestrator: (): Promise<{ key: string; running: boolean; paused: boolean; notes: string; model: string; contextPct?: number; shell?: boolean; lastWakeUsd?: number; hint?: string; startedAt?: number; queued?: number }> => get("/api/orchestrator").then(res),
-  orchestratorModel: (model: string): Promise<{ ok: true }> => post("/api/orchestrator/model", { model }),
-  orchestratorMessage: (text: string, attachments: string[] = []): Promise<{ status: "running" | "queued" }> =>
-    post("/api/orchestrator/message", { text, attachments }),
+  // `agent` names a named agent (docs/design/named-agents-and-memory.md §7); none = the Chief of Staff.
+  orchestrator: (agent?: string): Promise<AgentStatus> => get(`/api/orchestrator${agent ? `?agent=${encodeURIComponent(agent)}` : ""}`).then(res),
+  orchestratorAgents: (): Promise<{ agents: AgentStatus[]; cleanReportsTo: string }> => get("/api/orchestrator/agents").then(res),
+  orchestratorModel: (model: string, agent?: string): Promise<{ ok: true }> => post("/api/orchestrator/model", { model, ...(agent ? { agent } : {}) }),
+  orchestratorMessage: (text: string, attachments: string[] = [], agent?: string): Promise<{ status: "running" | "queued" }> =>
+    post("/api/orchestrator/message", { text, attachments, ...(agent ? { agent } : {}) }),
   slack: (repo: string, text: string): Promise<{ ok: true }> => post("/api/slack", { repo, text }),
   // The notification centre (one table, any instance answers). `since` (ms) is the catch-up cursor
   // after the live stream was dropped; the live rows themselves arrive on /api/events.

@@ -30,7 +30,15 @@ export type IntegrationCard = {
     missing?: string[] };
 };
 
-export type LinkRow = { id: string; integrationId: string; externalId: string; label?: string; level: Exclude<Level, "full">; repos: string[]; requireMention: boolean; notifyMe?: boolean; notifyAgent?: boolean };
+export type LinkRow = { id: string; integrationId: string; externalId: string; label?: string; level: Exclude<Level, "full">; repos: string[]; requireMention: boolean; notifyMe?: boolean; notifyAgent?: boolean;
+  /** The named agent that takes its inbound messages; absent = the Assistant. */
+  agent?: string };
+/** One named agent, as the link's Agent Select lists it. */
+export type AgentOption = { name: string; displayName: string };
+/** The value the link's Agent Select shows: the link's agent, else the Assistant (the default). */
+export const linkAgentValue = (l: Pick<LinkRow, "agent">): string => l.agent || "assistant";
+/** An agent's display name, else its name. Pure. */
+export const agentLabel = (name: string, agents: AgentOption[] = []): string => agents.find((a) => a.name === name)?.displayName ?? name;
 /** One platform identity of a person: the adapter kind, the platform's id, and the name it goes by there. */
 export type IdentityRow = { adapter: string; externalId: string; name?: string };
 /** A person (a principal): global, with identities on any number of adapters. */
@@ -60,6 +68,8 @@ export type IntegrationsOverview = {
   pairings: Pairing[];
   subscriptions: Subscription[];
   dead: DeadRow[];
+  /** The named agents (server/agents.ts), for the Agent Select. An older server sends none. */
+  agents?: AgentOption[];
 };
 
 /** The page's names for the instances. The server identity (`serverIdentity.name`, e.g. "Flow")
@@ -133,11 +143,12 @@ export const SUBSCRIPTION_PRESETS: { id: string; label: string; topicPattern: st
   { id: "ci", label: "CI failures (digest 10 min)", topicPattern: "orca.pr.ci_failed", digestSeconds: 600 },
 ];
 
-export const TARGET_KINDS: TargetKind[] = ["link", "orchestrator", "workstream", "web"];
+export const TARGET_KINDS: TargetKind[] = ["link", "orchestrator", "agent", "workstream", "web"];
 
 /** A subscription's target as words: "#eng (Work Slack)", "the orchestrator", "orca::main", "this web app". */
 export function targetLabel(s: Pick<Subscription, "targetKind" | "targetId">, links: LinkRow[], cards: Pick<IntegrationCard, "id" | "name">[]): string {
   if (s.targetKind === "orchestrator") return "the orchestrator";
+  if (s.targetKind === "agent") return `agent ${s.targetId ?? "?"}`;
   if (s.targetKind === "web") return "the web app";
   if (s.targetKind === "workstream") return s.targetId ?? "?";
   const l = links.find((x) => x.id === s.targetId);
@@ -162,7 +173,7 @@ export function parseFilter(text: string): Record<string, string> | undefined {
 
 /** Where a dead delivery went, as words. */
 export const deadTargetLabel = (t: DeliveryTarget): string =>
-  t.kind === "link" ? `${t.adapter} ${t.externalId}` : t.kind === "workstream" ? `${t.repo}::${t.branch}` : t.kind;
+  t.kind === "link" ? `${t.adapter} ${t.externalId}` : t.kind === "workstream" ? `${t.repo}::${t.branch}` : t.kind === "agent" ? `agent ${t.name}` : t.kind;
 
 const ID = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 

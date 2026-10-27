@@ -21,7 +21,9 @@ export const WAKE_LIMITS = {
 export type WakeOn =
   | { kind: "pr"; repo: string; pr: number; event?: string }
   | { kind: "worker"; repo: string; branch: string }
-  | { kind: "topic"; pattern: string; repo?: string };
+  | { kind: "topic"; pattern: string; repo?: string }
+  /** Another agent's next reply (`orca ask` then wait for it, PR B): its next finished wake. */
+  | { kind: "agent"; agent: string };
 
 /** A length of time: `90m`, `2h`, `3d`, `1w` (also `+2h`). Undefined when it is not one. */
 export function parseDuration(text: string): number | undefined {
@@ -72,23 +74,29 @@ export function parseWakeOn(text: string): WakeOn {
   if (worker) return { kind: "worker", repo: worker[1]!, branch: worker[2]! };
   const topic = t.match(/^topic:(\S+)(?:\s+repo=(\S+))?$/);
   if (topic) return { kind: "topic", pattern: topic[1]!, ...(topic[2] ? { repo: topic[2] } : {}) };
-  throw new Error(`--on "${t}" is not an event: use pr:<repo>#<n>[:merged], worker:<repo>/<branch> or topic:<pattern>[ repo=<repo>]`);
+  const agent = t.match(/^agent:([a-z][a-z0-9-]*)$/);
+  if (agent) return { kind: "agent", agent: agent[1]! };
+  throw new Error(`--on "${t}" is not an event: use pr:<repo>#<n>[:merged], worker:<repo>/<branch>, agent:<name> or topic:<pattern>[ repo=<repo>]`);
 }
 
 export function wakeOnText(on: WakeOn): string {
   if (on.kind === "pr") return `pr:${on.repo}#${on.pr}${on.event ? `:${on.event}` : ""}`;
   if (on.kind === "worker") return `worker:${on.repo}/${on.branch}`;
+  if (on.kind === "agent") return `agent:${on.agent}`;
   return `topic:${on.pattern}${on.repo ? ` repo=${on.repo}` : ""}`;
 }
 
 /** The part of an event the match reads (an integrations Envelope fits). */
-export type WakeEvent = { topic: string; scope?: { repo?: string; branch?: string }; link?: { pr?: number } };
+export type WakeEvent = { topic: string; scope?: { repo?: string; branch?: string }; link?: { pr?: number }; /** The agent whose wake ended (`orca.agent.replied`), and the agents whose `orca ask` it answered. */ agent?: string; askers?: string[] };
+/** The event an agent's finished wake raises for `--on agent:<name>` (server/orchestrator.ts). */
+export const AGENT_REPLIED = "orca.agent.replied";
 
 export function wakeMatches(on: WakeOn, e: WakeEvent): boolean {
   if (on.kind === "pr") {
     return e.topic.startsWith("orca.pr.") && e.scope?.repo === on.repo && e.link?.pr === on.pr && (!on.event || e.topic === `orca.pr.${on.event}`);
   }
   if (on.kind === "worker") return e.topic.startsWith("orca.run.") && e.scope?.repo === on.repo && e.scope?.branch === on.branch;
+  if (on.kind === "agent") return e.topic === AGENT_REPLIED && e.agent === on.agent;
   return topicMatches(on.pattern, e.topic) && (!on.repo || e.scope?.repo === on.repo);
 }
 

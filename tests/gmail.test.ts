@@ -497,7 +497,7 @@ describe("against a fake Google", () => {
     g.deliver({ gid: "m1", id: "<m1@example.com>", subject: "Fix the login" });
     const ev = await until(() => store.event("gmail:gm:m1"));
     expect(ev.source.integrationId).toBe("gm");
-    expect((await store.deliveries()).some((d) => d.envelope.key === ev.key && d.target.kind === "orchestrator")).toBe(true);
+    expect((await store.deliveries()).some((d) => d.envelope.key === ev.key && d.target.kind === "agent")).toBe(true); // the link's agent: the Assistant by default
     await Bun.sleep(200);
     expect(await store.event("gmail:personal:m1")).toBeUndefined();
     expect(await store.cursor("personal")).toBeUndefined(); // it never polled

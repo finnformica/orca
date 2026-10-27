@@ -8,7 +8,7 @@
 // keys typed while focus is not yet in a field are held, in order — and the composer, when it takes
 // focus (synchronously, in a layout effect), claims them and appends them where the caret is.
 import { getDefaultStore } from "jotai";
-import { orchestratorOpenAtom, orchestratorPrefillAtom } from "./atoms";
+import { orchestratorOpenAtom, orchestratorPrefillAtom, orchestratorTabAtom } from "./atoms";
 import { isTypingTarget } from "./shortcuts";
 import { isNarrow } from "./viewport";
 import { navigate } from "./route";
@@ -22,6 +22,7 @@ export const newAskSession = (): number => ++askSeq;
 export function openOrchestrator(text = "", session = newAskSession()): void {
   startTypeahead();
   const s = getDefaultStore();
+  s.set(orchestratorTabAtom, "chief"); // the quick-ask pill, O and Ask Orca open the Chief of Staff (§7.6)
   if (isNarrow()) navigate("/orchestrator"); else s.set(orchestratorOpenAtom, true);
   s.set(orchestratorPrefillAtom, { text, session, seq: ++askSeq });
 }

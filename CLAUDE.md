@@ -906,6 +906,19 @@ workstreams itself. Anthropic's orchestrator-workers pattern, kept to **two laye
 workstreams the board already shows (each worker is a Claude Code session that can spawn its own
 subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
 
+- **Named agents** (`server/agents.ts`, `shared/agents.ts`, docs/design/named-agents-and-memory.md
+  §7, named step `20261025-team-agents`). The orchestrator is the **Chief of Staff** (`chief`): the
+  same workstream, session, queue and directory as before. The **Assistant** (`assistant`, branch
+  `assistant`, `~/.orca/agents/assistant`, Sonnet, no shell) takes inbound channel messages by
+  default (`channel_link.agent`, the link's Agent Select; `@chief` on a work grant goes to the Chief
+  of Staff; a thread an agent opened returns to it). It has no spawn, send, address, merge, move,
+  sweep, archive or Slack post (`agentVerbRefusal`), and escalates with `orca ask chief`. That
+  message is `[from assistant] …`: not the user's, and it keeps an outside grant. Clean worker
+  reports go to `agents.cleanReportsTo` (default `chief`, Finn's call); problems always to `chief`.
+  The runtime is one module over an `AgentRef` (`orchestrator.ts`): each agent its own blob, chain and
+  lease; no name = `chief`, so every old caller and route works. `/api/orchestrator*?agent=`,
+  `/api/orchestrator/agents`. The side panel has a shadcn Tabs row, one per agent; every open path
+  opens the Chief of Staff. `orca agent list|state`; `orca agent add` is the user's alone.
 - **It is not a new runtime.** A wake is the same headless one-shot as every board action, recorded
   as turns under a reserved pointer (`ORCHESTRATOR_REPO` `@orca` / branch `orchestrator` — no git
   repo behind it), so the chat panel, the SSE stream, the queue and Stop all work on it unchanged.

@@ -14,7 +14,7 @@ import { afterDockMotion, dockMoving, noteDockMotion, resetAppStartingForTests }
 import { summarizeSlide } from "@/lib/motionProbe";
 import { SHELL_GAP } from "@/workstream";
 import { SLIDE_MS } from "@/components/SidePanel";
-import { orchestratorOpenAtom, sidebarCollapsedAtom } from "@/lib/atoms";
+import { orchestratorOpenAtom, quickAskOpenAtom, sidebarCollapsedAtom } from "@/lib/atoms";
 import { navExpandedOverrideAtom } from "@/lib/dock";
 import { DOCK_PAGE_MIN_W, NAV_W, PANEL_MIN_W, clampPanelWidth, navRail } from "@/workstream";
 import { RESIZE_STEP } from "@/components/SidePanel";
@@ -43,6 +43,9 @@ afterEach(async () => {
   localStorage.clear();
   const s = getDefaultStore();
   s.set(orchestratorOpenAtom, false);
+  // The reload test's "a" keystroke (it ends the page-load window) opens the quick-ask box: close it,
+  // or a later file in the same process starts with the box open.
+  s.set(quickAskOpenAtom, false);
   s.set(sidebarCollapsedAtom, false);
   s.set(navExpandedOverrideAtom, false);
   Object.defineProperty(window, "innerWidth", { value: prevWidth, configurable: true });

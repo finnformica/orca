@@ -3,10 +3,12 @@
 // batching, wake guards and the workers' follow-up path stay exactly as they are.
 import * as db from "../db";
 import * as orchestrator from "../orchestrator";
+import * as agents from "../agents";
 import * as verbs from "../verbs";
 import type { OrcaConfig } from "../config";
 import * as store from "./store";
 import { repoSlug } from "../github";
+import { CHIEF } from "../../shared/agents";
 import { agentMay, fenceExternal, integrationMetaLine, integrationPlace, integrationUrl, orcaEventText, replyToOf, type Envelope, type SendResult } from "../../shared/integrations";
 
 /** The text an event becomes for an agent: an outside sender's fenced as data, Orca's own as is. */
@@ -31,20 +33,24 @@ export async function orcaEvent(cfg: OrcaConfig, e: Pick<Envelope, "topic" | "sc
   return orcaEventText(e, slug);
 }
 
-/** `inbox.toOrchestrator` (§3.5). An outside sender's message goes in as a message with its grant
+/** `inbox.toOrchestrator` (§3.5): a stored `orchestrator` target is the Chief of Staff. */
+export const toOrchestrator = (cfg: OrcaConfig, e: Envelope): Promise<SendResult> => toAgent(cfg, CHIEF, e);
+
+/** `inbox.toAgent` (§3.5, §7.4). An outside sender's message goes in as a message with its grant
  *  (a separate wake from any other grant, verbs checked server-side); a person resets the wake count,
- *  a script does not. Orca's own event (a subscription of `orca.*` to the orchestrator) is a worker
- *  report: management by exception, batched like the rest. */
-export async function toOrchestrator(cfg: OrcaConfig, e: Envelope): Promise<SendResult> {
+ *  a script does not. Orca's own event (a subscription of `orca.*` to an agent) is a worker report:
+ *  management by exception, batched like the rest. */
+export async function toAgent(cfg: OrcaConfig, agent: string, e: Envelope): Promise<SendResult> {
+  if (agent !== CHIEF && !(await agents.get(agent))) return { ok: false, retryable: false, error: `no agent ${agent} (removed?)` };
   if (e.grant) {
     if (!agentMay(e)) return { ok: false, retryable: false, error: "this message may not wake an agent (notify agent is off, or a machine event under notify)" };
     // A `notify` grant is READ-ONLY: the wake may only tell you about it. No reply target (it may not
     // answer as you), and it does not reset the wake count (a stranger cannot keep it awake).
     const readOnly = e.grant.level === "notify";
     const replyTo = readOnly ? undefined : replyToOf(e);
-    await orchestrator.message(cfg, await withSource(e), e.attachments ?? [], { grant: e.grant, person: !readOnly && Boolean(e.actor ?? e.display?.sender), ...(replyTo ? { replyTo } : {}) });
+    await orchestrator.message(cfg, await withSource(e), e.attachments ?? [], { grant: e.grant, person: !readOnly && Boolean(e.actor ?? e.display?.sender), ...(replyTo ? { replyTo } : {}), agent });
   } else {
-    await orchestrator.deliverReport(cfg, await orcaEvent(cfg, e));
+    await orchestrator.deliverReport(cfg, await orcaEvent(cfg, e), undefined, agent);
   }
   return { ok: true };
 }

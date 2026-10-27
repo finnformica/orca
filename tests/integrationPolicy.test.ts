@@ -156,7 +156,7 @@ describe("the policy in the core", () => {
 
   test("events: trigger wakes as before; record is an Inbox row and no wake; off records nothing", async () => {
     expect(await router.ingest("slack-work", msg("t1"))).toBe("new");
-    expect(await targets("slack:t1")).toEqual(["orchestrator", "web"]);
+    expect(await targets("slack:t1")).toEqual(["agent", "web"]); // the link's agent: the Assistant by default
 
     await store.setPolicy("slack-work", { events: "record" });
     expect(await router.ingest("slack-work", msg("r1"))).toBe("noted"); // no agent answers: open no thread

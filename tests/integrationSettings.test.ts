@@ -13,7 +13,7 @@ import * as store from "../server/integrations/store";
 import type { Adapter } from "../server/integrations/adapter";
 import { CATCH_ALL_POST_ERROR, CATCH_ALL_SEND_ERROR, catchAllPostRefusal, type Capabilities, type OutboundMessage, type SendResult } from "../shared/integrations";
 import {
-  healthLine, healthTone, identityLabel, identityProblem, integrationProblem, linkProblem, parseFilter, span, targetLabel,
+  agentLabel, healthLine, healthTone, identityLabel, identityProblem, integrationProblem, linkAgentValue, linkProblem, parseFilter, span, targetLabel,
   type IntegrationCard,
 } from "../shared/integrationSettings";
 import { native } from "./happydom";
@@ -91,6 +91,15 @@ describe("decisions (pure)", () => {
     expect(targetLabel({ targetKind: "link", targetId: "eng" }, links, [{ id: "w", name: "Work Slack" }])).toBe("#eng · Work Slack");
     expect(targetLabel({ targetKind: "link", targetId: "gone" }, links, [])).toBe("link gone (removed)");
     expect(targetLabel({ targetKind: "orchestrator" }, [], [])).toBe("the orchestrator");
+    expect(targetLabel({ targetKind: "agent", targetId: "assistant" }, [], [])).toBe("agent assistant");
+  });
+
+  test("the link's Agent Select: the link's agent, else the Assistant", () => {
+    const agents = [{ name: "chief", displayName: "Chief of Staff" }, { name: "assistant", displayName: "Assistant" }];
+    expect(linkAgentValue({})).toBe("assistant");
+    expect(linkAgentValue({ agent: "chief" })).toBe("chief");
+    expect(agentLabel("chief", agents)).toBe("Chief of Staff");
+    expect(agentLabel("scout", agents)).toBe("scout");
   });
 });
 
@@ -134,6 +143,23 @@ describe("with Postgres", () => {
     await admin.route("/api/integrations/save", { id: "chat", kind: "fakechat", name: "Team chat", instance: "local", secretRef: "ORCA_SECRET_FAKECHAT" });
     await admin.route("/api/integrations/links/save", { id: "eng", integrationId: "chat", externalId: "R1", label: "#eng", level: "work", repos: ["orca"], requireMention: true });
   };
+
+  test("a link's agent: saved, kept by an edit that omits it, cleared by \"\", refused when unknown; the overview lists the agents", async () => {
+    await connect();
+    expect((await admin.overview("local")).agents).toEqual([{ name: "chief", displayName: "Chief of Staff" }, { name: "assistant", displayName: "Assistant" }]);
+    expect(await store.link("eng")).not.toHaveProperty("agent"); // the default: the Assistant
+    const eng = { id: "eng", integrationId: "chat", externalId: "R1", label: "#eng", level: "work", repos: ["orca"], requireMention: true };
+    await admin.route("/api/integrations/links/save", { ...eng, agent: "chief" });
+    expect(await store.link("eng")).toMatchObject({ agent: "chief" });
+    await admin.route("/api/integrations/links/save", { ...eng, notifyMe: false }); // the Select's value stays
+    expect(await store.link("eng")).toMatchObject({ agent: "chief", notifyMe: false });
+    await admin.route("/api/integrations/links/save", { ...eng, agent: "" });
+    expect(await store.link("eng")).not.toHaveProperty("agent");
+    await expect(admin.route("/api/integrations/links/save", { ...eng, agent: "nobody" })).rejects.toThrow("no agent nobody");
+    // A subscription may target an agent by name, and only a known one.
+    expect(await admin.route("/api/integrations/subscriptions/add", { topicPattern: "orca.pr.*", targetKind: "agent", targetId: "assistant" })).toBeTruthy();
+    await expect(admin.route("/api/integrations/subscriptions/add", { topicPattern: "orca.pr.*", targetKind: "agent", targetId: "nobody" })).rejects.toThrow("agent target");
+  });
 
   test("connect, link, and the overview: kinds from the registry, secret status, links", async () => {
     await expect(admin.route("/api/integrations/save", { id: "x", kind: "fakechat", name: "X", instance: "local", secretRef: "MY_TOKEN" })).rejects.toThrow("ORCA_SECRET_");
