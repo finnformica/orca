@@ -1604,9 +1604,10 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
             </Button>
           </Tip>
           <div className="flex min-w-0 items-center gap-1.5" data-slot="room-title" aria-label={`Messages between ${sideLabel(owner)} and ${sideLabel(room.peer)}`}>
-            <SidePill side={owner} />
+            {/* On a phone the names give way (truncate), never the arrow or "read only". */}
+            <SidePill side={owner} className="shrink" />
             <ArrowLeftRight className="text-muted-foreground size-3.5 shrink-0" aria-hidden data-slot="room-swap" />
-            <SidePill side={room.peer} />
+            <SidePill side={room.peer} className="shrink" />
           </div>
           <span className="text-muted-foreground ml-auto shrink-0 text-[11px]">read only</span>
         </div>

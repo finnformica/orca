@@ -694,6 +694,8 @@ test("the phone's Orca page (390px): the header's agent menu, the @ picker's age
     const title = chat.querySelector('[data-slot="room-title"]')!;
     expect([...title.querySelectorAll('[data-slot="agent-pill"]')].map((e) => e.textContent)).toEqual(["Assistant", "Chief of Staff"]);
     expect(chat.querySelector('[data-slot="room-back"]')!.className).toContain("max-md:size-9");
+    // The names truncate before they reach "read only" on a narrow screen.
+    expect([...title.querySelectorAll<HTMLElement>('[data-slot="agent-pill"]')].every((e) => /(^|\s)shrink(\s|$)/.test(e.className))).toBe(true);
     expect(chat.querySelector('[data-slot="room-log"]')!.textContent).toContain("Inbox: two threads.");
     await click(chat.querySelector('[data-slot="room-back"]')!);
     expect(chat.querySelector('[data-slot="room-log"]')).toBeNull();

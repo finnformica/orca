@@ -436,7 +436,7 @@ function AgentMenu({ team, tab, onTab }: { team: AgentStatus[]; tab: string; onT
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button type="button" variant="ghost" size="sm" data-slot="agent-menu" data-agent={nameOf(chosen)}
-          className="-ml-1 h-7 max-w-full min-w-0 gap-1 rounded-full px-1 max-md:h-9">
+          className="-ml-1 h-7 max-w-full min-w-0 gap-1 rounded-full px-1 focus-visible:ring-inset max-md:h-9">
           <AgentPill name={nameOf(chosen)} label={chosen.displayName ?? nameOf(chosen)} size="md" />
           <ChevronDown className="text-muted-foreground size-3.5 shrink-0" aria-hidden />
         </Button>
