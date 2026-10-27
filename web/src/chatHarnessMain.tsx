@@ -10,7 +10,9 @@
 // message into the composer and pressing Enter leaves it in the "sending…" state; "slash" — a worker
 // chat with a PR, for the composer's `/` menu; "orchestrator" — the orchestrator's chat; "chips" —
 // a sent message with an image and a secret chip, and a composer draft seeded with both (an image
-// drawn here, a secret NAME only), whose send is held open like "sending".
+// drawn here, a secret NAME only), whose send is held open like "sending"; "assistant" — the
+// Assistant's chat with a Chief of Staff room; "worker" — a workstream chat with its orchestrator
+// room (docs/design/agent-rooms.md; `--click '[data-room^="room:"]'` opens the room).
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import "./lib/theme"; // applies the OS theme, so `orca-shot --dark` shows the dark card
@@ -19,10 +21,15 @@ import { ChatPanel } from "@/views/Chat";
 import type { Row } from "@/store";
 import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO } from "@/workstream";
 import type { AgentTurn } from "../../shared/agent";
+import { agentMessage } from "../../shared/agents";
+import { chatOwner, turnRoomMessages } from "../../shared/rooms";
+import { joinMessages, turnOrigin } from "@/workstream";
 
 const view = new URLSearchParams(location.search).get("view") ?? "quote";
 
-const row: Row = view === "orchestrator" ? {
+const row: Row = view === "assistant" ? {
+  repo: ORCHESTRATOR_REPO, hasRemote: false, branch: "assistant", title: "Assistant", prompt: "", lane: "LOCAL", worktreePath: "/state/assistant", agentStatus: "idle",
+} : view === "orchestrator" ? {
   repo: ORCHESTRATOR_REPO, hasRemote: false, branch: ORCHESTRATOR_BRANCH, title: "Orca", prompt: "", lane: "LOCAL", worktreePath: "/state/orchestrator", agentStatus: "idle",
 } : {
   repo: "demo", hasRemote: true, branch: "fix-admin-access", title: "Fix admin access bug",
@@ -62,14 +69,39 @@ if (view === "chips") {
   }));
 }
 
-api.turnPage = async () => ({ turns: [view === "working" ? workingTurn : view === "chips" ? chipsTurn : quoteTurn], older: null });
+// Agent rooms: the seeded chat, and the other chat that holds the rest of the pair's traffic.
+const H = 3600_000, T0 = Date.now() - 3 * H;
+const turn = (id: string, instruction: string, response: string, at: number, extra: Partial<AgentTurn> = {}): AgentTurn =>
+  ({ id, provider: "claude", instruction, prompt: "", response, startedAt: at, finishedAt: at + 40_000, ...extra });
+const assistantTurns = [
+  turn("a-1", "What came in on Discord this morning?", "Two messages in #support: a login question from Ana and a bug report about exports. Both are answered.", T0),
+  turn("a-2", agentMessage("chief", "Summarise the open PRs that wait on Finn, one line each."), "- #457 Named agents: waits on your review.\n- #465 Cloudflare accounts: CI green, ready to merge.", T0 + H),
+  turn("a-3", joinMessages(["Also check the Slack DMs", agentMessage("chief", "and tell me if anyone asked about the deploy.")]), "No DMs since 9:00. Nobody asked about the deploy.", T0 + 2 * H),
+];
+const chiefForAssistant = [turn("c-1", agentMessage("assistant", "Ana asks for admin access on Starcatcher. Please decide or ask Finn."), "I asked Finn in his chat. I tell you when he answers.", T0 + 1.5 * H)];
+const brief = "## Objective\nFix the admin promotion bug for Starcatcher.\n\n## Expected output\nOne PR with a test.\n\n## Boundaries\nDo not touch the billing code.";
+const workerTurns = [
+  turn("w-1", brief, "Fixed: the check compared projects by name. It compares ids now. PR #12 has the test.", T0, { origin: turnOrigin({ runId: "wake-9", messages: ["fix the starcatcher admin bug"], ids: [5], agent: "chief" }), originMessages: [{ id: 5, at: T0 - 60_000, text: "fix the starcatcher admin bug" }] }),
+  turn("w-2", "Also rename the test file to admin.test.ts", "Renamed and pushed.", T0 + 2 * H),
+];
+const report = ["[worker finished] demo/fix-admin-access \"Fix admin access bug\" — done", "Outcome: Fixed the admin promotion check. PR #12.", "Full turn: orca read --run w-1"].join("\n");
+const chiefForWorker = [turn("c-2", report, "Good. I marked PR #12 merge when green.", T0 + 0.5 * H)];
+const roomView = view === "assistant" || view === "worker";
+const own = view === "assistant" ? assistantTurns : workerTurns;
+api.rooms = async () => {
+  const viewer = chatOwner(row.repo, row.branch);
+  const other = view === "assistant" ? chiefForAssistant : chiefForWorker;
+  return { messages: [...own.flatMap((t) => turnRoomMessages(viewer, t, viewer)), ...other.flatMap((t) => turnRoomMessages(chatOwner(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH), t, viewer))] };
+};
+
+api.turnPage = async () => ({ turns: roomView ? own : [view === "working" ? workingTurn : view === "chips" ? chipsTurn : quoteTurn], older: null });
 
 const send = view === "sending" || view === "chips" ? () => new Promise<void>(() => {}) : undefined; // held open forever
 
 createRoot(document.getElementById("root")!).render(
   <div className="bg-background flex min-h-screen items-center justify-center p-6">
     <div className="bg-card text-foreground h-[80vh] w-[90vw] max-w-2xl overflow-hidden rounded-lg border">
-      <ChatPanel row={row} send={send} author={view === "orchestrator" ? "Orca" : undefined} />
+      <ChatPanel row={row} send={send} author={view === "orchestrator" ? "Orca" : view === "assistant" ? "Assistant" : undefined} />
     </div>
   </div>,
 );

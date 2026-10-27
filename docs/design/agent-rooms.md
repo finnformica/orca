@@ -110,12 +110,15 @@ chat is the agent chat that got its `[worker finished]` reports. Each report lin
 - A room bar above the chat log: **Chat**, then one tab for each room ("Chief of Staff", "Orchestrator").
   It shows only when the chat has a room. It uses the shadcn `Tabs`.
 - Each room tab has an unread count: the room messages newer than the last time you opened that
-  tab. The last-open time is per browser (`orca.ui.v1.roomSeen:<chat>`, `persistedAtom`). A room
+  tab. The last-open time is per browser (`orca.ui.v1.roomSeen:<repo>::<branch>`, `usePersisted`). A room
   you never opened counts the messages of the last day.
 - A room view lists its messages oldest first. Each has a head line: sender → recipient, kind and time.
   The body is markdown. A report and a long reply fold behind Show more.
 - A room is read only. The composer stays, and a send goes to the main chat and switches back to it.
-- The main chat leaves out every turn that went to a room. A placeholder line says how many are in rooms.
+- The main chat leaves out a room turn only when the `/api/rooms` answer holds it, or while that
+  answer loads. When the read fails, or the turn is older than the read's bound, the turn stays in
+  the main chat. So a turn is never lost.
+- A brief in a worker's room keeps its origin quote ("Asked by Finn").
 
 ## Limits
 

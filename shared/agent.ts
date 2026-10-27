@@ -149,6 +149,9 @@ export type TurnOrigin = {
   messageIds: number[];
   /** How many messages of the wake were worker reports or Orca events (not referenced). */
   otherCount: number;
+  /** The named agent whose wake it was (shared/rooms.ts: the room's other end). Absent on an older
+   *  origin: that reads as the Chief of Staff, the only agent that may brief a worker. */
+  agent?: string;
 };
 /** One referenced message, joined from its `queued_message` row (`missing`: the row is gone). */
 export type OriginMessage = {

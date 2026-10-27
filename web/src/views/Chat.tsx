@@ -17,6 +17,10 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import type { AgentStep, AgentTurn, OriginMessage, TurnOrigin } from "../../../shared/agent";
+import { agentMessageFrom, isAgentMessage } from "../../../shared/agents";
+import { agentParty, chatOwner, inMainChat, partyLabel, roomUnread, roomsOf, routeLabel, type Party, type Room, type RoomKind, type RoomMessage } from "../../../shared/rooms";
+import { persistedKey, usePersisted } from "@/lib/persisted";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, previewsEnabled, refresh, setCardModel, type Row } from "../store";
 import { ORCHESTRATOR_REPO, RECENT_FULL, TAIL_WINDOW, reportShots, turnHandoffs, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, splitSecretRefs, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, firedLabel, longMessage, newestMessages, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, formatDuration, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, undeliveredQueued, composerHistory, integrationPreview, integrationState, anchorShift, eagerFrom, estimateItemHeight, withNotices, ORIGIN_MISSING, originAskedBy, originAt, originHead, originSkippedText, originTimeLabel } from "../workstream";
@@ -652,7 +656,7 @@ const clockOf = (ms?: number) => (ms ? CLOCK.format(ms) : "");
 // Memoized, with only stable props (the turn, flags, two stable callbacks): a re-render of the panel —
 // every open sets a new composer prefill — must not render the whole thread again (measured: ~60ms per
 // open with a long orchestrator thread at 4× CPU in production, ~250ms in dev).
-const ChatTurn = memo(function ChatTurn({ turn, loadStepsFor, compact, newestSaid, onQuote, author }: { turn: AgentTurn; loadStepsFor?: (turn: AgentTurn) => Promise<AgentStep[]>; compact?: boolean; newestSaid?: boolean; onQuote: (text: string) => void; author?: string }) {
+const ChatTurn = memo(function ChatTurn({ turn, loadStepsFor, compact, newestSaid, onQuote, author, owner }: { turn: AgentTurn; loadStepsFor?: (turn: AgentTurn) => Promise<AgentStep[]>; compact?: boolean; newestSaid?: boolean; onQuote: (text: string) => void; author?: string; owner?: Party }) {
   const loadSteps = loadStepsFor && (() => loadStepsFor(turn));
   const parts = splitMessages(turn.instruction ?? promptInstruction(turn.prompt));
   // A wake that carried your messages AND worker reports: your words in bubbles — one per message you
@@ -662,7 +666,10 @@ const ChatTurn = memo(function ChatTurn({ turn, loadStepsFor, compact, newestSai
   // A scheduled wake the agent set itself (`orca wake`): a system line, never a bubble of yours.
   // A reflection (shared/memory.ts) is Orca's own turn for the agent's memory: a system line too.
   const fired = parts.filter((p) => isScheduledWake(p) || isReflection(p));
-  const said = parts.filter((p) => !isWorkerEvent(p) && !integrationMessage(p) && !isScheduledWake(p) && !isReflection(p));
+  // Another agent's message (`orca ask`) in a wake that also carried yours: its own card with both
+  // ends named, never your bubble. A wake of only such messages is in that agents' room instead.
+  const asks = parts.filter(isAgentMessage);
+  const said = parts.filter((p) => !isWorkerEvent(p) && !integrationMessage(p) && !isScheduledWake(p) && !isReflection(p) && !isAgentMessage(p));
   // Each message's files: an orchestrator wake carries their references in the instruction (one set
   // per message); an agent chat's instruction is the typed text alone, its files read off the prompt.
   const inline = attachmentRefs(turn.instruction ?? "").length > 0;
@@ -688,6 +695,7 @@ const ChatTurn = memo(function ChatTurn({ turn, loadStepsFor, compact, newestSai
           <span className="truncate">{firedLabel(text)}</span>
         </div>
       ))}
+      {asks.map((text, i) => <AgentAsk key={`a${i}`} text={text} to={owner} time={time} />)}
       {outside.length > 0 && (
         <IntegrationCard slot="turn-integration" messages={outside} time={time} state={integrationState(turn)}>
           <IntegrationMessages messages={outside} />
@@ -1039,6 +1047,77 @@ function NoticeWatch({ onNew }: { onNew: () => void }) {
  *  picker and the context ring (ChatControls); `controls` supplies their values when they don't come
  *  from the row's card. Everything else — the turns, steps, attachments, worker reports, queued and
  *  sending messages, scrolling, the composer — is the same on every surface. */
+// ---- agent rooms (shared/rooms.ts, docs/design/agent-rooms.md) ----
+
+const isSeenMap = (v: unknown): v is Record<string, number> =>
+  typeof v === "object" && v !== null && !Array.isArray(v) && Object.values(v).every((n) => typeof n === "number");
+
+/** An agent's message to this chat's agent, shown where it was recorded with its sender and recipient. */
+function AgentAsk({ text, to, time }: { text: string; to?: Party; time: string }) {
+  const from = agentMessageFrom(text);
+  return (
+    <div data-slot="agent-ask" className="mb-2 rounded-md border px-2.5 py-1.5 text-[12px]">
+      <div className="text-muted-foreground mb-0.5 flex items-center gap-1.5 text-[11px]" data-slot="agent-ask-route">
+        <Bot className="size-3.5 shrink-0" aria-hidden />
+        <span className="truncate">{from && to ? routeLabel(agentParty(from), to) : "From another agent"}</span>
+        <span className="ml-auto shrink-0">{time}</span>
+      </div>
+      <ChatMarkdown tone="text-foreground" breaks>{text.replace(/^\[from [a-z][a-z0-9-]*\] /, "")}</ChatMarkdown>
+    </div>
+  );
+}
+
+const KIND_LABEL: Record<RoomKind, string> = { ask: "asked", reply: "replied", brief: "briefed", report: "reported", wake: "wake on reply" };
+
+/** The tabs over a chat with rooms: your chat, then one per agent pair, with its unread count. */
+function RoomBar({ rooms, owner, view, seen, onView, size }: { rooms: Room[]; owner: Party; view: string; seen: Record<string, number>; onView: (v: string) => void; size: "panel" | "page" }) {
+  return (
+    <Tabs value={view} onValueChange={onView} className={cn("gap-0 border-b", size === "page" ? "px-4 md:px-6" : "px-3", "py-1.5")} data-slot="room-bar">
+      <TabsList className="h-8">
+        <TabsTrigger value="chat" className="text-[12px]" data-slot="room-tab" data-room="chat">Chat</TabsTrigger>
+        {rooms.map((r) => {
+          const unread = r.id === view ? 0 : roomUnread(r, seen[r.id]);
+          return (
+            <TabsTrigger key={r.id} value={r.id} className="gap-1.5 text-[12px]" data-slot="room-tab" data-room={r.id}>
+              <span className="truncate">{partyLabel(r.peer)}</span>
+              {unread > 0 && <span data-slot="room-unread" className="bg-geist-blue/15 text-geist-blue rounded-full px-1.5 text-[10px] tabular-nums">{unread}</span>}
+            </TabsTrigger>
+          );
+        })}
+      </TabsList>
+      <span className="sr-only">Rooms of {partyLabel(owner)}</span>
+    </Tabs>
+  );
+}
+
+/** One room: the messages between two agents, oldest first, each with its sender, recipient and kind. */
+function RoomLog({ room, owner, size }: { room: Room; owner: Party; size: "panel" | "page" }) {
+  const log = useRef<HTMLDivElement>(null);
+  // Open at the newest message, like the chat.
+  useLayoutEffect(() => { if (log.current) log.current.scrollTop = log.current.scrollHeight; }, [room.id, room.messages.length]);
+  return (
+    <div ref={log} data-slot="room-log" data-room={room.id}
+      className={cn("min-h-0 flex-1 overflow-y-auto overscroll-contain font-sans text-[13px] leading-relaxed text-neutral-200 [&_.prose]:text-[13px]", size === "page" ? "px-4 py-3 md:px-6" : "p-3")}>
+      <p className="text-muted-foreground mb-3 text-[11px]" data-slot="room-intro">
+        Messages between {partyLabel(room.peer)} and {partyLabel(owner)}. Read only: what you send goes to your chat.
+      </p>
+      {room.messages.map((m) => (
+        <div key={m.id} data-slot="room-message" data-kind={m.kind} className={cn("mb-3 rounded-md border px-2.5 py-1.5", m.from === owner ? "bg-accent/40" : "")}>
+          <div className="text-muted-foreground mb-0.5 flex items-center gap-1.5 text-[11px]">
+            <span className="text-foreground truncate font-medium" data-slot="room-route">{routeLabel(m.from, m.to)}</span>
+            <span className="shrink-0">· {KIND_LABEL[m.kind]}</span>
+            <span className="ml-auto shrink-0">{m.at ? `${dayLabel(m.at)} ${clockOf(m.at)}` : ""}</span>
+          </div>
+          {m.origin && <TurnOriginQuote origin={m.origin} messages={m.originMessages ?? m.origin.messageIds.map((id) => ({ id, missing: true as const }))} />}
+          <Clamp on={m.text.split("\n").length > 8 || m.text.length > 600}>
+            <ChatMarkdown tone="text-foreground" breaks>{m.text}</ChatMarkdown>
+          </Clamp>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function ChatPanel({ row, send, controls, prefill, outbox, author, size = "panel", autoFocus }: {
   row: Row; send?: (text: string, images: File[]) => Promise<void>; controls?: ChatControlsProps;
   /** The orchestrator's chat: its "sending…" messages are the shared outbox (lib/orchestratorOutbox) —
@@ -1073,6 +1152,7 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
   const insertSeq = useRef(0);
   const onQuote = useCallback((text: string) => setInsert({ text: quoteMarkdown(text), seq: ++insertSeq.current }), []);
   const submit = async (text: string, images: File[]) => {
+    setView("chat"); // a room is read only: what you send goes to your chat with the agent
     const id = ++sendSeq.current;
     follow.current = true; // you just spoke: jump to it, wherever you had scrolled
     if (!outbox) setSending((s) => [...s, { id, text }]); // the outbox draws it otherwise
@@ -1141,7 +1221,33 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
       const had = new Map(prev.map((t) => [t.id, t.steps]));
       return mergeLatestPage(prev, page.turns.map((t) => (t.steps || !had.get(t.id) ? t : { ...t, steps: had.get(t.id) })));
     });
+    void loadRooms();
   };
+  // The chat's rooms (shared/rooms.ts): agent-to-agent traffic, read with every fresh page. A failed
+  // read keeps the last good list.
+  const owner = chatOwner(row.repo, row.branch);
+  const [roomMessages, setRoomMessages] = useState<RoomMessage[]>([]);
+  // "loading" until the first answer, then "ok" — or "failed", which keeps every turn in the chat.
+  const [roomsState, setRoomsState] = useState<"loading" | "ok" | "failed">("loading");
+  const loadRooms = async () => {
+    const got = await Promise.resolve().then(() => api.rooms(row.repo, row.branch)).catch(() => null);
+    if (got && Array.isArray(got.messages) && !got.dbUnavailable) { setRoomMessages(got.messages); setRoomsState("ok"); }
+    else setRoomsState((s) => (s === "loading" ? "failed" : s));
+  };
+  // A turn leaves your chat only for a room that holds it (or while the rooms load): when the read
+  // fails, or the turn is older than what it returned, it stays here. Nothing is lost.
+  const roomRuns = useMemo(() => new Set(roomMessages.filter((m) => m.chat === owner).map((m) => m.runId)), [roomMessages, owner]);
+  const inChat = (t: AgentTurn) => inMainChat(owner, t) || roomsState === "failed" || (roomsState === "ok" && !roomRuns.has(t.id));
+  const rooms = useMemo(() => roomsOf(owner, roomMessages), [owner, roomMessages]);
+  const [view, setView] = useState("chat");
+  const room = rooms.find((r) => r.id === view);
+  const [seen, setSeen] = usePersisted<Record<string, number>>(persistedKey("roomSeen", `${row.repo}::${row.branch}`), {}, isSeenMap);
+  // An open room is read: its newest message marks it seen.
+  useEffect(() => {
+    if (!room) return;
+    const last = room.lastAt;
+    if ((seen[room.id] ?? 0) < last) setSeen({ ...seen, [room.id]: last });
+  }, [room, seen, setSeen]);
   /** The page before the oldest loaded turn, put in front of it with the scroll position anchored on
    *  what you were reading (useLayoutEffect below). */
   const loadOlder = async () => {
@@ -1408,7 +1514,7 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
   // Your newest message and the newest answer are never clamped or folded, at any age.
   const newest = newestMessages(turns ?? []);
   const loadStepsFor = useCallback((turn: AgentTurn) => api.turnSteps(row.repo, row.branch, turn.id, 0).then((r) => withoutFinalEcho(r.steps, turn.response)), [row.repo, row.branch]);
-  const chatTurn = (turn: AgentTurn) => <ChatTurn key={turn.id} turn={turn} loadStepsFor={loadStepsFor} compact={(position.get(turn.id) ?? 0) < compactBefore && turn !== newest.answer} newestSaid={turn === newest.said} onQuote={onQuote} author={author} />;
+  const chatTurn = (turn: AgentTurn) => <ChatTurn key={turn.id} turn={turn} loadStepsFor={loadStepsFor} compact={(position.get(turn.id) ?? 0) < compactBefore && turn !== newest.answer} newestSaid={turn === newest.said} onQuote={onQuote} author={author} owner={owner} />;
   // The orchestrator's chat places notices between the mounted turns, by time: only those inside
   // the window's span, so one never sits beside turns it is not between.
   const noticeFrom = range.start > 0 || older ? shownTurns?.[0]?.startedAt ?? -Infinity : -Infinity;
@@ -1446,8 +1552,11 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
     // log-themed: the page's theme (styles.css remaps the dark palette in light mode).
     <div className="log-themed flex h-full flex-col" data-slot="chat-panel" data-size={size}>
       {outbox && <NoticeWatch onNew={loadNotices} />}
+      {rooms.length > 0 && <RoomBar rooms={rooms} owner={owner} view={room ? view : "chat"} seen={seen} onView={setView} size={size} />}
+      {room && <RoomLog room={room} owner={owner} size={size} />}
       <div
         ref={scroller}
+        hidden={Boolean(room)}
         data-slot="chat-log"
         onScroll={onScroll}
         onWheel={() => { seek.current++; }}
@@ -1489,7 +1598,7 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
         )}
         {turns === null ? <ChatSkeleton rows={4} />
           : turns.length === 0 ? <p className="text-neutral-500">No history yet for <span className="text-neutral-300">{row.branch}</span>. Send a message below to start.</p>
-          : <LazyContext.Provider value={lazy}><DraftContext.Provider value={drafts}>{renderTurns(shownTurns!)}</DraftContext.Provider></LazyContext.Provider>}
+          : <LazyContext.Provider value={lazy}><DraftContext.Provider value={drafts}>{renderTurns(shownTurns!.filter(inChat))}</DraftContext.Provider></LazyContext.Provider>}
         {hiddenBelow > 0 && (
           <div className="mb-3 flex justify-center" data-slot="chat-newer">
             <button type="button" onClick={() => setWin(revealBelow(turns ?? [], win))} className="rounded-md border border-neutral-800 px-2 py-0.5 text-[11px] text-neutral-400 hover:text-neutral-200">

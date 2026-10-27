@@ -1714,6 +1714,35 @@ export async function turnPage(repo: string, branch: string, opts: { limit?: num
   });
 }
 
+/** The turns that may hold a chat's room messages (docs/design/agent-rooms.md), newest `limit` of
+ *  each kind: its own turns with a room marker (`own`: an origin for a worker, an agent's message
+ *  or wake for a named agent), and the other `@orca` chats' turns that contain `needle` (its asks,
+ *  or reports about it). A wide net: shared/rooms.ts decides. Oldest first. */
+export async function roomTurns(repo: string, branch: string, own: "origin" | "markers", needle: string, limit = 200): Promise<{ repo: string; branch: string; turn: AgentTurn }[]> {
+  return withRetry(async (sql) => {
+    const mine = own === "origin"
+      ? await sql`
+        SELECT t.*, w.repo AS ws_repo, w.branch AS ws_branch FROM turn t JOIN workstream w ON w.id = t.workstream_id
+        WHERE w.user_id = ${currentUser()} AND w.repo = ${repo} AND w.branch = ${branch} AND w.archived_at IS NULL
+          AND t.structured->'origin' IS NOT NULL
+        ORDER BY t.started_at DESC, t.id DESC LIMIT ${limit}`
+      : await sql`
+        SELECT t.*, w.repo AS ws_repo, w.branch AS ws_branch FROM turn t JOIN workstream w ON w.id = t.workstream_id
+        WHERE w.user_id = ${currentUser()} AND w.repo = ${repo} AND w.branch = ${branch} AND w.archived_at IS NULL
+          AND (position('[from ' in coalesce(t.instruction, '')) > 0 OR position('on agent:' in coalesce(t.instruction, '')) > 0)
+        ORDER BY t.started_at DESC, t.id DESC LIMIT ${limit}`;
+    const theirs = await sql`
+      SELECT t.*, w.repo AS ws_repo, w.branch AS ws_branch FROM turn t JOIN workstream w ON w.id = t.workstream_id
+      WHERE w.user_id = ${currentUser()} AND w.repo = '@orca' AND w.archived_at IS NULL
+        AND NOT (w.repo = ${repo} AND w.branch = ${branch})
+        AND position(${needle} in coalesce(t.instruction, '')) > 0
+      ORDER BY t.started_at DESC, t.id DESC LIMIT ${limit}`;
+    return ([...mine, ...theirs] as (TurnRow & { ws_repo: string; ws_branch: string })[])
+      .map((r) => ({ repo: r.ws_repo, branch: r.ws_branch, turn: toTurn(r) }))
+      .sort((a, b) => (a.turn.startedAt ?? 0) - (b.turn.startedAt ?? 0));
+  });
+}
+
 /** A cursor is `<started_at>~<turn.id>` (the row's surrogate id, not the run id — it is what the
  *  ORDER BY breaks ties on). Anything malformed reads as "no cursor": the newest page. */
 function parseCursor(c?: string): { startedAt: number; id: number } | null {

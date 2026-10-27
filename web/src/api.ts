@@ -11,6 +11,7 @@ import type { ScheduledWake } from "../../server/scheduledWake";
 import type { CoreSelection, Memory, MemoryRevision, ReflectionPass } from "../../shared/memory";
 import type { AgentOutcome, AgentProvider, AgentStep, AgentTurn, TurnCheck } from "../../shared/agent";
 import type { Notification } from "../../shared/notifications";
+import type { RoomMessage } from "../../shared/rooms";
 import type { Conversation, InboxFacets, InboxRow, Notice, ThreadActions, ThreadItem, ThreadLinkRecord } from "../../shared/inbox";
 
 export type InboxPage = { rows: InboxRow[]; facets: InboxFacets; older: string | null; dbUnavailable?: boolean };
@@ -241,6 +242,9 @@ export const api = {
   /** Every screenshot the branch's turns reported, newest turn first (`workstreamShots`). */
   shots: (repo: string, branch: string): Promise<TurnShots[]> =>
     get(`/api/shots${q(repo, `&branch=${encodeURIComponent(branch)}`)}`).then(res),
+  /** The chat's agent-to-agent messages, for its room tabs (shared/rooms.ts, docs/design/agent-rooms.md). */
+  rooms: (repo: string, branch: string): Promise<{ messages: RoomMessage[]; dbUnavailable?: boolean }> =>
+    get(`/api/rooms${q(repo, `&branch=${encodeURIComponent(branch)}`)}`).then(res),
   /** One page of a conversation: the newest `limit` turns, or the `limit` before the `before` cursor
    *  a previous page returned (`older`, null at the conversation's first turn). The chat opens on the
    *  tail and walks back as you scroll up, instead of loading hundreds of turns to show the last few. */
