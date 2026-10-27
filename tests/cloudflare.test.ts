@@ -2,7 +2,7 @@
 // loopback that answers the v4 REST routes and the GraphQL endpoint the module calls, and records
 // every request. No real Cloudflare call; the token and account below are made up.
 import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
-import { CLOUDFLARE_ACCOUNT_ENV, CLOUDFLARE_TOKEN_ENV, PERMISSIONS, auditMatches, cloudflareTool, isOwnWrite, parseSince, recordName } from "../server/cloudflare";
+import { CLOUDFLARE_ACCOUNT_ENV, CLOUDFLARE_TOKEN_ENV, PERMISSIONS, auditMatches, cloudflareTool, configAccountIds, isOwnWrite, parseSince, pickAccount, recordName } from "../server/cloudflare";
 import { scrubbedEnv } from "../server/env";
 import { CLOUDFLARE_VERBS, cloudflareVerb, grantRefusal, verbClass, type Grant } from "../shared/integrations";
 import { orchestratorPrompt } from "../web/src/workstream";
@@ -13,6 +13,14 @@ const R = native.Response; // the fake answers with Bun's Response, not the DOM 
 const TOKEN = "cfat_FAKEtokenFAKEtokenFAKEtokenFAKEtoken123456";
 const ACCT = "acct0000000000000000000000000001";
 const ZONE = "a".repeat(32);
+// A second account on the same token (a studio), and a zone in a third account the token sees only by zone.
+const ACCT2 = "acct0000000000000000000000000022";
+const ZONE2 = "c".repeat(32);
+const ACCOUNTS = [{ id: ACCT, name: "Finn's account" }, { id: ACCT2, name: "SMF Studio" }];
+const ZONES = [
+  { id: ZONE, name: "example.com", account: ACCOUNTS[0]! }, { id: "b".repeat(32), name: "example.org", account: ACCOUNTS[0]! },
+  { id: ZONE2, name: "studio.net", account: ACCOUNTS[1]! }, { id: "d".repeat(32), name: "other.io", account: { id: "acct0000000000000000000000000033", name: "Other" } },
+];
 const NOW = new Date("2026-10-20T12:00:00Z");
 
 type Seen = { method: string; path: string; query: URLSearchParams; auth: string | null; body: unknown };
@@ -35,7 +43,16 @@ beforeAll(() => {
       const body = req.method === "GET" || req.method === "DELETE" ? undefined : await req.json();
       seen.push({ method: req.method, path, query: url.searchParams, auth: req.headers.get("authorization"), body });
       if (deny.has(path)) return R.json({ success: false, errors: [{ code: 10000, message: `Authentication error ${TOKEN}` }], result: null }, { status: 403 });
-      const a = `/accounts/${ACCT}`;
+      const a = `/accounts/${ACCT}`, b = `/accounts/${ACCT2}`;
+      if (path === "/accounts") return ok(ACCOUNTS, { result_info: { total_pages: 1 } });
+      if (path === b) return ok({ id: ACCT2, name: "SMF Studio", created_on: "2025-02-03T00:00:00Z" });
+      if (path === `${b}/workers/scripts` && req.method === "GET") return ok([{ id: "studio-site", created_on: "2026-05-01T00:00:00Z", modified_on: "2026-10-10T00:00:00Z" }]);
+      if (path === `${b}/workers/domains` && req.method === "GET") return ok([]);
+      if (path === `/zones/${ZONE2}/dns_records` && req.method === "GET") return ok([{ id: "s1", type: "A", name: "studio.net", content: "192.0.2.9", proxied: true, ttl: 1 }]
+        .filter((r) => !url.searchParams.get("type") || r.type === url.searchParams.get("type")), { result_info: { total_pages: 1 } });
+      if (path.startsWith(`${b}/`) && req.method === "GET") return ok([], { result_info: { total_pages: 1 } });
+      const zoneById = path.match(/^\/zones\/([0-9a-f]{32})$/);
+      if (zoneById) { const z = ZONES.find((x) => x.id === zoneById[1]); return z ? ok(z) : R.json({ success: false, errors: [{ code: 1001, message: "no zone" }] }, { status: 404 }); }
       if (path === a) return ok({ id: ACCT, name: "Finn's account", created_on: "2024-01-02T03:04:05Z" });
       if (path === `${a}/workers/scripts` && req.method === "GET") return ok([
         { id: "old-api", created_on: "2025-01-01T00:00:00Z", modified_on: "2025-02-01T00:00:00Z" },
@@ -68,9 +85,8 @@ beforeAll(() => {
       if (path === `${a}/r2/buckets`) return ok({ buckets: [{ name: "assets", creation_date: "2025-06-06T00:00:00Z", location: "WEUR" }] });
       if (path === `${a}/d1/database`) return ok([{ uuid: "db-uuid", name: "prod-db", created_at: "2025-07-07T00:00:00Z", num_tables: 4, file_size: 3 * 1024 * 1024 }], { result_info: { total_pages: 1 } });
       if (path === "/zones") {
-        const all = [{ id: ZONE, name: "example.com" }, { id: "b".repeat(32), name: "example.org" }];
-        const name = url.searchParams.get("name");
-        return ok(name ? all.filter((z) => z.name === name) : all, { result_info: { total_pages: 1 } });
+        const name = url.searchParams.get("name"), account = url.searchParams.get("account.id");
+        return ok(ZONES.filter((z) => (!name || z.name === name) && (!account || z.account.id === account)), { result_info: { total_pages: 1 } });
       }
       if (path === `/zones/${ZONE}/workers/routes` && req.method === "GET") return ok(routes);
       if (path === `/zones/${"b".repeat(32)}/workers/routes`) return ok([]);
@@ -129,10 +145,89 @@ const cf = (words: string[], flags: Record<string, unknown> = {}) =>
   cloudflareTool({ ...flags, _: words }, { env: env(), base: `http://127.0.0.1:${server.port}/client/v4`, now: () => NOW, log: (l) => logs.push(l), by: "test", onWrite: (targets, at) => wrote.push({ targets, at }) });
 const writes = () => seen.filter((s) => s.method !== "GET" && s.path !== "/graphql");
 
-test("a missing token or account id names both variables and the doc", async () => {
-  await expect(cloudflareTool({ _: ["workers"] }, { env: {} })).rejects.toThrow(/ORCA_SECRET_CLOUDFLARE and ORCA_CLOUDFLARE_ACCOUNT_ID.*docs\/integrations\/cloudflare\.md/);
-  await expect(cloudflareTool({ _: ["workers"] }, { env: { [CLOUDFLARE_TOKEN_ENV]: TOKEN } })).rejects.toThrow(/connect the Cloudflare integration.*or set ORCA_CLOUDFLARE_ACCOUNT_ID and restart/);
-  expect(await cloudflareTool({ _: [] }, { env: {} })).toContain("orca cloudflare account | workers");
+test("a missing token names the variable and the doc; an account id is optional", async () => {
+  await expect(cloudflareTool({ _: ["workers"] }, { env: {} })).rejects.toThrow(/connect the Cloudflare integration.*or set ORCA_SECRET_CLOUDFLARE and restart.*docs\/integrations\/cloudflare\.md/);
+  expect(await cloudflareTool({ _: [] }, { env: {} })).toContain("orca cloudflare [--cf-account <name or id>] account | workers");
+});
+
+// ── One connection, many accounts ──
+const many = (words: string[], flags: Record<string, unknown> = {}, o: { accounts?: string[] } = {}) =>
+  cloudflareTool({ ...flags, _: words }, { env: { [CLOUDFLARE_TOKEN_ENV]: TOKEN }, ...o, base: `http://127.0.0.1:${server.port}/client/v4`, now: () => NOW, log: (l) => logs.push(l), by: "test" });
+
+test("account ids: accountIds wins, accountId may be a list, none = every account; --cf-account matches a name or an id", () => {
+  expect(configAccountIds({ accountId: ACCT })).toEqual([ACCT]);
+  expect(configAccountIds({ accountId: ` ${ACCT}, ${ACCT2} ` })).toEqual([ACCT, ACCT2]);
+  expect(configAccountIds({ accountId: ACCT, accountIds: [ACCT2] })).toEqual([ACCT2]);
+  expect(configAccountIds({ accountId: "", accountIds: "" })).toEqual([]);
+  expect(configAccountIds(undefined)).toEqual([]);
+  expect(pickAccount(ACCOUNTS, "smf studio")?.id).toBe(ACCT2);
+  expect(pickAccount(ACCOUNTS, ACCT.toUpperCase())?.id).toBe(ACCT);
+  expect(pickAccount(ACCOUNTS, "nobody")).toBeUndefined();
+});
+
+test("one account named: no GET /accounts, no account label, no flag needed (the old config)", async () => {
+  seen = [];
+  const out = await cf(["workers"]);
+  expect(out.startsWith("2 Workers")).toBe(true);
+  expect(seen.some((x) => x.path === "/accounts")).toBe(false);
+  expect(await cf(["workers"], { "cf-account": "Finn's account" })).toContain("edge-api"); // a name, read once from GET /accounts
+  await expect(cf(["workers"], { "cf-account": "SMF Studio" })).rejects.toThrow(/"SMF Studio" is not an account of this connection/);
+});
+
+test("no account named: list reads show every account under its name; --cf-account narrows to one", async () => {
+  const out = await many(["workers"]);
+  expect(out).toContain(`Account Finn's account (${ACCT}):\n2 Workers`);
+  expect(out).toContain(`Account SMF Studio (${ACCT2}):\n1 Workers`);
+  expect(out.indexOf("edge-api")).toBeLessThan(out.indexOf("studio-site"));
+  const zones = await many(["zones"]);
+  expect(zones).toMatch(/Account SMF Studio[^\n]*\n1 zones:\n[\s\S]*studio\.net/);
+  expect(zones.split("SMF Studio")[0]).not.toContain("studio.net");
+  expect(await many(["account"])).toBe(`Account Finn's account (${ACCT}), created 2024-01-02 03:04.\nAccount SMF Studio (${ACCT2}), created 2025-02-03 00:00.`);
+  // One account's refusal stays in its section.
+  deny.add(`/accounts/${ACCT}/audit_logs`);
+  const audit = await many(["audit"]);
+  expect(audit).toContain('the token lacks the "Account Audit Logs Read" permission');
+  expect(audit).toContain(`Account SMF Studio (${ACCT2}):\nNo audit-log entries`);
+  // The flag: by name or id, no label; an unknown one names the accounts.
+  const studio = await many(["workers"], { "cf-account": "smf studio" });
+  expect(studio).toBe(studio.replace(/^Account /, "")); // no label
+  expect(studio).toContain("studio-site");
+  expect(studio).not.toContain("edge-api");
+  expect(await many(["workers"], { "cf-account": ACCT })).not.toContain("studio-site");
+  await expect(many(["workers"], { "cf-account": "nope" })).rejects.toThrow(`Its accounts: Finn's account (${ACCT}), SMF Studio (${ACCT2})`);
+  // A config list covers exactly those accounts, named from GET /accounts.
+  expect(await many(["workers"], {}, { accounts: [ACCT2, ACCT] })).toMatch(/^Account SMF Studio/);
+});
+
+test("no account named: a Worker read finds its account; rollback, delete and domain remove refuse and name the accounts", async () => {
+  const dep = await many(["deployments", "edge-api"]);
+  expect(dep).toStartWith(`Account Finn's account (${ACCT}):\n2 deployments of edge-api`);
+  await expect(many(["versions", "ghost"])).rejects.toThrow('no Worker "ghost" in the accounts of this connection');
+  seen = [];
+  for (const [words, flags] of [[["rollback", "edge-api"], { version: "ver-1", confirm: "" }], [["delete", "edge-api"], { confirm: "" }], [["domain", "remove"], { hostname: "api.example.com", confirm: "" }]] as const) {
+    await expect(many([...words], flags)).rejects.toThrow(`this connection covers 2 Cloudflare accounts: Finn's account (${ACCT}), SMF Studio (${ACCT2}). Pick one for "${words[0] === "domain" ? "domain remove" : words[0]}" with --cf-account <name or id>`);
+  }
+  expect(writes()).toEqual([]);
+  expect(await many(["rollback", "edge-api"], { version: "ver-1", "cf-account": "Finn's account" })).toContain("Dry run, nothing changed. Roll back Worker edge-api");
+  await expect(many(["rollback"])).rejects.toThrow("orca cloudflare rollback <worker> --version"); // the usage first
+});
+
+test("no account named: zone verbs find the account from the zone, by name or id; a zone of another account is refused", async () => {
+  const dns = await many(["dns"], { zone: "studio.net" });
+  expect(dns).toBe(`Account SMF Studio (${ACCT2}):\n1 DNS records on studio.net:\nTYPE  NAME        CONTENT    PROXY    TTL   COMMENT\nA     studio.net  192.0.2.9  proxied  auto`);
+  expect(await many(["dns"], { zone: ZONE2 })).toContain("1 DNS records on");
+  expect(await many(["routes"], { zone: "example.com" })).toMatch(/^Account Finn's account[\s\S]*api\.example\.com\/\*/);
+  seen = [];
+  const plan = await many(["dns", "add"], { zone: "studio.net", type: "TXT", name: "@", content: "hello" });
+  expect(plan).toBe(`Account SMF Studio (${ACCT2}):\nDry run, nothing changed. Add DNS record TXT studio.net → hello (dns only, TTL auto) on zone studio.net.\nRun it again with --confirm to do it.`);
+  expect(writes()).toEqual([]);
+  await expect(many(["dns"], { zone: "other.io" })).rejects.toThrow(`zone other.io is in account Other, which this connection does not cover (Finn's account (${ACCT}), SMF Studio (${ACCT2}))`);
+  await expect(many(["dns"], { zone: "nope.com" })).rejects.toThrow('no zone "nope.com" in the accounts of this connection');
+  await expect(many(["dns", "add"], {})).rejects.toThrow("orca cloudflare dns add --zone"); // the usage first
+  // domain add with no --zone: the account whose zone holds the hostname.
+  const attach = await many(["domain", "add"], { worker: "studio-site", hostname: "www.studio.net" });
+  expect(attach).toContain(`Account SMF Studio (${ACCT2}):\nDry run, nothing changed. Attach custom domain www.studio.net → Worker studio-site on zone studio.net.`);
+  await expect(many(["domain", "add"], { worker: "studio-site", hostname: "www.nowhere.dev" })).rejects.toThrow("no zone in the accounts of this connection holds www.nowhere.dev");
 });
 
 test("workers list with created and modified dates, newest change first, with the bearer token", async () => {
