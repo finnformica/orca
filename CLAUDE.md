@@ -1571,7 +1571,11 @@ serves it. Workers get `bin/worker/` on PATH (`agentEnv` — not `bin/`, whose `
 orchestrator's) and `orca-shot <url> [--viewport 390x844] [--dark] …`, which prints `shot: <path>`;
 every worker prompt says it is the ONLY way to take a screenshot (`SCREENSHOTS`), and shot paths in a
 reply ride the worker report (`reportedShots` in `workerEvent`). `--type <text>` types into the
-focused field.
+focused field. **Remote PR previews** (`server/remotePreview.ts`, rules in `shared/remotePreview.ts`,
+`docs/remote-previews.md`): a repo's `remotePreview` (`github-deployment` | `github-check-or-comment`
+| `template`, optional `login` by secret NAME) lets `orca-shot --preview [/path] [--pr N]` shoot the
+preview of the PR's HEAD commit (never an older commit's URL; the worktree must be pushed), after a
+wait and a login, through the same queue. A form login's cookies stay in memory per run + origin.
 **Heavy commands** (`server/heavy.ts`): agents ran Playwright, Jest, eslint and builds at once and
 OOM-killed each other in `orca-agents.slice`. Finn removed the slice's CPUQuota: this queue is the
 ONLY CPU control, so it must see every heavy task. A box-wide slot queue, like `orca-shot`'s but with
