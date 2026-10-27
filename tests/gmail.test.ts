@@ -29,6 +29,7 @@ import * as orchestrator from "../server/orchestrator";
 import { grantRefusal, integrationAccessRefusal } from "../shared/integrations";
 import { connectOriginProblem } from "../shared/integrationSettings";
 import { native } from "./happydom";
+import worker from "../site/src/worker";
 import { freshSchema, type TestDb } from "./pg";
 
 const dom = { fetch: globalThis.fetch, Response: globalThis.Response };
@@ -63,7 +64,7 @@ type FakeMsg = { id: string; threadId: string; labelIds: string[]; raw: string; 
 /** A fake Google: the OAuth token + revoke endpoints and the Gmail API, enough for the adapter. */
 function fakeGoogle() {
   const st = {
-    codes: new Map<string, { challenge: string; scope: string }>(),
+    codes: new Map<string, { challenge: string; scope: string; redirectUri: string }>(),
     refresh: new Map<string, { revoked: boolean; scope: string }>(),
     access: new Set<string>(),
     messages: [] as FakeMsg[],
@@ -87,7 +88,9 @@ function fakeGoogle() {
         if (f.get("client_id") !== "cid" || f.get("client_secret") !== "client-secret") return Response.json({ error: "invalid_client" }, { status: 401 });
         if (f.get("grant_type") === "authorization_code") {
           const c = st.codes.get(f.get("code") ?? "");
-          if (!c || s256(f.get("code_verifier") ?? "") !== c.challenge || !f.get("redirect_uri")?.endsWith(CALLBACK_PATH)) return Response.json({ error: "invalid_grant", error_description: "Bad code or verifier" }, { status: 400 });
+          // Like Google: the token exchange's redirect_uri must be the exact one the consent request named.
+          st.log.push(`redirect_uri ${f.get("redirect_uri")}`);
+          if (!c || s256(f.get("code_verifier") ?? "") !== c.challenge || f.get("redirect_uri") !== c.redirectUri) return Response.json({ error: "invalid_grant", error_description: "Bad code or verifier" }, { status: 400 });
           st.codes.delete(f.get("code")!);
           const at = `at-${++st.n}`; st.access.add(at);
           st.refresh.set(st.nextRefresh, { revoked: false, scope: c.scope });
@@ -171,7 +174,7 @@ function fakeGoogle() {
     consent(url: string, scope?: string): URLSearchParams {
       const u = new URL(url);
       const code = `code-${++st.n}`;
-      st.codes.set(code, { challenge: u.searchParams.get("code_challenge")!, scope: scope ?? u.searchParams.get("scope")! });
+      st.codes.set(code, { challenge: u.searchParams.get("code_challenge")!, scope: scope ?? u.searchParams.get("scope")!, redirectUri: u.searchParams.get("redirect_uri")! });
       return new URLSearchParams({ code, state: u.searchParams.get("state")!, scope: u.searchParams.get("scope")! });
     },
     expireAccessTokens() { st.access.clear(); },
@@ -580,6 +583,36 @@ describe("against a fake Google", () => {
     expect((await admin.overview()).integrations.find((c) => c.id === "ana-studio.test")!.oauth).toMatchObject({ account: "ana@studio.test" });
     // orca gmail still reads with the server's client.
     expect(await gmailTool({ _: ["search", "anything"], account: "Studio" } as never)).toContain("Gmail account Studio (ana-studio.test)");
+  });
+
+  test("a public redirectOrigin (site/'s bounce): Google gets the public URI at consent and token exchange; the bounced callback passes the state check", async () => {
+    // The OAuth app's redirect domain is public (site/ on Cloudflare); the box is on the tailnet only.
+    const PUBLIC = "https://orca.example.com";
+    const BOX = "https://box.example.ts.net";
+    const google = { authUrl: `${g.base}/auth`, tokenUrl: `${g.base}/token`, apiUrl: g.base, revokeUrl: `${g.base}/revoke` };
+    const doc = { repos: [{ name: "app", repoPath: "/tmp/app", worktreeRoot: "/tmp/app/.worktrees", baseBranch: "main" }], portRange: [30000, 40000], staleHours: 24 };
+    await saveConfigDocument(parseConfigDocument({ ...doc, googleOAuth: { ...google, clientId: "cid", redirectOrigin: `${PUBLIC}/` } }).config!);
+    invalidateConfig();
+    expect((await admin.overview()).kinds.find((k) => k.kind === "gmail")!.oauth!.setup).toBeUndefined();
+    expect(await oauth.serverSetup()).toMatchObject({ fixedOrigin: true });
+
+    // Start from the box's own page: the redirect URI is the public origin, not the page's.
+    const { url, redirectUri } = await oauth.begin(undefined, BOX);
+    expect(redirectUri).toBe(`${PUBLIC}${CALLBACK_PATH}`);
+    expect(new URL(url).searchParams.get("redirect_uri")).toBe(`${PUBLIC}${CALLBACK_PATH}`);
+
+    // Google sends the browser to the public callback; the Worker bounces it to the box, query kept.
+    const back = g.consent(url);
+    const bounce = await worker.fetch(new Request(`${PUBLIC}${CALLBACK_PATH}?${back}`), { ORCA_ORIGIN: BOX });
+    expect(bounce.status).toBe(302);
+    const arrived = new URL(bounce.headers.get("location")!);
+    expect(arrived.origin + arrived.pathname).toBe(`${BOX}${CALLBACK_PATH}`);
+
+    // The box's callback: the state check passes, and the token exchange names the public URI.
+    const r = await oauth.finish(arrived.searchParams);
+    expect(r).toMatchObject({ id: "finn-example.com", account: ACCOUNT, added: true });
+    expect(g.st.log).toContain(`redirect_uri ${PUBLIC}${CALLBACK_PATH}`);
+    expect(g.st.log.filter((l) => l.startsWith("redirect_uri "))).toEqual([`redirect_uri ${PUBLIC}${CALLBACK_PATH}`]);
   });
 
   test("the account id: the address with @ as -, made unique; the client: a row's own wins over the server's, then the env", () => {

@@ -1,0 +1,122 @@
+/* The public Orca page: dark, black and white, centred, no framework, no script, no external requests.
+   The fish in the background are ASCII sprites moved by CSS only (style after asciiquarium). */
+@font-face {
+  font-family: "Unbounded";
+  src: url("/fonts/unbounded-700.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  min-height: 100vh;
+  min-height: 100dvh;
+  background: #000;
+  color: #fff;
+  font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+a { color: #fff; text-underline-offset: 3px; }
+a:hover { text-decoration-thickness: 2px; }
+
+.home {
+  position: relative;
+  z-index: 1;
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 28px;
+  padding: 32px 24px;
+  text-align: center;
+}
+.logo { width: 112px; height: 112px; display: block; }
+.wordmark {
+  margin: 0;
+  font-family: "Unbounded", ui-sans-serif, system-ui, sans-serif;
+  font-weight: 700;
+  font-size: clamp(56px, 14vw, 128px);
+  line-height: 1;
+  letter-spacing: -0.04em;
+}
+.links { display: flex; gap: 28px; font-size: 15px; }
+
+.doc { position: relative; z-index: 1; max-width: 680px; margin: 0 auto; padding: 48px 24px 72px; }
+.doc .brand { display: inline-flex; align-items: center; gap: 12px; margin-bottom: 40px; text-decoration: none; }
+.doc .brand svg { width: 32px; height: 32px; }
+.doc .brand span { font-family: "Unbounded", ui-sans-serif, system-ui, sans-serif; font-weight: 700; font-size: 22px; letter-spacing: -0.03em; }
+.doc h1 { font-size: 32px; line-height: 1.2; margin: 0 0 8px; }
+.doc h2 { font-size: 19px; margin: 32px 0 8px; }
+.doc .date { opacity: 0.6; margin: 0 0 24px; font-size: 14px; }
+.doc ul { padding-left: 22px; }
+.doc li { margin: 4px 0; }
+.doc footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid rgba(255, 255, 255, 0.3); display: flex; gap: 24px; font-size: 14px; }
+
+/* ── The sea: a fixed layer behind the page. Each .swim crosses the screen on a long linear loop; its
+   .bob rises and falls a little. Negative delays put every fish mid-way when the page opens. */
+.sea {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+  color: #fff;
+  opacity: 0.32;
+}
+.doc-page .sea { opacity: 0.15; }
+.swim { position: absolute; left: 0; will-change: transform; }
+.swim.r { animation: swim-r var(--t, 60s) linear var(--d, 0s) infinite; }
+.swim.l { animation: swim-l var(--t, 60s) linear var(--d, 0s) infinite; }
+.bob {
+  margin: 0;
+  font: 12px/1.15 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre;
+  animation: bob var(--b, 5s) ease-in-out infinite alternate;
+}
+@keyframes swim-r { from { transform: translateX(-40ch); } to { transform: translateX(100vw); } }
+@keyframes swim-l { from { transform: translateX(100vw); } to { transform: translateX(-40ch); } }
+@keyframes bob { from { transform: translateY(-6px); } to { transform: translateY(6px); } }
+
+.f1 { top: 14%; --t: 78s; --b: 6s; --d: -20s; }
+.f2 { top: 24%; --t: 54s; --b: 4s; --d: -41s; }
+.f3 { top: 38%; --t: 66s; --b: 5s; --d: -9s; }
+.f4 { top: 57%; --t: 72s; --b: 7s; --d: -50s; }
+.f5 { top: 66%; --t: 44s; --b: 3s; --d: -30s; }
+.f6 { top: 9%;  --t: 50s; --b: 4s; --d: -12s; }
+.f7 { top: 46%; --t: 58s; --b: 5s; --d: -36s; }
+.f8 { top: 78%; --t: 120s; --b: 8s; --d: -70s; }
+.f8 .bob { font-size: 13px; }
+
+.bubble {
+  position: absolute;
+  bottom: -2em;
+  font: 12px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  animation: rise var(--t, 24s) linear var(--d, 0s) infinite;
+}
+@keyframes rise {
+  0% { transform: translate(0, 0); opacity: 0; }
+  10% { opacity: 1; }
+  50% { transform: translate(8px, -55vh); }
+  90% { opacity: 1; }
+  100% { transform: translate(-4px, -110vh); opacity: 0; }
+}
+.b1 { left: 12%; --t: 26s; --d: -4s; }
+.b2 { left: 23%; --t: 32s; --d: -19s; }
+.b3 { left: 47%; --t: 22s; --d: -11s; }
+.b4 { left: 68%; --t: 30s; --d: -25s; }
+.b5 { left: 81%; --t: 24s; --d: -7s; }
+.b6 { left: 91%; --t: 34s; --d: -15s; }
+
+/* A phone: fewer fish, so the screen stays calm. */
+@media (max-width: 600px) {
+  .f3, .f6, .b2, .b5 { display: none; }
+  .f8 .bob { font-size: 10px; }
+}
+/* Reduced motion: the fish stay still where they are. */
+@media (prefers-reduced-motion: reduce) {
+  .swim, .bob, .bubble { animation-play-state: paused; }
+}

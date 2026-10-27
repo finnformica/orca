@@ -8,7 +8,9 @@
 // both the user's own bubble and the agent's reply; "working" — a live turn with no response yet,
 // for the spinner on its status line; "sending" — a `send` prop that never resolves, so typing a
 // message into the composer and pressing Enter leaves it in the "sending…" state; "slash" — a worker
-// chat with a PR, for the composer's `/` menu; "orchestrator" — the orchestrator's chat.
+// chat with a PR, for the composer's `/` menu; "orchestrator" — the orchestrator's chat; "chips" —
+// a sent message with an image and a secret chip, and a composer draft seeded with both (an image
+// drawn here, a secret NAME only), whose send is held open like "sending".
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import "./lib/theme"; // applies the OS theme, so `orca-shot --dark` shows the dark card
@@ -40,9 +42,29 @@ const workingTurn: AgentTurn = {
   id: "run-2", provider: "claude", instruction: "fix the Starcatcher permission bug", prompt: "", response: "",
 };
 
-api.turnPage = async () => ({ turns: [view === "working" ? workingTurn : quoteTurn], older: null });
+const SHOT_ID = "00000000-0000-4000-8000-000000000001";
+const chipsTurn: AgentTurn = {
+  id: "run-3", provider: "claude", prompt: "", finishedAt: Date.now(),
+  instruction: "deploy the worker with this key\n\n[secret chat/stripe_key stored]",
+  attachments: [{ id: SHOT_ID, name: "error.png" }],
+  response: "Deployed. The worker reads the key from the secret store.",
+};
+if (view === "chips") {
+  const c = document.createElement("canvas");
+  c.width = 160; c.height = 120;
+  const g = c.getContext("2d")!;
+  g.fillStyle = "#0070f3"; g.fillRect(0, 0, 160, 120);
+  g.fillStyle = "#fff"; g.font = "bold 28px sans-serif"; g.fillText("shot", 46, 70);
+  localStorage.setItem(`orca.chat.${row.repo}::${row.branch}`, JSON.stringify({
+    text: "use this key for the staging deploy",
+    images: [{ name: "screen.png", type: "image/png", dataUrl: c.toDataURL("image/png") }],
+    secrets: ["chat/stripe_key"],
+  }));
+}
 
-const send = view === "sending" ? () => new Promise<void>(() => {}) : undefined; // held open forever
+api.turnPage = async () => ({ turns: [view === "working" ? workingTurn : view === "chips" ? chipsTurn : quoteTurn], older: null });
+
+const send = view === "sending" || view === "chips" ? () => new Promise<void>(() => {}) : undefined; // held open forever
 
 createRoot(document.getElementById("root")!).render(
   <div className="bg-background flex min-h-screen items-center justify-center p-6">
