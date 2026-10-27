@@ -78,7 +78,9 @@ export function ChatComposer({
   // A one-shot insertion from outside the box (a message's Quote button): appended after whatever
   // draft is already there — never replacing it — then the box is focused with the caret at the
   // end. Unlike `prefill`, there is no "session" to group repeats: every `seq` is its own append.
-  insert?: { text: string; seq: number } | null;
+  // `secrets` (references) and `files` come back as chips beside the ones already in the box (a
+  // cancelled queued message restores its text and every chip).
+  insert?: { text: string; seq: number; secrets?: string[]; files?: File[] } | null;
   // The repo this conversation is about (a workstream's, the new-draft box's selection). The @ PR
   // picker inserts a bare `#123` for that repo's PRs and `repo#123` for any other's.
   repo?: string;
@@ -248,6 +250,9 @@ export function ChatComposer({
   // session bookkeeping (a quote is always a fresh, one-off append, never a continued typeahead).
   useLayoutEffect(() => {
     if (!insert) return;
+    if (insert.secrets?.length) setSecrets([...latestSecrets.current, ...insert.secrets.filter((r) => !latestSecrets.current.includes(r))]);
+    if (insert.files?.length) setImages((prev) => [...prev, ...insert.files!]);
+    if (!insert.text) { textRef.current?.focus(); return; }
     const next = appendQuote(latest.current, insert.text);
     pendingCaret.current = next.length; // the [value] layout effect below focuses and places it
     pendingFocus.current = true; // a Quote click is a direct tap, on any device

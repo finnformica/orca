@@ -581,6 +581,34 @@ test("an instruction held mid-run shows as queued, and can be cancelled", async 
 
 // --- Cancel puts the message's text back in the composer (never just deletes it) --------------
 
+test("cancelling restores the composer exactly: the text, a secret chip, and image and file chips", async () => {
+  const img = "88888888-8888-4888-8888-888888888888", doc = "99999999-9999-4999-8999-999999999999";
+  apiFake.turnsData.set("r::feat", [{ id: "run-1", provider: "claude", prompt: "big refactor", startedAt: 1 }]);
+  apiFake.queuedData.set("feat", [{
+    id: 9, repo: "r", branch: "feat", createdAt: 2,
+    instruction: withAttachments("deploy with\n\n[secret chat/stripe_key stored]", [`orca-attachment://${img}/shot.png`, `orca-attachment://${doc}/notes.txt`]),
+    attachments: [`orca-attachment://${img}/shot.png`, `orca-attachment://${doc}/notes.txt`],
+  }]);
+  await mount({ ...base, agentStatus: "running" });
+
+  const cancel = [...container!.querySelectorAll("button")].find((b) => b.textContent === "cancel")!;
+  await act(async () => { cancel.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); });
+
+  const box = container!.querySelector("textarea")!;
+  expect(box.value).toBe("deploy with"); // the reference is a chip again, not text
+  expect(apiFake.attachmentFileCalls).toEqual([img, doc]);
+  const chips = [...container!.querySelectorAll<HTMLElement>('[data-slot="chat-composer-attachments"] [data-slot="composer-attachment"]')];
+  expect(chips.map((c) => c.dataset.attachment)).toEqual(["image", "file", "secret"]);
+  expect(chips[1]!.textContent).toBe("notes.txt");
+  expect(chips[2]!.textContent).toBe("stripe_key");
+  expect(container!.querySelector('[data-slot="chat-queued"]')).toBeNull();
+  // The restored chips are in the draft too. Wait for its async save, so it cannot land in the next test.
+  const draft = () => JSON.parse(localStorage.getItem("orca.chat.r::feat") ?? "{}") as { images?: unknown[]; secrets?: string[] };
+  for (let i = 0; i < 50 && (draft().images?.length ?? 0) < 2; i++) await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+  expect(draft().images).toHaveLength(2);
+  expect(draft().secrets).toEqual(["chat/stripe_key"]);
+});
+
 test("cancelling with an empty composer fills it with the queued text, caret at the end", async () => {
   apiFake.turnsData.set("r::feat", [{ id: "run-1", provider: "claude", prompt: "big refactor", startedAt: 1 }]);
   apiFake.queuedData.set("feat", [

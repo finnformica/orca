@@ -1069,7 +1069,7 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
   // A message's Quote button: append it to the composer as a blockquote, without losing whatever
   // draft is already there. `insertSeq` makes every click its own event even quoting the same text
   // twice in a row.
-  const [insert, setInsert] = useState<{ text: string; seq: number } | null>(null);
+  const [insert, setInsert] = useState<{ text: string; seq: number; secrets?: string[]; files?: File[] } | null>(null);
   const insertSeq = useRef(0);
   const onQuote = useCallback((text: string) => setInsert({ text: quoteMarkdown(text), seq: ++insertSeq.current }), []);
   const submit = async (text: string, images: File[]) => {
@@ -1287,20 +1287,22 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
     const seq = ++queuedSeq.current;
     return api.queued(row.repo, row.branch).then((q) => { if (seq === queuedSeq.current) setQueued(q); }).catch(() => {});
   };
-  // Cancel puts the message's text back in the composer — the SAME append-after-draft, caret-at-end
-  // mechanism as Quote (ChatComposer's `insert`), raw rather than as a blockquote — so a cancelled
-  // message is never just lost. Only once the cancel call itself has succeeded: a failed cancel must
-  // leave both the queue and the composer exactly as they were.
-  // Its attachments are not restored: the composer only takes freshly picked/pasted/dropped `File`s
-  // (images), with no way for anything outside it to hand it a file already on the bridge — so a
-  // cancelled message's attachments are lost, as before.
+  // Cancel puts the message back in the composer as it was sent — the SAME append-after-draft,
+  // caret-at-end mechanism as Quote (ChatComposer's `insert`), raw rather than as a blockquote — so a
+  // cancelled message is never just lost. Its secret references come back as secret chips, and its
+  // files, read back from the bridge as Files, as image and file chips (a send uploads them again).
+  // Only once the cancel call itself has succeeded: a failed cancel must leave both the queue and the
+  // composer exactly as they were. A file that cannot be read back is left out.
   const onCancelQueued = async (m: QueuedMessage) => {
     try {
       await api.cancelQueued(row.repo, m.id);
     } catch {
       return;
     }
-    setInsert({ text: withoutAttachmentList(m.instruction), seq: ++insertSeq.current });
+    const { text, refs: secrets } = splitSecretRefs(withoutAttachmentList(m.instruction));
+    const read = await Promise.allSettled(attachmentRefs([...m.attachments ?? [], m.instruction].join("\n")).map((f) => api.attachmentFile(f.id, f.name)));
+    const files = read.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+    setInsert({ text, secrets, files, seq: ++insertSeq.current });
     await loadQueued();
   };
   // The context ring's Compact button. `compacting` is the compact run's id ("" while the request is
