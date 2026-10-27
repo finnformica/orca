@@ -1,12 +1,12 @@
 import { useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { ArrowUp, FileText, GitBranch, KeyRound, Loader2, Mic, Paperclip, Square, X } from "lucide-react";
+import { ArrowUp, GitBranch, KeyRound, Loader2, Mic, Paperclip, Square, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { ExpandableImage } from "@/components/ExpandableImage";
+import { ComposerAttachment } from "@/components/ComposerAttachment";
 import { Shortcut } from "@/components/ui/kbd";
 import { Tip } from "@/components/ui/tip";
 import { usePrRefs, useVoiceInput, useWorkstreamRefs } from "@/store";
-import { NO_WALK, appendQuote, filterMentions, filterSlashCommands, historyKey, historyStep, insertPrRef, listContinuation, mentionLabel, prTrigger, removeSlashQuery, slashActive, slashStep, slashTrigger, type HistoryWalk, type MentionRef } from "@/workstream";
+import { NO_WALK, appendQuote, filterMentions, filterSlashCommands, historyKey, historyStep, insertPrRef, listContinuation, mentionLabel, prTrigger, removeSlashQuery, slashActive, slashStep, slashTrigger, withSecretRefs, type HistoryWalk, type MentionRef } from "@/workstream";
 import { lineVisualRow, scrollCaretIntoView } from "@/lib/caretRow";
 import { cn, PipContext } from "@/lib/utils";
 import { clearDraft, draftFiles, loadDraft, saveDraft } from "@/lib/composerDraft";
@@ -78,7 +78,9 @@ export function ChatComposer({
   // A one-shot insertion from outside the box (a message's Quote button): appended after whatever
   // draft is already there — never replacing it — then the box is focused with the caret at the
   // end. Unlike `prefill`, there is no "session" to group repeats: every `seq` is its own append.
-  insert?: { text: string; seq: number } | null;
+  // `secrets` (references) and `files` come back as chips beside the ones already in the box (a
+  // cancelled queued message restores its text and every chip).
+  insert?: { text: string; seq: number; secrets?: string[]; files?: File[] } | null;
   // The repo this conversation is about (a workstream's, the new-draft box's selection). The @ PR
   // picker inserts a bare `#123` for that repo's PRs and `repo#123` for any other's.
   repo?: string;
@@ -114,6 +116,11 @@ export function ChatComposer({
   const setValue = (v: string) => { latest.current = v; setText(v); };
   const walk = useRef<HistoryWalk>(NO_WALK); // where a ↑/↓ walk through `history` stands, and the draft it left
   const [images, setImages] = useState<File[]>([]);
+  // Secret chips: the reference of each value "Save as secret" stored (`chat/<name>`). A send adds one
+  // `[secret <ref> stored]` to the message for each (withSecretRefs); the value is never here.
+  const [secrets, setSecretsState] = useState<string[]>(() => (persistKey ? loadDraft(persistKey).secrets : []));
+  const latestSecrets = useRef(secrets);
+  const setSecrets = (v: string[]) => { latestSecrets.current = v; setSecretsState(v); };
   const [hydrated, setHydrated] = useState(!persistKey);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -243,6 +250,9 @@ export function ChatComposer({
   // session bookkeeping (a quote is always a fresh, one-off append, never a continued typeahead).
   useLayoutEffect(() => {
     if (!insert) return;
+    if (insert.secrets?.length) setSecrets([...latestSecrets.current, ...insert.secrets.filter((r) => !latestSecrets.current.includes(r))]);
+    if (insert.files?.length) setImages((prev) => [...prev, ...insert.files!]);
+    if (!insert.text) { textRef.current?.focus(); return; }
     const next = appendQuote(latest.current, insert.text);
     pendingCaret.current = next.length; // the [value] layout effect below focuses and places it
     pendingFocus.current = true; // a Quote click is a direct tap, on any device
@@ -287,8 +297,8 @@ export function ChatComposer({
   // otherwise land after the clear-on-send and put the sent message back in the reopened box.
   const saves = useRef(Promise.resolve());
   useEffect(() => {
-    if (persistKey && hydrated) saves.current = saves.current.then(() => saveDraft(persistKey, value, images));
-  }, [persistKey, hydrated, value, images]);
+    if (persistKey && hydrated) saves.current = saves.current.then(() => saveDraft(persistKey, value, images, secrets));
+  }, [persistKey, hydrated, value, images, secrets]);
 
   // Any file type — images, xml, docx, csv… the agent Reads them by path.
   const addImages = (files: Iterable<File>) => {
@@ -304,7 +314,7 @@ export function ChatComposer({
     if (files.length) { e.preventDefault(); addImages(files); return; }
     // The paste guard warns at once; the send is what it holds (below).
     const found = heldIn(e.clipboardData.getData("text/plain") ?? "");
-    if (found.length) { setGuarded(true); setGuardError(null); setSecretName((n) => n || found[0]!.suggestedName); }
+    if (found.length) { guardSend.current = undefined; setGuarded(true); setGuardError(null); setSecretName((n) => n || found[0]!.suggestedName); }
   };
   const onDrop = (e: DragEvent) => {
     if (e.dataTransfer.files.length) { e.preventDefault(); addImages(e.dataTransfer.files); }
@@ -316,12 +326,12 @@ export function ChatComposer({
   // returned, and Enter did nothing for those seconds.)
   // A tap on Send keeps the focus (and the phone's keyboard) in the box — see lib/viewport's
   // keepComposerFocus — so one tap sends once and the next message can be typed straight away.
-  const canSubmit = Boolean(value.trim() || images.length);
-  const submit = async (send: (text: string, images: File[]) => Promise<void> = onSubmit, override?: string) => {
-    const text = (override ?? value).trim();
-    if (!text && !images.length) return;
+  const canSubmit = Boolean(value.trim() || images.length || secrets.length);
+  const submit = async (send: (text: string, images: File[]) => Promise<void> = onSubmit, override?: string, chips: string[] = secrets) => {
+    const typed = (override ?? value).trim();
+    if (!typed && !images.length && !chips.length) return;
     // A key-like value you have not saved or approved is held here (the paste guard).
-    const found = heldIn(text);
+    const found = heldIn(typed);
     if (found.length) {
       guardSend.current = send;
       setGuarded(true);
@@ -329,24 +339,27 @@ export function ChatComposer({
       return;
     }
     setGuarded(false);
+    const text = withSecretRefs(typed, chips);
     // Optimistic: fire and return so the parent can close instantly; it owns draft + errors.
     if (optimistic) return void send(text, images);
     // Clear NOW, not after onSubmit resolves: a box still holding the text you just sent reads as
     // "it didn't go". On failure the text (and attachments) come back — into the box if it is still
     // empty, else into the error line, so neither what you sent nor what you're typing is lost.
-    const sent = { text, images };
+    // Every chip goes with the message (the bubble draws them), so the box clears them all.
+    const sent = { text: typed, images, secrets: chips };
     setValue("");
     setImages([]);
+    setSecrets([]);
     walk.current = NO_WALK;
     if (persistKey) clearDraft(persistKey);
     setError(null);
     try {
-      await send(sent.text, sent.images);
+      await send(text, sent.images);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      const empty = !latest.current.trim();
+      const empty = !latest.current.trim() && !latestSecrets.current.length;
       setError(empty ? msg : `${msg} — not sent: “${sent.text}”`);
-      if (empty) { setValue(sent.text); setImages(sent.images); }
+      if (empty) { setValue(sent.text); setImages(sent.images); setSecrets(sent.secrets); }
     }
   };
   const held = guarded ? heldIn(value) : [];
@@ -355,7 +368,9 @@ export function ChatComposer({
     setGuarded(false);
     void submit(guardSend.current ?? onSubmit, value);
   };
-  // Each held value is stored as a secret in the "chat" scope; the message gets `[secret chat/<name> stored]`.
+  // Each held value is stored as a secret in the "chat" scope, taken out of the text and shown as a
+  // secret chip in the box; the send gives the message `[secret chat/<name> stored]` for it. A send
+  // the guard held goes on with the chip; a guard opened by a paste only adds the chip.
   const saveAsSecret = async () => {
     const base = secretName.trim();
     if (!base) { setGuardError("Give the secret a name."); return; }
@@ -363,17 +378,21 @@ export function ChatComposer({
     try {
       const refs: string[] = [];
       for (const [i, f] of held.entries()) refs.push((await api.saveSecret({ name: i ? `${base}-${i + 1}` : base, scope: "chat", value: f.value })).ref);
-      const next = replaceFindings(value, held, (_, i) => `[secret ${refs[i]} stored]`);
+      const next = replaceFindings(value, held, () => "").replace(/[ \t]{2,}/g, " ");
+      const chips = [...latestSecrets.current, ...refs.filter((r) => !latestSecrets.current.includes(r))];
       setValue(next);
+      setSecrets(chips);
       setGuarded(false);
       setSecretName("");
-      await submit(guardSend.current ?? onSubmit, next);
+      const pending = guardSend.current;
+      guardSend.current = undefined;
+      if (pending) await submit(pending, next, chips);
     } catch (err) {
       setGuardError(err instanceof Error ? err.message : String(err));
     } finally { setGuardBusy(false); }
   };
   const guardBar = held.length > 0 && (
-    <div data-slot="paste-guard" role="alert" className={cn("bg-geist-amber/10 space-y-2 rounded-md px-3 py-2 text-xs", quick ? "mx-2 mb-2" : "mt-1")}>
+    <div data-slot="paste-guard" role="alert" className="bg-geist-amber/10 mx-2 mt-2 cursor-auto space-y-2 rounded-md px-3 py-2 text-xs" onMouseDown={(e) => e.stopPropagation()}>
       {/* The close button sits on the message's line, so it never wraps onto a line of its own (the
           side panel is narrow). The name field takes the width left beside the two buttons. */}
       <div data-slot="paste-guard-head" className="flex items-start gap-1.5">
@@ -578,9 +597,12 @@ export function ChatComposer({
       >
         {/* The card's own clicks (a label, its padding) keep their focus: focusText would take it. */}
         <Collapse open={topOpen}><div data-slot="chat-composer-top" onMouseDown={(e) => e.stopPropagation()}>{top}</div></Collapse>
-        {images.length > 0 && (
-          <div className="flex flex-wrap gap-2 p-2 pb-0">
-            {images.map((f, i) => <Thumb key={i} file={f} onRemove={() => setImages((p) => p.filter((_, j) => j !== i))} />)}
+        {guardBar}
+        {/* Every attached item, one row, one chip component: images and files, then secrets. */}
+        {images.length + secrets.length > 0 && (
+          <div data-slot="chat-composer-attachments" className="flex flex-wrap gap-2 p-2 pb-0">
+            {images.map((f, i) => <FileChip key={i} file={f} onRemove={() => setImages((p) => p.filter((_, j) => j !== i))} />)}
+            {secrets.map((ref) => <ComposerAttachment key={ref} item={{ kind: "secret", name: ref }} onRemove={() => setSecrets(latestSecrets.current.filter((r) => r !== ref))} />)}
           </div>
         )}
         {quick ? (
@@ -626,7 +648,6 @@ export function ChatComposer({
           </div>
         </div>
       </div>
-      {guardBar}
       {mentions && (quick && textRef.current ? createPortal(mentions, textRef.current.ownerDocument.body) : mentions)}
       {commandMenu && (quick && textRef.current ? createPortal(commandMenu, textRef.current.ownerDocument.body) : commandMenu)}
       {error && <p data-slot="chat-composer-error" className={cn("text-destructive text-xs break-words", quick ? "border-t px-3 py-1.5" : "mt-1 px-1")}>{error}</p>}
@@ -702,7 +723,8 @@ function VoiceButton({ phase, elapsed, onClick }: { phase: "idle" | "recording" 
   );
 }
 
-function Thumb({ file, onRemove }: { file: File; onRemove: () => void }) {
+// A File in the box as an attachment chip: an image gets a blob: preview, any other type its name.
+function FileChip({ file, onRemove }: { file: File; onRemove: () => void }) {
   const isImage = file.type.startsWith("image/");
   // Create + revoke the object URL inside the effect so StrictMode's dev remount doesn't leave a
   // revoked (blank) src behind — the effect re-runs and mints a fresh URL.
@@ -713,26 +735,5 @@ function Thumb({ file, onRemove }: { file: File; onRemove: () => void }) {
     setUrl(u);
     return () => URL.revokeObjectURL(u);
   }, [file, isImage]);
-  return (
-    <div className="group relative size-14 overflow-hidden rounded-md border">
-      {isImage
-        // url is a local blob: — not minted yet on the very first render, so skip the lightbox
-        // until the effect above fills it in.
-        ? (url && <ExpandableImage src={url} alt={file.name} downloadName={file.name} className="size-full" imgClassName="size-full object-cover" cornerClassName="bottom-1 right-1" />)
-        // Non-image (xml, docx, …): no preview to render, so show the icon + extension.
-        : (
-          <div data-slot="chat-composer-file" className="text-muted-foreground flex size-full flex-col items-center justify-center gap-0.5 p-1">
-            <FileText className="size-4 shrink-0" />
-            <span className="w-full truncate text-center text-[10px]">{file.name}</span>
-          </div>
-        )}
-      <button
-        type="button"
-        onClick={onRemove}
-        className="bg-background/80 text-foreground hover:bg-background absolute top-0.5 right-0.5 rounded-full p-0.5 opacity-0 transition-opacity group-hover:opacity-100 [@media(hover:none)]:opacity-100"
-      >
-        <X className="size-3" />
-      </button>
-    </div>
-  );
+  return <ComposerAttachment item={isImage ? { kind: "image", name: file.name, src: url } : { kind: "file", name: file.name }} onRemove={onRemove} />;
 }
