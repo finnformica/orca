@@ -419,6 +419,19 @@ test("P12: the orchestrator's chat collapses a reflection pass and a fired sched
   expect(rows[1]!.querySelector('[data-slot="fired-memory-link"]')).toBeNull(); // no Memory link for a scheduled wake
 });
 
+test("P8b: in a named agent's chat, the answer to an outside message is headed by that agent's Agent pill", async () => {
+  const assistant: Row = { ...row, repo: "@orca", branch: "assistant", title: "Assistant", worktreePath: "/state/agents/assistant" };
+  apiFake.turnsData.set("@orca::assistant", [{ id: "d1", provider: "claude", instruction: outside("can you ship #12?", "Saajan", "#general"), prompt: "", response: "answered Saajan", startedAt: 2000, finishedAt: 2001, source: "human" as const }]);
+  await mount(<ChatPanel row={assistant} author="Assistant" />);
+  const card = container!.querySelector<HTMLElement>('[data-slot="integration-activity"]')!;
+  await act(async () => { card.querySelector("button")!.click(); await flush(); });
+  const reply = card.querySelector<HTMLElement>('[data-slot="integration-reply"]')!;
+  const pill = reply.querySelector('[data-slot="agent-pill"]')!;
+  expect(`${pill.getAttribute("data-agent")}:${pill.textContent}`).toBe("assistant:Assistant");
+  expect(reply.querySelector(".lucide-bot")).toBeNull();
+  expect(reply.textContent).toContain("answered Saajan");
+});
+
 test("P8: the orchestrator's chat shows an outside message and its answer as ONE collapsed activity row, never your bubble", async () => {
   const reply = (id: string, text: string, sender: string, place: string, finished = true) => ({
     id, provider: "claude", instruction: outside(text, sender, place), prompt: "", response: finished ? `answered ${sender}` : "", startedAt: 2000, source: "human" as const,

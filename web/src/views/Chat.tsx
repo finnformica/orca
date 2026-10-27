@@ -733,7 +733,7 @@ const ChatTurn = memo(function ChatTurn({ turn, loadStepsFor, compact, newestSai
           {/* One line the avatar's height: the name, then Copy / Quote right beside it (not after the
               hover-only time, whose reserved width left them floating off on their own), then the time. */}
           <div data-slot="chat-reply-head" className="text-muted-foreground mb-0.5 flex h-6 items-center gap-2 text-[11px]">
-            {replySide && isPillSide(replySide) ? <SidePill side={replySide} />
+            {replySide && isPillSide(replySide) ? <SidePill side={replySide} label={replyBy ?? undefined} />
               : <span className="text-foreground font-medium">{replyBy ?? author ?? agentLabel(turn.provider)}</span>}
             {turn.failed ? <span className="text-red-400">failed</span> : turn.stopped ? <span className="text-amber-400">stopped by you</span> : null}
             {turn.finishedAt && turn.response && <MessageActions text={turn.response} onQuote={onQuote && (() => onQuote(turn.response))} className="-mx-1" />}
@@ -986,14 +986,18 @@ function IntegrationMessages({ messages }: { messages: IntegrationMessage[] }) {
  *  each message in full with a link to it, then the orchestrator's answer — its folded steps (the
  *  `orca post --reply` among them) and its reply — so the bulk stays out of your conversation, like
  *  worker reports. */
-const IntegrationBlock = memo(function IntegrationBlock({ turn, messages, loadStepsFor }: { turn: AgentTurn; messages: IntegrationMessage[]; loadStepsFor?: (turn: AgentTurn) => Promise<AgentStep[]> }) {
+/** Who answers in a named agent's chat: its side and name, for its Agent pill (none: "Orca"). */
+type Replier = { side: Side; label: string };
+
+const IntegrationBlock = memo(function IntegrationBlock({ turn, messages, loadStepsFor, replier }: { turn: AgentTurn; messages: IntegrationMessage[]; loadStepsFor?: (turn: AgentTurn) => Promise<AgentStep[]>; replier?: Replier }) {
   return (
     <IntegrationCard slot="integration-activity" messages={messages} time={clockOf(turn.startedAt)} state={integrationState(turn)}>
       <IntegrationMessages messages={messages} />
       <div className="flex gap-2" data-slot="integration-reply">
-        <span className="bg-accent text-foreground inline-flex size-5 shrink-0 items-center justify-center rounded-full" aria-hidden="true"><Bot className="size-3" /></span>
+        {!replier && <span className="bg-accent text-foreground inline-flex size-5 shrink-0 items-center justify-center rounded-full" aria-hidden="true"><Bot className="size-3" /></span>}
         <div className="min-w-0 flex-1">
-          <div className="text-foreground mb-0.5 text-[11px] font-medium">Orca</div>
+          {replier ? <div className="mb-1 flex" data-slot="agent-reply-head"><SidePill side={replier.side} label={replier.label} /></div>
+            : <div className="text-foreground mb-0.5 text-[11px] font-medium">Orca</div>}
           <Reply turn={turn} loadSteps={loadStepsFor && (() => loadStepsFor(turn))} />
         </div>
       </div>
@@ -1005,7 +1009,7 @@ const IntegrationBlock = memo(function IntegrationBlock({ turn, messages, loadSt
  *  it: ONE collapsed activity row, never your bubble, like an outside message's. Open, it shows the
  *  full trigger text, then the orchestrator's answer. A reflection links to its pass on the Memory
  *  page's Reflection tab. */
-const FiredBlock = memo(function FiredBlock({ turn, messages, loadStepsFor }: { turn: AgentTurn; messages: string[]; loadStepsFor?: (turn: AgentTurn) => Promise<AgentStep[]> }) {
+const FiredBlock = memo(function FiredBlock({ turn, messages, loadStepsFor, replier }: { turn: AgentTurn; messages: string[]; loadStepsFor?: (turn: AgentTurn) => Promise<AgentStep[]>; replier?: Replier }) {
   const state = integrationState(turn);
   const reflection = messages.some(isReflection);
   return (
@@ -1019,9 +1023,10 @@ const FiredBlock = memo(function FiredBlock({ turn, messages, loadStepsFor }: { 
         </button>
       )}
       <div className="flex gap-2" data-slot="fired-reply">
-        <span className="bg-accent text-foreground inline-flex size-5 shrink-0 items-center justify-center rounded-full" aria-hidden="true"><Bot className="size-3" /></span>
+        {!replier && <span className="bg-accent text-foreground inline-flex size-5 shrink-0 items-center justify-center rounded-full" aria-hidden="true"><Bot className="size-3" /></span>}
         <div className="min-w-0 flex-1">
-          <div className="text-foreground mb-0.5 text-[11px] font-medium">Orca</div>
+          {replier ? <div className="mb-1 flex" data-slot="agent-reply-head"><SidePill side={replier.side} label={replier.label} /></div>
+            : <div className="text-foreground mb-0.5 text-[11px] font-medium">Orca</div>}
           <Reply turn={turn} loadSteps={loadStepsFor && (() => loadStepsFor(turn))} />
         </div>
       </div>
@@ -1090,8 +1095,8 @@ function AgentAsk({ text, to, time }: { text: string; to?: Side; time: string })
 const isPillSide = (s: Side) => s.kind === "agent" || s.kind === "worker";
 
 /** A room's side as the Agent pill (components/AgentPill): its id seeds the identicon. */
-function SidePill({ side, size, className }: { side: Side; size?: AgentPillSize; className?: string }) {
-  return <AgentPill name={side.id} label={sideLabel(side)} size={size} className={className} />;
+function SidePill({ side, size, className, label }: { side: Side; size?: AgentPillSize; className?: string; label?: string }) {
+  return <AgentPill name={side.id} label={label ?? sideLabel(side)} size={size} className={className} />;
 }
 
 const messagesLabel = (n: number) => `${n} message${n === 1 ? "" : "s"}`;
@@ -1529,10 +1534,15 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
   const loadStepsFor = useCallback((turn: AgentTurn) => api.turnSteps(row.repo, row.branch, turn.id, 0).then((r) => withoutFinalEcho(r.steps, turn.response)), [row.repo, row.branch]);
   // Each turn carries its source (shared/rooms.ts route: person, agent, worker, Orca); one that is not
   // the person's names its sender over its messages, so your own words are the only unnamed lane.
+  // A named agent's chat: its every reply is headed by its Agent pill (Finn). A built-in agent has
+  // its own name ("Chief of Staff"); another agent's name is the chat's author (its display name).
+  const ownerName = owner.kind === "agent" ? (sideLabel(owner) !== owner.id ? sideLabel(owner) : author ?? owner.id) : undefined;
+  const replier = useMemo(() => (ownerName ? { side: owner, label: ownerName } : undefined), [owner, ownerName]);
   const chatTurn = (turn: AgentTurn) => {
     const { sender } = routeOf(owner, turn);
     return <ChatTurn key={turn.id} turn={turn} loadStepsFor={loadStepsFor} compact={(position.get(turn.id) ?? 0) < compactBefore && turn !== newest.answer} newestSaid={turn === newest.said} onQuote={onQuote} author={author} owner={owner}
-      source={sender.kind} saidBy={sender.kind === "person" ? undefined : sideLabel(sender)} saidSide={sender} />;
+      source={sender.kind} saidBy={sender.kind === "person" ? undefined : sideLabel(sender)} saidSide={sender}
+      {...(ownerName ? { replyBy: ownerName, replySide: owner } : {})} />;
   };
   // A room's turns: the same transcript, each side named, read only (no Quote, no composer).
   const roomTurn = (e: RoomEntry) => <ChatTurn key={e.id} turn={entryTurn(e) as AgentTurn} owner={owner} source={e.sender.kind}
@@ -1574,8 +1584,8 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
               ? <RoomPillRow pill={item.notice.pill} unseen={roomUnseen(item.notice.pill.lastAt, seen[item.notice.pill.room])} onOpen={() => openRoomAt(item.notice.pill!.room)} />
               : <NoticeCard notice={item.notice.notice!} />)
             : item.kind === "turn" ? chatTurn(item.turn)
-            : item.kind === "integration" ? <IntegrationBlock turn={item.turn} messages={item.messages} loadStepsFor={loadStepsFor} />
-            : item.kind === "fired" ? <FiredBlock turn={item.turn} messages={item.messages} loadStepsFor={loadStepsFor} />
+            : item.kind === "integration" ? <IntegrationBlock turn={item.turn} messages={item.messages} loadStepsFor={loadStepsFor} replier={replier} />
+            : item.kind === "fired" ? <FiredBlock turn={item.turn} messages={item.messages} loadStepsFor={loadStepsFor} replier={replier} />
             : <AgentsMarker turns={item.turns} render={chatTurn} />}
         </LazyItem>
       );

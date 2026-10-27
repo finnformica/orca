@@ -64,6 +64,10 @@ test("the Assistant's chat: a pill where the agents talked opens the room on the
 
   const log = c.querySelector('[data-slot="chat-log"]')!;
   expect(runIds(log)).toEqual(["you-1", "mix-1"]);
+  // Each reply in the Assistant's chat is headed by its Agent pill, never the robot avatar.
+  expect([...log.querySelectorAll('[data-slot="chat-reply-head"] > [data-slot="agent-pill"]')].map((e) => `${e.getAttribute("data-agent")}:${e.textContent}`))
+    .toEqual(["assistant:Assistant", "assistant:Assistant"]);
+  expect(log.querySelector('[data-slot="chat-reply"] .lucide-bot')).toBeNull();
   // ONE pill between your two turns: the ask, its reply, the escalation and its reply.
   const pills = [...log.querySelectorAll('[data-slot="room-pill"]')];
   expect(pills.map((p) => p.getAttribute("aria-label"))).toEqual(["4 messages with Chief of Staff"]);
@@ -131,6 +135,8 @@ test("a workstream's chat: the brief goes to the room, your words stay in your l
   // Orca's own turn names its sender; your own words are the only unnamed lane.
   expect(log.querySelector('[data-run-id="up-1"] [data-slot="chat-speaker"]')!.textContent).toBe("Orca · PR upkeep");
   expect(log.querySelector('[data-run-id="you-1"] [data-slot="chat-speaker"]')).toBeNull();
+  // A worker is not a named agent: its reply keeps the provider's name, no Agent pill.
+  expect(log.querySelector('[data-run-id="you-1"] [data-slot="chat-reply-head"] [data-slot="agent-pill"]')).toBeNull();
   // The words you said to the orchestrator, in your lane, above the pill to its room.
   expect(log.querySelector('[data-slot="room-person-text"]')!.textContent).toBe("add a cache");
   const pill = log.querySelector('[data-slot="room-pill"]')!;

@@ -107,7 +107,11 @@ test("Ask the orchestrator opens its conversation in a side panel over the page,
   const user = p.querySelector<HTMLElement>('[data-slot="chat-user"]')!;
   expect(user.className).toContain("justify-end");
   expect(user.firstElementChild!.firstElementChild!.className).toContain("bg-accent");
-  expect(p.querySelector('[data-slot="chat-reply"]')!.textContent).toContain("Orca");
+  // The reply is the Chief of Staff's: its Agent pill heads it, with no robot avatar beside it.
+  const replyPill = p.querySelector('[data-slot="chat-reply-head"] > [data-slot="agent-pill"]')!;
+  expect(replyPill.getAttribute("data-agent")).toBe("chief");
+  expect(replyPill.textContent).toBe("Chief of Staff");
+  expect(p.querySelector('[data-slot="chat-reply"] .lucide-bot')).toBeNull();
   expect([...p.querySelectorAll('[data-slot="chat-day"]')].map((d) => d.textContent)).toEqual(["Yesterday", "Today"]);
   expect(p.querySelector('[data-slot="turn-time"]')!.className).toContain("group-hover:opacity-100");
   expect(p.textContent).not.toContain("❯"); // no terminal prompt glyphs here

@@ -132,6 +132,8 @@ rooms follow (Flow's #6658 rule).
 - **Source tags:** every turn carries `data-source` (person, agent, worker, orca). A turn that is not
   the person's names its sender over its messages (`Orca · PR upkeep`). Your own words are the only
   unnamed lane.
+- **Agent replies:** in a named agent's chat, the agent's Agent pill heads each of its replies. This
+  includes the answer to an outside message and to a fired wake. A worker's reply keeps its provider name.
 - **Seen:** the last-open time per room is per browser (`orca.ui.v1.roomSeen:<repo>::<branch>`,
   `usePersisted`). A room you never opened counts its last day.
 - **No turn is lost:** the main chat leaves out a room turn only when the `/api/rooms` answer holds it,
