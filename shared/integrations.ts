@@ -125,7 +125,25 @@ export type AdapterMeta = {
   /** A new row's access and events when the Connect form names neither (Gmail: read, off). An
    *  edit keeps the stored values. Absent: the core's defaults (read-write, trigger). */
   policyDefaults?: { access?: Access; events?: EventsMode };
+  /** The kind takes a pasted API key (Granola): the Connect form shows ONE password field, and the
+   *  save stores the value in Orca's secret store as `integrations/<kind>.<id>.api_key` and points
+   *  the row's secret_ref at it. The value never comes back to the page. `prefix` is checked. */
+  apiKey?: { label: string; placeholder?: string; prefix?: string; hint?: string };
 };
+
+/** The stored secret a pasted API key goes to (scope `integrations`). Pure. */
+export const apiKeySecret = (kind: string, id: string): { scope: string; name: string; ref: string } =>
+  ({ scope: "integrations", name: `${kind}.${id}.api_key`, ref: `${STORED_SECRET_PREFIX}integrations/${kind}.${id}.api_key` });
+
+/** Why a pasted API key cannot be saved, or undefined. Pure. */
+export function apiKeyProblem(meta: Pick<AdapterMeta, "apiKey" | "label"> | undefined, key: string): string | undefined {
+  if (!meta?.apiKey) return `${meta?.label ?? "this kind"} takes no pasted API key`;
+  const k = key.trim();
+  if (!k) return "paste the API key";
+  if (/\s/.test(k)) return "the API key has a space in it";
+  if (meta.apiKey.prefix && !k.startsWith(meta.apiKey.prefix)) return `a ${meta.label} API key starts with ${meta.apiKey.prefix}`;
+  return undefined;
+}
 
 export type Capabilities = {
   /** How events come in: a long-lived socket, a poll loop with a cursor, an HTTP route (relay), or none. */
@@ -838,7 +856,7 @@ export const POSTS_AS_USER: readonly string[] = ["slack"];
 
 /** Adapter kinds with no outbound side (their caps.outbound is false): an event from one has no
  *  sender to answer. Pure, so `fenceExternal` can say so without the registry. */
-export const TAKES_NO_POSTS: readonly string[] = ["cloudflare"];
+export const TAKES_NO_POSTS: readonly string[] = ["cloudflare", "granola"];
 export const takesNoPosts = (adapter: string | undefined): boolean => !!adapter && TAKES_NO_POSTS.includes(adapter);
 export const postsAsUser = (adapter: string | undefined): boolean => !!adapter && POSTS_AS_USER.includes(adapter);
 

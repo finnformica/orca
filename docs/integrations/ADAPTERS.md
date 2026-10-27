@@ -39,7 +39,7 @@ An adapter does only these tasks:
 | `server/integrations/dispatcher.ts` | The delivery loop. |
 | `server/integrations/inbox.ts` | The orchestrator and workstream targets. |
 | `server/integrations/store.ts` | All SQL. |
-| `server/integrations/adapters/` | `web.ts`, `webhook.ts`, `slack.ts` (setup: [slack.md](slack.md)), `gmail.ts` (setup: [gmail.md](gmail.md)). Put a new adapter here. |
+| `server/integrations/adapters/` | `web.ts`, `webhook.ts`, `slack.ts` (setup: [slack.md](slack.md)), `gmail.ts` (setup: [gmail.md](gmail.md)), `granola.ts` (setup: [granola.md](granola.md)). Put a new adapter here. |
 
 ## 3. The interface
 
@@ -345,6 +345,7 @@ no public address, because the browser makes both redirects.
 | Slack two-way (done: [slack.md](slack.md)) | `ingest`, `inboundEnvelope`, `thread`, `source.parents`, thread links, `caps.edits`. | A poll in `start` (`inbound: "poll"`, a JSON cursor) with your user token `SLACK_TOKEN` alone; Socket Mode only when `SLACK_APP_TOKEN` is set, so Orca posts as you and never posts by itself (`postsAsUser`). `postAsUser` keeps "post as me". |
 | Discord | The same as Slack. | Gateway in `start`. Automatic or pinned: only one bridge runs it (section 6.1). |
 | Gmail (done: [gmail.md](gmail.md)) | Its own MIME parse (`gmail/mime.ts`), `cursor` (a History API `historyId`), Gmail thread ids as `thread`, shared secret refs (`secretRefs.ts`; the client secret as `secret:<name>`), a stored secret it writes itself (the refresh token). | Sign in with Google (OAuth code + PKCE, `meta.oauth`; the client is server config, `googleOAuth`), one row per sign-in named by its address, read only (`caps.outbound: false`), the core's policy (`meta.verbs`, `meta.policyDefaults`: read, off; no poll with events `off`), the query match by Gmail itself. |
+| Granola (done: [granola.md](granola.md)) | `cursor` (`from`, `since`, the seen note ids and Granola's page cursor), shared secret refs (the key as `secret:integrations/granola.<id>.api_key`). | A pasted API key (`meta.apiKey`: the save stores it, the row names it), read only (`caps.outbound: false`, in `TAKES_NO_POSTS`), the core's policy (`meta.verbs`, `meta.policyDefaults`: read, off; no poll with events `off`), one event per new finished meeting, a Viewer `*` link on the first Connect. |
 | Settings UI | `store.ts` (every table), `registry.health()`, `store.retryDead()`, `GET /api/integrations`, the pairing routes (section 10). | Routes to write rows. A Test button that calls `publish` with a test key. An Approve / Deny list over `GET /api/integrations/pairing`. |
 | GitHub poller | `cursor` (an ETag or a timestamp), `ingest` without `actor`, topics `orca.pr.*` or `ext.github.*`. | A poll loop in `start` (`inbound: "poll"`). |
 | Linear | The same as the GitHub poller, plus thread links for issues. | GraphQL polls. |

@@ -137,7 +137,7 @@ export type Provenance = { source: string; trust: Trust };
 const EXTERNAL_LINE = /^\[external message\] via (\S+)(?: link (\S+))?/m;
 const WORKER_LINE = /^\[worker finished\] ([^/\s]+)\/(\S+)/;
 /** `orca` reads of outside text, and the web: what such a call returns is not the user's word. */
-const OUTSIDE_READ = /\borca\s+(slack\s+(read|search|conversations)|gmail\s+(read|search)|cloudflare\s+audit)\b/;
+const OUTSIDE_READ = /\borca\s+(slack\s+(read|search|conversations)|gmail\s+(read|search)|granola\s+(read|search)|cloudflare\s+audit)\b/;
 const OUTSIDE_TOOLS = new Set(["WebFetch", "WebSearch"]);
 
 /** The repo/branch a worker report is about, or undefined. */
