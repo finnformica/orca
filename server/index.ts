@@ -1,5 +1,5 @@
 import {
-  API_PORT, configDocument, featuresOf, invalidateConfig, loadConfig, setInstanceTerminal, setServerIdentity, setUiOptions, setGoogleOAuth, modelFor, parseConfigDocument,
+  API_PORT, configDocument, featuresOf, invalidateConfig, loadConfig, setInstanceTerminal, setServerIdentity, setUiOptions, modelFor, parseConfigDocument,
   providerAllowed, providersFor, repoOf, runsHere, saveConfigDocument, type OrcaConfig, type RepoConfig,
 } from "./config";
 import * as git from "./git";
@@ -69,6 +69,7 @@ import { identityUpdate, serverIdentityProblems } from "../shared/serverIdentity
 import * as handoff from "./handoff";
 import * as forms from "./forms";
 import * as secrets from "./secrets";
+import { serverFeatures } from "../shared/serverKeys";
 
 /** Resume the implementation agent to write a template-exact PR body from its full context and the
  *  final git state. A self-contained fresh call is the fallback when the native session is missing
@@ -447,7 +448,7 @@ const DATABASE_ONLY = new Set([
   // what that merge fetches from a PEER — always this host's own, unmerged, never forwarded (a repo's
   // placement must not send it chasing a worktree that has nothing to do with hydra).
   "/api/usage", "/api/usage/local", "/api/diagnostics", "/api/turns/steps", "/api/queued", "/api/queued/cancel", "/api/health",
-  "/api/health/history", "/api/health/live", "/api/machine", "/api/config/instance-rate", "/api/config/terminal", "/api/config/identity", "/api/config/ui", "/api/config/google-oauth",
+  "/api/health/history", "/api/health/live", "/api/machine", "/api/config/instance-rate", "/api/config/terminal", "/api/config/identity", "/api/config/ui",
   // A workstream's reported screenshots, read off its turns (the files are served per shot).
   "/api/shots",
   // Answered by EVERY instance: its own worktrees (if the repo is checked out here) plus what the
@@ -1229,13 +1230,6 @@ async function api(req: Request, url: URL): Promise<Response> {
     await setServerIdentity(identityUpdate(body.name, body.color));
     return json({ ok: true });
   }
-  if (req.method === "POST" && p === "/api/config/google-oauth") {
-    // Settings' Google sign-in card: the OAuth client for Gmail's "Sign in with Google". Empty clears.
-    const str = (v: unknown) => (typeof v === "string" ? v : undefined);
-    try { await setGoogleOAuth({ clientId: str(body.clientId), secretRef: str(body.secretRef), redirectOrigin: str(body.redirectOrigin) }); }
-    catch (e) { return json({ error: e instanceof Error ? e.message : String(e) }, 400); }
-    return json({ ok: true });
-  }
   if (req.method === "POST" && p === "/api/config/ui") {
     // Settings' Board view row: show or hide the Board view for every browser.
     if (typeof body.showBoard !== "boolean") return json({ error: "showBoard (true or false) is required" }, 400);
@@ -1282,9 +1276,9 @@ async function api(req: Request, url: URL): Promise<Response> {
       voice: voice.voiceAvailable(),
       // Console options for every browser: the Board view is on unless the document says false.
       ui: { showBoard: cfg.ui?.showBoard !== false },
-      // Settings' Google sign-in card: the OAuth client's id and the secret's ref (a name, never a value).
-      googleOAuth: { clientId: cfg.googleOAuth?.clientId ?? "", secretRef: cfg.googleOAuth?.secretRef ?? "", redirectOrigin: cfg.googleOAuth?.redirectOrigin ?? "",
-        envClientId: !!process.env[gmailOauth.CLIENT_ID_ENV]?.trim(), defaultSecretRef: gmailOauth.CLIENT_SECRET_DEFAULT },
+      // Server keys (shared/serverKeys.ts): per feature, whether THIS bridge's environment has its
+      // variables (`configured`), else which ones it `needs`. Names only, never a value.
+      serverKeys: serverFeatures(process.env),
       // Each machine's address: the terminal panel connects to a machine's own bridge directly (a
       // bridge never relays another machine's shell). Tailnet addresses, no secret.
       instanceUrls: cfg.instances ?? {},

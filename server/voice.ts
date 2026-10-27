@@ -5,7 +5,8 @@
 // `scrubbedEnv` drops it from every spawn, so no agent or preview sees it. The key is never logged
 // and never answered; an upstream error is passed on with any key-like text masked.
 
-export const VOICE_KEY_ENV = "ORCA_SECRET_OPENAI_API_KEY";
+import { VOICE_KEY_ENV } from "../shared/serverKeys";
+export { VOICE_KEY_ENV };
 export const TRANSCRIBE_MODEL = "gpt-4o-transcribe";
 export const TRANSCRIBE_URL = "https://api.openai.com/v1/audio/transcriptions";
 /** A two-minute clip is 1–3 MB in either format; OpenAI's own limit is 25 MB. */

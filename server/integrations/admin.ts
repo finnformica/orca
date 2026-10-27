@@ -17,6 +17,7 @@ import * as dispatcher from "./dispatcher";
 import * as agents from "../agents";
 import * as secretRefs from "./secretRefs";
 import type { Connection } from "./adapter";
+import { featureState, SERVER_KEY_KINDS, serverKeyRefusal } from "../../shared/serverKeys";
 import * as gmailOauth from "./adapters/gmail/oauth";
 import * as secrets from "../secrets";
 
@@ -64,6 +65,17 @@ const secretSetHere = (c: Connection, here: string, readable: Set<string>, now =
 const readableFor = async (rows: Connection[]): Promise<Set<string>> =>
   rows.some((c) => secretRefs.storedNames(c).length) ? secretRefs.readable().catch(() => new Set<string>()) : new Set<string>();
 
+/** A kind whose secret is a server key (shared/serverKeys.ts): whether THIS bridge can connect one.
+ *  Set up = its variables are in this bridge's environment, or a row of the kind already has its
+ *  own variable set here (a second bot under another ORCA_SECRET_* name). */
+function serverKeyOf(kind: string, cards: IntegrationCard[], env: Record<string, string | undefined> = process.env): { serverKey?: { configured: boolean; needs?: string } } {
+  const feature = kind === "gmail" ? "googleSignIn" : SERVER_KEY_KINDS[kind]?.feature;
+  if (!feature) return {};
+  const s = featureState(feature, env);
+  if (!s.configured && feature !== "googleSignIn" && cards.some((c) => c.kind === kind && c.secretSet)) return { serverKey: { configured: true } };
+  return { serverKey: s };
+}
+
 export async function overview(here = db.instanceName(), now = Date.now()): Promise<IntegrationsOverview> {
   const [rows, st, last, links, persons, pairs, subs, dead, live, googleSetup] = await Promise.all([
     store.integrations(), statuses(), lastEvents(), store.links(), people(), store.pendingPairings(), allSubscriptions(),
@@ -96,7 +108,8 @@ export async function overview(here = db.instanceName(), now = Date.now()): Prom
     topic: d.envelope.topic, key: d.envelope.key, ...(d.envelope.title ? { title: d.envelope.title } : {}), at: d.envelope.at,
   }));
   // Sign in with Google: whether THIS bridge has the server's OAuth client (it answers the sign-in).
-  const kinds = registry.kinds().map((k) => (k.oauth?.provider === "google" ? { ...k, oauth: { ...k.oauth, ...(googleSetup.problem ? { setup: googleSetup.problem } : {}), ...(googleSetup.fixedOrigin ? { fixedOrigin: true } : {}) } } : k));
+  const kinds = registry.kinds().map((k) => (k.oauth?.provider === "google" ? { ...k, oauth: { ...k.oauth, ...(googleSetup.problem ? { setup: googleSetup.problem } : {}), ...(googleSetup.fixedOrigin ? { fixedOrigin: true } : {}) } } : k))
+    .map((k) => ({ ...k, ...serverKeyOf(k.kind, cards) }));
   // The named agents, for each link's Agent Select and an agent subscription's target.
   const agentRows = (await agents.all()).map((a) => ({ name: a.name, displayName: a.displayName }));
   return { instance: here, kinds, integrations: cards, links, people: persons, pairings: pairs, subscriptions: subs, dead: deadRows, agents: agentRows };
@@ -121,7 +134,7 @@ export async function saveIntegration(b: Record<string, unknown>): Promise<void>
     // Absent keeps the stored policy (a new row gets the defaults: read-write, trigger).
     ...policyOf(b),
   };
-  const problem = integrationProblem(c, registry.kinds().map((k) => k.kind), ORCA_SECRETS);
+  const problem = integrationProblem(c, registry.kinds().map((k) => k.kind), ORCA_SECRETS) ?? serverKeyRefusal(c);
   if (problem) fail(problem);
   const isNew = !(await store.integration(c.id));
   // A new row of a kind with its own defaults (Gmail: read, off) gets them where the body names none.

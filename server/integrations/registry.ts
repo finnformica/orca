@@ -12,6 +12,7 @@ import type { Adapter, AdapterContext, AdapterFactory, Connection } from "./adap
 import * as router from "./router";
 import * as store from "./store";
 import * as secretRefs from "./secretRefs";
+import { DISCORD_BOT_ENV, WEBHOOK_SECRET_ENV } from "../../shared/serverKeys";
 import { SLACK_CAPS, slackAdapter } from "./adapters/slack";
 import { WEBHOOK_CAPS, webhookAdapter } from "./adapters/webhook";
 import { DISCORD_CAPS, discordAdapter } from "./adapters/discord";
@@ -57,9 +58,9 @@ register("slack", slackAdapter, {
   label: "Slack", caps: SLACK_CAPS, place: "channel", secretExample: "SLACK_TOKEN", verbs: SLACK_VERBS,
   help: "Your user token (xoxp-…): Orca posts as you and polls your mentions, DMs and group DMs each minute. Link `im` / `mpim` for DMs. Setup: docs/integrations/slack.md.",
 });
-register("webhook", webhookAdapter, { label: "Webhook", caps: WEBHOOK_CAPS, place: "hook", secretExample: "ORCA_SECRET_WEBHOOK", help: "Signed POSTs to /api/integrations/<id>/inbound (HMAC sha256 of the body)." });
+register("webhook", webhookAdapter, { label: "Webhook", caps: WEBHOOK_CAPS, place: "hook", secretExample: WEBHOOK_SECRET_ENV, secretDefault: WEBHOOK_SECRET_ENV, help: "Signed POSTs to /api/integrations/<id>/inbound (HMAC sha256 of the body)." });
 register("discord", discordAdapter, {
-  label: "Discord", caps: DISCORD_CAPS, place: "channel", secretExample: "ORCA_SECRET_DISCORD_BOT",
+  label: "Discord", caps: DISCORD_CAPS, place: "channel", secretExample: DISCORD_BOT_ENV, secretDefault: DISCORD_BOT_ENV,
   config: [
     { key: "dmLink", label: "DM link id (optional)", placeholder: "the link DMs go to; empty = the * link" },
     { key: "threads", label: "Threads (optional)", placeholder: "true = a thread for each request; empty = reply in place" },
@@ -93,7 +94,7 @@ register("cloudflare", (c) => cloudflareAdapter(c), {
 }, cloudflareDefaults);
 register("gmail", gmailAdapter, {
   label: "Gmail", caps: GMAIL_CAPS, place: "sender address (* = every sender)",
-  // The OAuth client is server config (Settings > Google sign-in), never the row's: no secret field.
+  // The OAuth client is a server key (ORCA_GOOGLE_OAUTH_CLIENT_ID, ORCA_SECRET_GOOGLE_OAUTH), never the row's.
   oauth: { provider: "google", label: "Sign in with Google", docs: GMAIL_SETUP_DOCS },
   switches: { checkAuth: true },
   // Read only, events off until you set them on the card (docs/integrations/POLICY.md section 6).

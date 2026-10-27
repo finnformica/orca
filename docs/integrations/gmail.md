@@ -154,7 +154,7 @@ For an **External** app, do these steps too:
    name (`https://<machine>.<tailnet>.ts.net`, from `tailscale serve`) works. Google never connects to
    it: your browser does the redirect, so a tailnet-only address is correct.
 
-   Orca builds the redirect URI from the page's own origin, or from `redirectOrigin` when it is set.
+   Orca builds the redirect URI from the page's own origin, or from `ORCA_GOOGLE_OAUTH_REDIRECT_ORIGIN` when it is set.
    It never uses the bridge's own `http://127.0.0.1:8787`. Orca refuses a sign-in from a plain
    `http://` page, from `localhost` and from a raw IP address. The dialog then tells you to open the
    https address (`ORCA_SERVER_URL`, when it is set) and connect there.
@@ -163,39 +163,30 @@ For an **External** app, do these steps too:
 
 ## 5. Give the OAuth client to Orca (the operator, one time)
 
-The OAuth client is server config. The user never types it. Set it one time for each Orca server:
-
-1. Save the client secret in Orca's secret store. Use the composer's `/secret`, for example with
-   the name `google-oauth` in the scope `chat`.
-2. Open **Settings > Google sign-in**.
-3. Paste the **Client ID**.
-4. In **Client secret**, select the stored secret (here `chat/google-oauth`).
-5. Click **Save**.
-
-The card also shows the redirect URI to add to the client in Google Cloud (section 4.3).
-
-You can use the bridge's environment instead of Settings:
+The OAuth client is a server key (docs/SETUP.md "Server keys"). The user never types it. Settings
+does not hold it. Set it in the `.env` of each Orca server that answers a sign-in:
 
 ```bash
 ORCA_GOOGLE_OAUTH_CLIENT_ID=1234-abc.apps.googleusercontent.com
 ORCA_SECRET_GOOGLE_OAUTH=GOCSPX-…
+# Optional: a fixed public https base for the redirect URI.
+ORCA_GOOGLE_OAUTH_REDIRECT_ORIGIN=https://orca.example.com
 ```
 
-- The Settings value wins over the variable.
-- With no stored secret selected, Orca reads the `ORCA_SECRET_GOOGLE_OAUTH` variable.
-- A variable name must start with `ORCA_SECRET_`, so agents never see it.
-- A stored secret must be readable with this bridge's key. Set the same `ORCA_SECRETS_KEY` on each
-  server.
+1. Add the lines to `.env`.
+2. Restart the bridge.
+3. Open **Settings > Server keys**. "Sign in with Google (Gmail)" must show `set`.
 
-The values are `googleOAuth` in the app config (`clientId`, `secretRef`, `redirectOrigin`).
-`redirectOrigin` is a fixed `https://` origin for the redirect URI. Leave it empty to use the page's
-own origin.
+- A missing variable turns off only the sign-in. The Connect dialog says which variable to set.
+- `ORCA_SECRET_GOOGLE_OAUTH` starts with `ORCA_SECRET_`, so agents never see it.
+- Leave `ORCA_GOOGLE_OAUTH_REDIRECT_ORIGIN` empty to use the page's own https origin.
+- An old `googleOAuth` in the app config is ignored. Orca writes one log line that names these variables.
 
 To publish the app, Google needs a public redirect domain. Use the public page in `site/` (see
 `site/README.md`). Its Worker sends the callback on to your Orca server with the same query.
 
 1. Deploy `site/` on your own domain. Set the Worker variable `ORCA_ORIGIN` to your Orca server's origin.
-2. Set `redirectOrigin` to the public origin, for example `https://orca.example.com`.
+2. Set `ORCA_GOOGLE_OAUTH_REDIRECT_ORIGIN` to the public origin, for example `https://orca.example.com`.
 3. Add `https://orca.example.com/api/integrations/oauth/google/callback` to the client's redirect URIs.
 
 Orca sends the public redirect URI to Google at sign-in and at the token exchange. The state check on
@@ -269,10 +260,10 @@ Each value can be a string, as the Settings form saves it.
 | `keepQuoted` | `false` | Keep the quoted history of a reply in the text. |
 
 An account made before the one-click sign-in can still hold `clientId`, `redirectOrigin` and its own
-secret ref. They win over the server's client for that account.
+secret ref. Orca ignores them, with one log line, and uses the server's variables.
 
-`authUrl`, `tokenUrl`, `revokeUrl` and `apiUrl` (in `googleOAuth` or on an account) change Google's
-endpoints. Only the tests use them.
+`ORCA_GOOGLE_API_BASE`, or `authUrl`, `tokenUrl`, `revokeUrl` and `apiUrl` on an account, change
+Google's endpoints. Only the tests use them.
 
 ## 8. Threads
 

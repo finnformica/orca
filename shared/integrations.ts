@@ -122,6 +122,10 @@ export type AdapterMeta = {
    *  answering bridge yet, `fixedOrigin` that the server names its redirect origin (both filled by
    *  the overview), and `docs` is the operator's setup guide. */
   oauth?: { provider: "google"; label: string; docs?: string; setup?: string; fixedOrigin?: boolean };
+  /** The kind's secret is a server key (shared/serverKeys.ts): read only from the environment.
+   *  Filled by the overview for the answering bridge; `configured: false` greys out its Connect, and
+   *  `needs` names the variable to set. */
+  serverKey?: { configured: boolean; needs?: string };
   /** A new row's access and events when the Connect form names neither (Gmail: read, off). An
    *  edit keeps the stored values. Absent: the core's defaults (read-write, trigger). */
   policyDefaults?: { access?: Access; events?: EventsMode };

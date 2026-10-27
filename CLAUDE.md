@@ -250,10 +250,9 @@ user's own mailboxes, READ ONLY, by ONE button: **Integrations > Connect > Gmail
 NEW account: the pending state is cursor row `+new-<hex>:oauth`, and `finish` makes the row, named by
 the address (id `finn-example.com`, `accountId`; `read` + `off`, `GMAIL_POLICY_DEFAULTS`; Automatic), or
 reconnects the row already signed in to that address. Rename is the pencil on the card. The OAuth client is
-SERVER config, set once by the operator in Settings > Google sign-in (`googleOAuth` in the app config,
-`POST /api/config/google-oauth`): `clientId` (else `ORCA_GOOGLE_OAUTH_CLIENT_ID`), `secretRef`
-(`secret:<scope>/<name>`, else the `ORCA_SECRET_GOOGLE_OAUTH` variable), `redirectOrigin`
-(`oauth.resolveClient`; an older row's own `clientId` / `secret_ref` / `redirectOrigin` still win).
+a SERVER KEY, env only (`ORCA_GOOGLE_OAUTH_CLIENT_ID`, `ORCA_SECRET_GOOGLE_OAUTH`, optional
+`ORCA_GOOGLE_OAUTH_REDIRECT_ORIGIN`; `oauth.resolveClient`). An old `googleOAuth` in the app config
+or a row's own `clientId` / `secret_ref` / `redirectOrigin` is ignored with one log line.
 Unset on the answering bridge, the Connect dialog shows one line + the setup doc (`meta.oauth.setup`,
 filled per overview by `oauth.serverSetup`, which reads names only). The old IMAP/SMTP `email` adapter
 is gone (its MIME parse moved to `gmail/mime.ts`). Scopes follow the row's
@@ -330,6 +329,18 @@ loaded (`secretRefs.ensureLoaded`). No Cloudflare-only access or event switch: q
 Events "Inbox only". No command uploads Worker
 code: new Workers come from the repos' deploy pipelines. A 401/403 names the token permission it needs
 (`PERMISSIONS`).
+
+## Server keys (env only)
+
+A credential Orca itself owns — Google sign-in's OAuth client, Discord's bot token, the webhook
+signing secret, Slack's `appTokenRef`, the voice key — comes ONLY from the bridge's environment,
+never Settings, the app config or the secret store (Finn 2026-10-27). ONE table, `shared/serverKeys.ts`
+(`SERVER_KEYS`). A missing variable disables that feature only: `/api/config` answers `serverKeys`
+(`{ configured, needs }` per feature), Settings > Server keys is read only and greys it out, and
+the overview's `meta.serverKey` greys out the kind in Connect. An old stored value is ignored with
+one log line (`retiredGoogleOAuthNote`, `serverKeyRow` in the store's row mapper); a save of a
+`secret:` ref for one is refused (`serverKeyRefusal`). User-side keys (Granola, Cloudflare, Linear,
+the Slack user token, Gmail refresh tokens) are NOT server keys. Docs: docs/SETUP.md "Server keys".
 
 ## Forms in the chat and the secret store
 

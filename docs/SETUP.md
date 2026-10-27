@@ -228,6 +228,35 @@ has its own `.env`. Start from `.env.example`. This table shows all variables:
 | `ORCA_SERVER_URL` | `http://<MagicDNS name>:<port>` | The URL of this server in the server switcher. Set it only when the MagicDNS name from `tailscale status` is wrong. |
 | `ORCA_TAILSCALE_BIN` | `tailscale` on `PATH`, else `/usr/bin/tailscale` | The Tailscale CLI that the server switcher uses for `whois` and `status`. |
 
+### Server keys
+
+A server key is a credential that Orca itself owns: an OAuth client, a bot token, a signing
+secret. Orca reads each server key **only** from the environment of the bridge. Settings, the
+config document and the secret store do not hold them.
+
+| Variable | Feature | Meaning |
+| --- | --- | --- |
+| `ORCA_GOOGLE_OAUTH_CLIENT_ID` | Sign in with Google (Gmail) | The client id of the Google OAuth Web client. |
+| `ORCA_SECRET_GOOGLE_OAUTH` | Sign in with Google (Gmail) | The client secret of that client. |
+| `ORCA_GOOGLE_OAUTH_REDIRECT_ORIGIN` | Sign in with Google (optional) | A fixed public https base for the redirect. If it is not set, Orca uses the https origin of the page. |
+| `ORCA_SECRET_DISCORD_BOT` | Discord | The bot token. A Discord row can name another `ORCA_SECRET_*` variable. |
+| `ORCA_SECRET_WEBHOOK` | Webhook | The signing secret of inbound webhooks. A webhook row can name another `ORCA_SECRET_*` variable. |
+| `SLACK_APP_TOKEN` | Slack Socket Mode (optional) | The app-level token (`xapp-…`). |
+| `ORCA_SECRET_OPENAI_API_KEY` | Voice input | The OpenAI key for transcription. |
+| `ORCA_GOOGLE_API_BASE` | tests | One base URL for the Google endpoints (a fake Google, or a proxy). It is not a secret. |
+
+Rules:
+
+- If a variable is missing, only that feature is off. The bridge starts and runs.
+- `/api/config` answers `serverKeys`: for each feature, `configured` and, when false, `needs` (the missing names).
+- Settings > Server keys shows each feature. A feature that is not set up is grey and names its variable.
+- The Connect dialog shows a kind that is not set up as grey, with the same note.
+- Set the variable in `.env`, then restart the bridge.
+- An old value in the stored config (`googleOAuth`) or on an integration row (a `secret:` ref on a Discord or webhook row, Slack's `appTokenRef`, a Gmail row's own client) is ignored. Orca writes one log line that names the variable to set.
+
+A key that a person pastes for their own account is not a server key. The Granola key, a
+Cloudflare or Linear token, the Slack user token and a Gmail sign-in stay as they are.
+
 Agents never see the secrets of Orca. Orca removes `SLACK_TOKEN`, `ORCA_DATABASE_URL`,
 `ORCA_TEST_DATABASE_URL`, `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_CLIENT_SECRET` from the environment of each agent (`agentEnv` in `server/agent.ts`).
 
