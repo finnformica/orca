@@ -17,13 +17,15 @@
 // successive sends are chained so they reach it in the order they were typed. It goes through the
 // shared outbox (lib/orchestratorOutbox), so the panel shows it at once, opened now or later.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { useAtom, useAtomValue } from "jotai";
+import { getDefaultStore, useAtom } from "jotai";
 import { Bot, Check } from "lucide-react";
-import { quickAskOpenAtom } from "@/lib/atoms";
-import { sendToOrchestrator } from "@/lib/orchestratorOutbox";
-import { useOrchestrator, useOrchestratorState } from "@/components/Terminal";
+import { orchestratorTabAtom, quickAskOpenAtom } from "@/lib/atoms";
+import { sendToAgents, sendToOrchestrator } from "@/lib/orchestratorOutbox";
+import { useAgentList, useAgentMentions, useOrchestrator, useOrchestratorState } from "@/components/Terminal";
+import { sentToLabel } from "@/workstream";
 import { ChatComposer } from "@/components/ChatComposer";
 import { ChatControls } from "@/components/ChatControls";
+import { Button } from "@/components/ui/button";
 import { Shortcut } from "@/components/ui/kbd";
 import { cn } from "@/lib/utils";
 import { isMobile } from "@/lib/viewport";
@@ -42,6 +44,11 @@ export function QuickAsk() {
   // from the same status poll the side panel uses, running only while the box is open.
   const { controls, compact } = useOrchestratorState(open);
   const [flash, setFlash] = useState(0); // >0 while "Sent" shows; bumped per send to restart its timer
+  // The `@` picker's named agents, polled only while the box is open. A send with recipient chips
+  // goes to those agents only; `sentTo` is who the receipt names (none: the Chief of Staff).
+  const agents = useAgentMentions(useAgentList(open));
+  const [sentTo, setSentTo] = useState<string[]>([]);
+  const labelOf = (name: string) => agents?.find((a) => a.name === name)?.displayName ?? name;
   // The box's contents stay mounted through the collapse (`leaving`): faded out, pinned at the width
   // they had, while the surface shrinks around them — then the pill fades in. Swapping them for the
   // pill in the commit that closed it was the jank: a blank box shrinking around a popped-in pill.
@@ -89,10 +96,11 @@ export function QuickAsk() {
   }, [open, flash, setOpen]);
   // The composer clears the box at once and, if this throws, gives the text back (into the box if it
   // is still empty, else quoted in its error line). Busy is queued by the bridge, not refused.
-  const send = async (message: string, files: File[]) => {
+  const send = async (message: string, files: File[], recipients: string[]) => {
     setFlash((n) => n + 1);
+    setSentTo(recipients);
     if (!isMobile()) input()?.focus();
-    try { await sendToOrchestrator(message, files); }
+    try { await (recipients.length ? sendToAgents(recipients, message, files) : sendToOrchestrator(message, files)); }
     catch (e) { setFlash(0); throw e; }
   };
   return (
@@ -126,17 +134,23 @@ export function QuickAsk() {
             {/* The agent at the top left; the text takes the whole width beside it. The row below is
                 every composer's toolbar: model and context on the left (then the receipt), attach
                 and Send (with its key) on the right. */}
-            <ChatComposer variant="quick" persistKey="orca.quickAsk" onSubmit={send} placeholder={QUICK_ASK_PLACEHOLDER}
+            <ChatComposer variant="quick" persistKey="orca.quickAsk" onSubmit={send} placeholder={QUICK_ASK_PLACEHOLDER} agents={agents}
               inputLabel="Message Orca" icon={<Bot className="text-muted-foreground mt-1 size-4 shrink-0" />}
               leading={
                 <div className="flex min-w-0 items-center gap-1">
                   <ChatControls {...controls} compact={compact} />
                   {/* The receipt: subtle, and it goes on its own. The box is already clear for the next. */}
                   <span role="status" aria-live="polite" data-slot="quick-ask-sent" className="text-muted-foreground flex min-w-0 items-center gap-1.5 pl-1 text-xs whitespace-nowrap">
-                    {flash > 0 && <>
+                    {flash > 0 && (sentTo.length ? <>
+                      <Check className="text-geist-blue size-3.5" /><span className="truncate">Sent to {sentToLabel(sentTo.map(labelOf))}</span>
+                      <span aria-hidden>·</span>
+                      <Button type="button" variant="link" size="sm" className="text-link h-auto p-0 text-xs" onClick={() => {
+                        setOpen(false); ask(); getDefaultStore().set(orchestratorTabAtom, sentTo[0]!);
+                      }}>Open</Button>
+                    </> : <>
                       <Check className="text-geist-blue size-3.5" />Sent
                       <button type="button" className="text-link hover:underline" onClick={() => { setOpen(false); ask(); }}>Open chat</button>
-                    </>}
+                    </>)}
                   </span>
                 </div>
               } />
