@@ -157,6 +157,37 @@ test("C1c: a branch reused after its PR merged (HEAD moved off the PR's head, or
   expect([...(await db.archivedBranches("r"))]).toEqual(["stale-s"]);
 });
 
+test("C1h: a live workstream keeps its worktree: a run since the merge (read from the database, so a restart can't forget it) or open PRs unknown — merged and idle still goes", async () => {
+  const sent = await workOn("sent-after"); // merged, then the orchestrator sent new work (HEAD not moved yet)
+  const idle = await workOn("idle-done"); // merged, nothing since: the control
+  const noPr = await workOn("no-pr-yet"); // no PR at all: never the reaper's
+  const mergedAt = NOW - 3_600_000;
+  // A turn that started after the merge, recorded in the database only: this bridge never ran it
+  // (as after a restart), so agent.status() knows nothing about it.
+  await db.startTurn({ repo: "r", branch: "sent-after", runId: "run-after-merge", provider: "claude", prompt: "p", instruction: "go on", startedAt: mergedAt + 60_000 });
+  await db.startTurn({ repo: "r", branch: "idle-done", runId: "run-before-merge", provider: "claude", prompt: "p", instruction: "build", startedAt: mergedAt - 60_000 });
+  await setDonePrListFixture([
+    { number: 1, title: "A", url: "u1", headRefName: "sent-after", headRefOid: sent.sha, mergedAt: iso(mergedAt), closedAt: iso(mergedAt) },
+    { number: 2, title: "B", url: "u2", headRefName: "idle-done", headRefOid: idle.sha, mergedAt: iso(mergedAt), closedAt: iso(mergedAt) },
+  ]);
+
+  // GitHub can't list the open PRs: nothing is reaped, not even the finished one.
+  delete process.env.ORCA_PRLIST_FIXTURE;
+  expect(await verbs.cleanupRepo(repo, { now: NOW })).toEqual([]);
+  expect(await worktrees()).toEqual(["idle-done", "no-pr-yet", "sent-after"]);
+
+  await setPrListFixture([]);
+  const out = await verbs.cleanupRepo(repo, { now: NOW });
+  expect(out.map((c) => `${c.branch}:${c.action}`)).toEqual(["idle-done:reaped"]);
+  expect(await worktrees()).toEqual(["no-pr-yet", "sent-after"]);
+  expect(existsSync(noPr.worktreePath)).toBe(true);
+  expect(await branchExists("sent-after")).toBe(true);
+  expect([...(await db.archivedBranches("r"))]).toEqual(["idle-done"]);
+  // The sweep reads the same rule.
+  const cfg: OrcaConfig = { repos: [repo], portRange: [30000, 40000], staleHours: 24 };
+  expect((await verbs.sweep(cfg, { now: NOW })).worktrees.map((w) => w.branch)).toEqual([]);
+});
+
 test("C1f: a worktree whose HEAD is BEHIND the merged PR's last head (a later commit pushed from elsewhere, never fetched here) is reaped, not kept as reused", async () => {
   const behind = await workOn("formula-behind"); // the worktree's HEAD — what it knows of the branch
   // Simulate the PR's last push landing on another machine: a separate clone (sharing no .git with

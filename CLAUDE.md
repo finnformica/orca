@@ -771,7 +771,12 @@ so the gate can never loop. The conversational prompts also open with a session-
   (10 min, from `mergedAt`/`closedAt`) and never while an agent runs on it — preview stopped, placement
   cleared, a merged branch deleted (a closed one kept), the card archived. **Nothing that would lose
   work is removed** (`cleanupDecision`): uncommitted changes, or commits on no remote, not in base and
-  not the PR's last head (`git.worktreeSafety`), flag the card (`cleanupBlocked`) instead. `orca
+  not the PR's last head (`git.worktreeSafety`), flag the card (`cleanupBlocked`) instead. A pass
+  with the open PRs unknown reaps nothing. A run that started after the merge is new work: its start
+  comes from the newest turn in the database, so a restart does not forget it. Each worktree removal
+  logs one `orca: removing worktree <path> (<cause>)` line. The `node_modules` copy
+  (`git.linkToWorktree`) runs in a child process at `ionice -c3` / `nice -n 19` and never blocks the
+  bridge. `orca
   archive` goes to the worktree's home instance (`/api/workstreams/archive`). **`orca sweep
   [--confirm]`** (`/api/cleanup/sweep`, fanned out to every instance) is the one-off: finished
   worktrees, previews with nothing behind them and Orca's own branches left with no worktree or open
@@ -1582,7 +1587,11 @@ serves it. Workers get `bin/worker/` on PATH (`agentEnv` — not `bin/`, whose `
 orchestrator's) and `orca-shot <url> [--viewport 390x844] [--dark] …`, which prints `shot: <path>`;
 every worker prompt says it is the ONLY way to take a screenshot (`SCREENSHOTS`), and shot paths in a
 reply ride the worker report (`reportedShots` in `workerEvent`). `--type <text>` types into the
-focused field.
+focused field. **Remote PR previews** (`server/remotePreview.ts`, rules in `shared/remotePreview.ts`,
+`docs/remote-previews.md`): a repo's `remotePreview` (`github-deployment` | `github-check-or-comment`
+| `template`, optional `login` by secret NAME) lets `orca-shot --preview [/path] [--pr N]` shoot the
+preview of the PR's HEAD commit (never an older commit's URL; the worktree must be pushed), after a
+wait and a login, through the same queue. A form login's cookies stay in memory per run + origin.
 **Heavy commands** (`server/heavy.ts`): agents ran Playwright, Jest, eslint and builds at once and
 OOM-killed each other in `orca-agents.slice`. Finn removed the slice's CPUQuota: this queue is the
 ONLY CPU control, so it must see every heavy task. A box-wide slot queue, like `orca-shot`'s but with

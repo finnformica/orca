@@ -378,7 +378,7 @@ const NO_PR = "Do NOT open a pull request or run `gh pr create` — stop after c
 // The box can't afford a browser per worker (an OOM took it down), so the bridge runs ONE capped,
 // queued browser (server/screenshot.ts) and this is how a worker reaches it. Shot paths in the reply
 // ride into the orchestrator's report (`workerEvent`).
-export const SCREENSHOTS = "To see a UI, the ONLY allowed way to take a screenshot is `orca-shot <url> [--viewport 390x844] [--dark] [--wait-for <sel>] [--click <sel>] [--press <key>] [--type <text>] [--hover <sel>] [--scroll <y|sel>] [--label before|after] [--console]` (it queues on Orca's one memory-capped browser and prints `shot: <path>`; Read the PNG to look at it). If a page shows blank or a spinner, add `--console` to print its exceptions and failed requests. `--click` is a real mouse click, so it opens a Radix UI dropdown/menu trigger (those open on pointerdown, not plain `click`); `--press <key>` sends a named key (Enter, Escape, ArrowDown, …), repeatable and ordered with `--click`, for navigating a menu once it's open. `--type <text>` types into the focused field (`--click` it first). Never launch a browser yourself: chrome-devtools-mcp, playwright-mcp, @playwright/mcp, Playwright browser launches outside tests and puppeteer are banned. orca-shot is the only way to look at a page. Orca kills any other browser in an agent's scope and flags the workstream. Run Playwright e2e tests only in the test queue's e2e slot (`orca-run --kind e2e -- <command>`). Screenshots are optional: commit and push your work FIRST, then take one only if it helps; if it times out or the queue is busy, give up and move on rather than retrying. For a UI change, list each before/after `shot: <path>` line in your Verification. To run Orca itself for a screenshot, use `scripts/preview-orca.sh` (a read-only preview bridge) — never start `server/index.ts` or `bun run dev` directly: a full bridge left running from a worktree acts on the shared database with stale code.";
+export const SCREENSHOTS = "To see a UI, the ONLY allowed way to take a screenshot is `orca-shot <url> [--viewport 390x844] [--dark] [--wait-for <sel>] [--click <sel>] [--press <key>] [--type <text>] [--hover <sel>] [--scroll <y|sel>] [--label before|after] [--console]` (it queues on Orca's one memory-capped browser and prints `shot: <path>`; Read the PNG to look at it). If a page shows blank or a spinner, add `--console` to print its exceptions and failed requests. `--click` is a real mouse click, so it opens a Radix UI dropdown/menu trigger (those open on pointerdown, not plain `click`); `--press <key>` sends a named key (Enter, Escape, ArrowDown, …), repeatable and ordered with `--click`, for navigating a menu once it's open. `--type <text>` types into the focused field (`--click` it first). Never launch a browser yourself: chrome-devtools-mcp, playwright-mcp, @playwright/mcp, Playwright browser launches outside tests and puppeteer are banned. orca-shot is the only way to look at a page. Orca kills any other browser in an agent's scope and flags the workstream. Run Playwright e2e tests only in the test queue's e2e slot (`orca-run --kind e2e -- <command>`). Screenshots are optional: commit and push your work FIRST, then take one only if it helps; if it times out or the queue is busy, give up and move on rather than retrying. For a UI change, list each before/after `shot: <path>` line in your Verification. To run Orca itself for a screenshot, use `scripts/preview-orca.sh` (a read-only preview bridge) — never start `server/index.ts` or `bun run dev` directly: a full bridge left running from a worktree acts on the shared database with stale code. If the repo deploys a remote PR preview, take the final screenshots from that preview: commit and push first, then run `orca-shot --preview [/path] [--pr N] [the same flags]` with a Bash timeout of 10 minutes (it waits for the deploy of your pushed head commit and signs in). Use a local stack only to debug, never for the final screenshots. If it says there is no open PR, do not open one: say in Remaining that the preview screenshots wait on a PR, and the orchestrator opens a draft PR early and asks you for them. If it says the repo has no remotePreview, shoot a URL as above.";
 
 // A headless run narrates almost nothing by default: one real run produced 11 text blocks against 97
 // tool calls, so the chat showed a list of commands and nothing about why. Claude's own reasoning is
@@ -1331,14 +1331,14 @@ export const turnSource = (messages: string[]): TurnSource =>
 /** The origin of a turn the orchestrator starts: its wake and, BY ID, the `queued_message` rows a
  *  person wrote (`ids[i]` is the row of `messages[i]`). Worker reports and Orca events are counted,
  *  not referenced. No text is copied: the chat and `orca read` join the rows. Pure. */
-export function turnOrigin(wake: { runId: string; messages: string[]; ids: number[] }): TurnOrigin {
+export function turnOrigin(wake: { runId: string; messages: string[]; ids: number[]; agent?: string }): TurnOrigin {
   const messageIds: number[] = [];
   let otherCount = 0;
   wake.messages.forEach((m, i) => {
     if (!isUserMessage(m)) otherCount++;
     else if (wake.ids[i] !== undefined) messageIds.push(wake.ids[i]!);
   });
-  return { wakeRunId: wake.runId, messageIds, otherCount };
+  return { wakeRunId: wake.runId, messageIds, otherCount, ...(wake.agent ? { agent: wake.agent } : {}) };
 }
 /** What the chat shows for a referenced row that is gone. */
 export const ORIGIN_MISSING = "message no longer stored";
@@ -2050,6 +2050,9 @@ const ORCHESTRATOR_ROLE = [
   "  asks: first without --confirm, show them the plan, then with it. Relay its restore instructions.",
   "- You cannot promote or post to Slack as the user (only through a link with `orca post`), and you merge only through `orca merge --when-green` — never",
   "  `gh pr merge`. Where the repo's policy refuses, say the PR is ready for the user to merge.",
+  "- A repo with a remote PR preview (`remotePreview`) deploys only from a PR, and workers do not open",
+  "  PRs. When a worker has pushed and says its preview screenshots wait on a PR, open a draft PR for its",
+  "  branch early (`gh pr create --draft`), then `orca send` it to take them with `orca-shot --preview`.",
   "- Keep open PRs mergeable without being asked. On every wake, scan the board for PRs with failing",
   "  CI, merge conflicts, or unresolved review comments or threads, and run `orca address` on each",
   "  such workstream yourself — one at a time per workstream, never while its agent is already",
@@ -2374,8 +2377,21 @@ export function removeSlashQuery(text: string, start: number, caret: number): { 
 // local branch with no PR yet can be named too. A workstream with a PR is listed once, as its PR.
 
 export type WorkstreamRef = { repo: string; branch: string; title: string; instance?: string; prNumber?: number };
+/** A named agent the `@` picker can list (the orchestrator's panel and quick-ask only). A pick is
+ *  not text: it makes a recipient chip, and the message goes to each chosen agent. */
+export type AgentMention = { name: string; displayName: string };
 /** One option in the `@` picker. */
-export type MentionRef = { kind: "pr"; ref: PrRef } | { kind: "workstream"; ref: WorkstreamRef };
+export type MentionRef = { kind: "pr"; ref: PrRef } | { kind: "workstream"; ref: WorkstreamRef } | { kind: "agent"; ref: AgentMention };
+
+/** Each word of the query must start the agent's name or a word of its display name. Order kept. */
+export function filterAgentMentions(agents: AgentMention[], query: string): AgentMention[] {
+  const words = query.toLowerCase().replace(/^[#@]/, "").split(/\s+/).filter(Boolean);
+  const hit = (a: AgentMention) => {
+    const hays = [a.name.toLowerCase(), ...a.displayName.toLowerCase().split(/[^a-z0-9]+/)];
+    return words.every((w) => hays.some((h) => h.startsWith(w)));
+  };
+  return agents.filter(hit);
+}
 
 /** Each word of the query must start at a word boundary of the repo name, the branch or the title,
  *  so `at-ref` finds `orca/at-reference-…`. Board order is kept. */
@@ -2388,10 +2404,12 @@ export function filterWorkstreamRefs(refs: WorkstreamRef[], query: string, limit
   return refs.filter(hit).slice(0, limit);
 }
 
-/** The picker's options: open PRs, then workstreams with no PR among `prs`, then merged PRs. A PR
- *  pick also matches its own workstream's title and branch (same repo + PR number), so a query that
- *  names the workstream — not the PR title — still finds it. */
-export function filterMentions(prs: PrRef[], workstreams: WorkstreamRef[], query: string, limit = 8): MentionRef[] {
+/** The picker's options, in its groups: named agents (only where `agents` is given), then
+ *  workstreams with no PR among `prs`, then PRs (open before merged, `filterPrRefs`' order). Each
+ *  group keeps its own filter and ranking, and `limit` caps EACH group, so a long list of workstreams
+ *  never hides every PR. A PR pick also matches its own workstream's title and branch (same repo +
+ *  PR number), so a query that names the workstream — not the PR title — still finds it. */
+export function filterMentions(prs: PrRef[], workstreams: WorkstreamRef[], query: string, limit = 8, agents: AgentMention[] = []): MentionRef[] {
   const prKeys = new Set(prs.map((p) => `${p.repo}#${p.number}`));
   const own = workstreams.filter((w) => w.prNumber === undefined || !prKeys.has(`${w.repo}#${w.prNumber}`));
   const wsByPr = new Map(workstreams.filter((w) => w.prNumber !== undefined).map((w) => [`${w.repo}#${w.prNumber}`, w] as const));
@@ -2400,10 +2418,24 @@ export function filterMentions(prs: PrRef[], workstreams: WorkstreamRef[], query
     return ws ? [ws.title, ws.branch] : [];
   });
   return [
-    ...prHits.filter((p) => p.state !== "merged").map((ref): MentionRef => ({ kind: "pr", ref })),
+    ...filterAgentMentions(agents, query).slice(0, limit).map((ref): MentionRef => ({ kind: "agent", ref })),
     ...filterWorkstreamRefs(own, query, limit).map((ref): MentionRef => ({ kind: "workstream", ref })),
-    ...prHits.filter((p) => p.state === "merged").map((ref): MentionRef => ({ kind: "pr", ref })),
-  ].slice(0, limit);
+    ...prHits.map((ref): MentionRef => ({ kind: "pr", ref })),
+  ];
+}
+
+/** The `@` picker's group headings, in the picker's order. */
+export const MENTION_GROUPS: { kind: MentionRef["kind"]; label: string }[] = [
+  { kind: "agent", label: "Agents" },
+  { kind: "workstream", label: "Workstreams" },
+  { kind: "pr", label: "Pull requests" },
+];
+/** `filterMentions`' options cut into their groups; `index` is the option's place in the flat list
+ *  (the one ↑/↓ walks, so a heading is never a stop). An empty group is left out. */
+export function mentionGroups(matches: MentionRef[]): { kind: MentionRef["kind"]; label: string; items: { m: MentionRef; index: number }[] }[] {
+  return MENTION_GROUPS
+    .map((g) => ({ ...g, items: matches.flatMap((m, index) => (m.kind === g.kind ? [{ m, index }] : [])) }))
+    .filter((g) => g.items.length > 0);
 }
 
 /** The text a workstream pick inserts: `` `branch` ``, qualified as `` `repo/branch` `` — the name the
@@ -2413,9 +2445,16 @@ export function workstreamRefLabel(ref: WorkstreamRef, repoCount: number, contex
   return contextRepo === undefined || (repoCount > 1 && contextRepo !== ref.repo) ? `\`${ref.repo}/${ref.branch}\`` : `\`${ref.branch}\``;
 }
 
-/** The text a pick of either kind inserts. */
+/** The text a pick inserts. An agent pick inserts nothing (it becomes a recipient chip); its label
+ *  is `@name` for any caller that wants one. */
 export function mentionLabel(m: MentionRef, prs: PrRef[], repoCount: number, contextRepo?: string): string {
-  return m.kind === "pr" ? prRefLabel(m.ref, prs, repoCount, contextRepo) : workstreamRefLabel(m.ref, repoCount, contextRepo);
+  return m.kind === "pr" ? prRefLabel(m.ref, prs, repoCount, contextRepo)
+    : m.kind === "agent" ? `@${m.ref.name}` : workstreamRefLabel(m.ref, repoCount, contextRepo);
+}
+
+/** The composer's "Sent to …" receipt after a send to recipient chips. */
+export function sentToLabel(names: string[]): string {
+  return names.length <= 2 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
 }
 
 // ---- The overview (the board's default List view) ----

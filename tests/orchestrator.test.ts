@@ -1300,7 +1300,7 @@ test("every message a wake handles is a queue row; spawn and send reference the 
   const branch = Object.keys(await db.enrichment("r"))[0]!;
   await rm(hold);
   const [first] = await settled(() => db.turns("r", branch), 1);
-  expect(first!.origin).toEqual({ wakeRunId: claim!.runId!, messageIds: [Number(row!.id)], otherCount: 1 });
+  expect(first!.origin).toEqual({ wakeRunId: claim!.runId!, messageIds: [Number(row!.id)], otherCount: 1, agent: "chief" });
   // Kept through the finish, beside the outcome, and no text copy anywhere in the turn's record.
   expect(first!.structured?.outcome).toBe("Done.");
   const [stored] = (await new Bun.SQL(pg.url)`SELECT structured FROM turn WHERE run_id = ${first!.id}`) as { structured: Record<string, unknown> }[];

@@ -20,6 +20,7 @@ import * as git from "./git";
 import * as notify from "./notify";
 import type { OrcaConfig, RepoConfig } from "./config";
 import { addressPr, repoHere } from "./verbs";
+import { orcaSide } from "../shared/rooms";
 import {
   UPKEEP_DEFAULT_CONCURRENCY, unhandedActionable, upkeepDecision, upkeepReasonText, waitingOnUser,
   type OrchStatus, type UpkeepDecision, type UpkeepRecord,
@@ -116,7 +117,8 @@ async function look(cfg: OrcaConfig, c: Candidate, active: number, cap: number, 
         body: `Auto-addressing PR #${pr.number}: ${reasons}.`,
       });
       console.log(`[upkeep] ${repo.name}#${pr.number} (${pr.branch}): auto-addressing ${reasons}`);
-      await addressPr(cfg, repo, pr.branch);
+      // Recorded as Orca's turn, not yours: the button writes the same instruction (shared/rooms.ts).
+      await addressPr(cfg, repo, pr.branch, { sender: orcaSide("upkeep") });
       return decision;
     }
   }

@@ -15,6 +15,12 @@
 // bounds the whole call: past it, the fetch is aborted — which drops a still-queued job on the
 // bridge before any browser launches for it — and this exits non-zero with a clear message rather
 // than letting a Bash tool call sit until ITS OWN limit kills it with no output at all.
+//
+// `orca-shot --preview [/path] [--pr N] [flags…]` shoots the repo's REMOTE PR preview instead of a
+// URL (RepoConfig.remotePreview, server/remotePreview.ts): the bridge finds the open PR of this
+// worktree's branch (or PR N), waits until the preview of its head commit is ready, signs in with
+// the repo's login recipe, and shoots `/path` under the preview URL. It starts no local service.
+// Push first: a worktree ahead of its PR is refused. The default --timeout is then 600s.
 import { copyFileSync } from "fs";
 import { API_PORT } from "../../server/ports";
 
@@ -22,7 +28,7 @@ const argv = process.argv.slice(2);
 const body: Record<string, unknown> = { steps: [] as unknown[] };
 const steps = body.steps as unknown[];
 let out: string | undefined;
-let timeoutS = 100;
+let timeoutS: number | undefined;
 const value = (i: number, name: string) => {
   const v = argv[i + 1];
   if (v === undefined) { console.error(`orca-shot: ${name} needs a value`); process.exit(2); }
@@ -31,6 +37,8 @@ const value = (i: number, name: string) => {
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i]!;
   if (a === "--viewport") body.viewport = value(i++, a);
+  else if (a === "--preview") body.preview = true;
+  else if (a === "--pr") body.pr = Number(value(i++, a));
   else if (a === "--dark") body.dark = true;
   else if (a === "--full-page") body.fullPage = true;
   else if (a === "--console") body.console = true;
@@ -44,17 +52,30 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === "--hover") steps.push({ hover: value(i++, a) });
   else if (a === "--scroll") { const v = value(i++, a); steps.push({ scroll: /^\d+$/.test(v) ? Number(v) : v }); }
   else if (a === "--wait") steps.push({ wait: Number(value(i++, a)) });
-  else if (a === "-h" || a === "--help") { console.log("usage: orca-shot <url> [--viewport WxH] [--dark] [--wait-for sel] [--click sel] [--press key] [--type text] [--hover sel] [--scroll y|sel] [--wait ms] [--full-page] [--label name] [--out file] [--timeout seconds] [--console]\n  --console prints the page's exceptions, console errors and failed requests\n  --click is a real mouse click (opens Radix UI menus/triggers, which open on pointerdown)\n  --press sends a named key (Enter, Escape, ArrowDown, …), repeatable, ordered with --click\n  --type types text into the focused element (--click the field first)"); process.exit(0); }
+  else if (a === "-h" || a === "--help") { console.log("usage: orca-shot <url> [--viewport WxH] [--dark] [--wait-for sel] [--click sel] [--press key] [--type text] [--hover sel] [--scroll y|sel] [--wait ms] [--full-page] [--label name] [--out file] [--timeout seconds] [--console]\n       orca-shot --preview [/path] [--pr N] [the same flags]\n  --preview shoots the repo's remote PR preview (push first; it waits for the deploy and signs in)\n  --console prints the page's exceptions, console errors and failed requests\n  --click is a real mouse click (opens Radix UI menus/triggers, which open on pointerdown)\n  --press sends a named key (Enter, Escape, ArrowDown, …), repeatable, ordered with --click\n  --type types text into the focused element (--click the field first)"); process.exit(0); }
   else if (a.startsWith("--")) { console.error(`orca-shot: unknown flag ${a}`); process.exit(2); }
   else body.url = a;
 }
-if (!body.url) { console.error("orca-shot: a URL is required (e.g. orca-shot http://localhost:5173 --viewport 390x844)"); process.exit(2); }
+if (body.preview) {
+  // The positional argument is a path under the preview; the bridge finds the URL.
+  body.path = body.url;
+  delete body.url;
+  body.cwd = process.cwd();
+  if (process.env.ORCA_REPO) body.repo = process.env.ORCA_REPO;
+  if (process.env.ORCA_BRANCH) body.branch = process.env.ORCA_BRANCH;
+  if (process.env.ORCA_RUN_ID) body.runId = process.env.ORCA_RUN_ID;
+  if (body.pr !== undefined && !(Number.isInteger(body.pr) && (body.pr as number) > 0)) { console.error("orca-shot: --pr needs a PR number"); process.exit(2); }
+  timeoutS ??= 600;
+  // The bridge stops waiting for the deploy a little before this call gives up, so the error says why.
+  body.maxWaitMs = Math.max(0, timeoutS - 60) * 1000;
+} else if (!body.url) { console.error("orca-shot: a URL is required (e.g. orca-shot http://localhost:5173 --viewport 390x844)"); process.exit(2); }
+timeoutS ??= 100;
 if (!Number.isFinite(timeoutS) || timeoutS <= 0) { console.error("orca-shot: --timeout needs a positive number of seconds"); process.exit(2); }
 
 const controller = new AbortController();
 const deadline = setTimeout(() => controller.abort(), timeoutS * 1000);
 
-const timedOut = () => { console.error("orca-shot: screenshot queue busy, try again later; do not block on screenshots"); process.exit(1); };
+const timedOut = () => { console.error(body.preview ? `orca-shot: no preview shot after ${timeoutS}s (the deploy or the screenshot queue is slow); do not block on screenshots` : "orca-shot: screenshot queue busy, try again later; do not block on screenshots"); process.exit(1); };
 
 let res: Response;
 try {
@@ -94,7 +115,11 @@ try {
       buf = buf.slice(nl + 1);
       if (!line.trim()) continue;
       const msg = JSON.parse(line);
-      if (typeof msg.queued === "number") {
+      if (typeof msg.waiting === "string") {
+        console.error(`waiting: ${msg.waiting}`);
+      } else if (typeof msg.preview === "string") {
+        console.log(`preview: ${msg.preview} (PR #${msg.pr}, ${String(msg.sha).slice(0, 7)}, from ${msg.from})`);
+      } else if (typeof msg.queued === "number") {
         if (msg.queued > 0 && msg.queued !== lastAhead) console.error(`queued: ${msg.queued} ahead`);
         lastAhead = msg.queued;
       } else {

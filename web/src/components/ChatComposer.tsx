@@ -2,11 +2,12 @@ import { useContext, useEffect, useId, useLayoutEffect, useRef, useState, type C
 import { createPortal } from "react-dom";
 import { ArrowUp, GitBranch, KeyRound, Loader2, Mic, Paperclip, Square, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { AgentAvatar } from "@/components/AgentAvatar";
 import { ComposerAttachment } from "@/components/ComposerAttachment";
 import { Shortcut } from "@/components/ui/kbd";
 import { Tip } from "@/components/ui/tip";
 import { usePrRefs, useVoiceInput, useWorkstreamRefs } from "@/store";
-import { NO_WALK, appendQuote, filterMentions, filterSlashCommands, historyKey, historyStep, insertPrRef, listContinuation, mentionLabel, prTrigger, removeSlashQuery, slashActive, slashStep, slashTrigger, withSecretRefs, type HistoryWalk, type MentionRef } from "@/workstream";
+import { NO_WALK, appendQuote, filterMentions, filterSlashCommands, historyKey, historyStep, insertPrRef, listContinuation, mentionLabel, prTrigger, mentionGroups, removeSlashQuery, sentToLabel, slashActive, slashStep, slashTrigger, withSecretRefs, type AgentMention, type HistoryWalk, type MentionRef } from "@/workstream";
 import { lineVisualRow, scrollCaretIntoView } from "@/lib/caretRow";
 import { cn, PipContext } from "@/lib/utils";
 import { clearDraft, draftFiles, loadDraft, saveDraft } from "@/lib/composerDraft";
@@ -59,8 +60,15 @@ function visualRowFlags(el: HTMLTextAreaElement, key: string): { firstVisualRow?
 // and a labelled Send with its keycap; its @ picker is portaled out of the host's overflow-hidden.
 export function ChatComposer({
   persistKey, onSubmit, placeholder, leading, footer, onCancel, autoFocus, optimistic, history, action, alt, className, repo, prefill, insert,
-  variant = "box", icon, inputLabel, commands, top,
+  variant = "box", icon, inputLabel, commands, top, agents, onOpenAgent,
 }: {
+  // Named agents the `@` picker lists first (the orchestrator's panel and quick-ask only). A pick
+  // takes the `@query` out of the text and adds a recipient chip; `onSubmit` gets the chosen names,
+  // and the host sends to each of them only. Typed `@name` text with no chip stays plain text.
+  agents?: AgentMention[];
+  // The receipt's Open after a send to recipient chips ("Sent to Research · Open"). The quick
+  // variant draws no receipt of its own: its host has one.
+  onOpenAgent?: (name: string) => void;
   // A small card inside the box, above the text (the `/secret` card). It opens and closes with a
   // height + fade (`Collapse`); the text, the toolbar and Send stay usable below it. Closing it puts
   // the focus back in the text, where the caret was, unless the text has the focus already.
@@ -86,7 +94,7 @@ export function ChatComposer({
   repo?: string;
   className?: string; // extra classes for the box itself, e.g. a host's own background
   persistKey?: string; // if set, text + images persist to localStorage under this key
-  onSubmit: (text: string, images: File[]) => Promise<void>;
+  onSubmit: (text: string, images: File[], recipients: string[]) => Promise<void>;
   placeholder?: string;
   leading?: ReactNode; // e.g. the repo selector, sits bottom-left inside the box
   footer?: ReactNode; // transient line below the box, e.g. a "Sent · Undo" affordance
@@ -95,7 +103,7 @@ export function ChatComposer({
   action?: ReactNode;
   // A second way to send the same text, shown as a button beside Send — e.g. the chat's
   // "stop & send" while a run is in flight. Same clearing/error handling as Send.
-  alt?: { label: string; title?: string; onSubmit: (text: string, images: File[]) => Promise<void> };
+  alt?: { label: string; title?: string; onSubmit: (text: string, images: File[], recipients: string[]) => Promise<void> };
   onCancel?: () => void;
   autoFocus?: boolean;
   // Fire-and-forget: hand the message to onSubmit and return at once (no spinner, no clearing).
@@ -121,6 +129,18 @@ export function ChatComposer({
   const [secrets, setSecretsState] = useState<string[]>(() => (persistKey ? loadDraft(persistKey).secrets : []));
   const latestSecrets = useRef(secrets);
   const setSecrets = (v: string[]) => { latestSecrets.current = v; setSecretsState(v); };
+  // Recipient chips: the names of the agents picked from the `@` picker. Not part of the draft.
+  const [recipients, setRecipientsState] = useState<string[]>([]);
+  const latestRecipients = useRef(recipients);
+  const setRecipients = (v: string[]) => { latestRecipients.current = v; setRecipientsState(v); };
+  const agentLabel = (name: string) => agents?.find((a) => a.name === name)?.displayName ?? name;
+  // The receipt after a send to recipient chips: their names, for a few seconds.
+  const [sentTo, setSentTo] = useState<{ names: string[]; seq: number } | null>(null);
+  useEffect(() => {
+    if (!sentTo) return;
+    const t = setTimeout(() => setSentTo(null), SENT_TO_MS);
+    return () => clearTimeout(t);
+  }, [sentTo]);
   const [hydrated, setHydrated] = useState(!persistKey);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -134,7 +154,7 @@ export function ChatComposer({
   const [guardBusy, setGuardBusy] = useState(false);
   const [guardError, setGuardError] = useState<string | null>(null);
   const approved = useRef(new Set<string>());
-  const guardSend = useRef<((text: string, images: File[]) => Promise<void>) | undefined>(undefined);
+  const guardSend = useRef<((text: string, images: File[], recipients: string[]) => Promise<void>) | undefined>(undefined);
   const heldIn = (text: string): SecretFinding[] => secretFindings(text).filter((f) => !approved.current.has(f.value));
 
   // @ picker: the `@query` at the caret lists the board's cached PRs (open first) and its live
@@ -156,10 +176,14 @@ export function ChatComposer({
   const pendingFocus = useRef(true);
   const listId = useId();
   const trig = prTrigger(value, caret);
-  const matches = trig && trig.start !== dismissedAt ? filterMentions(refs, wsRefs, trig.query) : [];
+  const matches = trig && trig.start !== dismissedAt ? filterMentions(refs, wsRefs, trig.query, MENTION_GROUP_LIMIT, agents) : [];
   const picking = matches.length > 0;
   const activeIdx = Math.min(active, Math.max(0, matches.length - 1));
   const optionId = (i: number) => `${listId}-pr-${i}`;
+  // ↑/↓ walk the flat list across the groups: keep the active option in view of the list's scroll.
+  useEffect(() => {
+    if (picking) textRef.current?.ownerDocument.getElementById(optionId(activeIdx))?.scrollIntoView?.({ block: "nearest" });
+  }, [picking, activeIdx]);
   // `/` menu: the same rules as the @ picker (↑/↓, Enter/Tab, Escape, a blur dismisses that `/`).
   // The two never both match: a slash trigger is a `/` at a line start or after whitespace, then a name.
   const strig = commands ? slashTrigger(value, caret) : null;
@@ -181,6 +205,18 @@ export function ChatComposer({
   };
   const pick = (m: MentionRef) => {
     if (!trig) return;
+    if (m.kind === "agent") {
+      // An agent is a recipient, not text: the `@query` goes, a chip comes (once per agent).
+      const next = removeSlashQuery(value, trig.start, caret);
+      pendingCaret.current = next.caret;
+      pendingFocus.current = true;
+      setDismissedAt(null);
+      if (!latestRecipients.current.includes(m.ref.name)) setRecipients([...latestRecipients.current, m.ref.name]);
+      setValue(next.text);
+      setCaret(next.caret);
+      setActive(0);
+      return;
+    }
     const next = insertPrRef(value, trig.start, caret, mentionLabel(m, refs, repoCount, repo));
     pendingCaret.current = next.caret;
     pendingFocus.current = true; // the box already has focus (that's how the picker opened) — a no-op either way
@@ -327,7 +363,7 @@ export function ChatComposer({
   // A tap on Send keeps the focus (and the phone's keyboard) in the box — see lib/viewport's
   // keepComposerFocus — so one tap sends once and the next message can be typed straight away.
   const canSubmit = Boolean(value.trim() || images.length || secrets.length);
-  const submit = async (send: (text: string, images: File[]) => Promise<void> = onSubmit, override?: string, chips: string[] = secrets) => {
+  const submit = async (send: (text: string, images: File[], recipients: string[]) => Promise<void> = onSubmit, override?: string, chips: string[] = secrets) => {
     const typed = (override ?? value).trim();
     if (!typed && !images.length && !chips.length) return;
     // A key-like value you have not saved or approved is held here (the paste guard).
@@ -340,26 +376,31 @@ export function ChatComposer({
     }
     setGuarded(false);
     const text = withSecretRefs(typed, chips);
+    const to = latestRecipients.current;
     // Optimistic: fire and return so the parent can close instantly; it owns draft + errors.
-    if (optimistic) return void send(text, images);
+    if (optimistic) return void send(text, images, to);
     // Clear NOW, not after onSubmit resolves: a box still holding the text you just sent reads as
     // "it didn't go". On failure the text (and attachments) come back — into the box if it is still
     // empty, else into the error line, so neither what you sent nor what you're typing is lost.
     // Every chip goes with the message (the bubble draws them), so the box clears them all.
-    const sent = { text: typed, images, secrets: chips };
+    const sent = { text: typed, images, secrets: chips, recipients: to };
     setValue("");
     setImages([]);
     setSecrets([]);
+    setRecipients([]);
+    setSentTo(null);
     walk.current = NO_WALK;
     if (persistKey) clearDraft(persistKey);
     setError(null);
     try {
-      await send(text, sent.images);
+      await send(text, sent.images, to);
+      if (to.length) setSentTo((p) => ({ names: to, seq: (p?.seq ?? 0) + 1 }));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       const empty = !latest.current.trim() && !latestSecrets.current.length;
       setError(empty ? msg : `${msg} — not sent: “${sent.text}”`);
       if (empty) { setValue(sent.text); setImages(sent.images); setSecrets(sent.secrets); }
+      if (!latestRecipients.current.length) setRecipients(sent.recipients);
     }
   };
   const held = guarded ? heldIn(value) : [];
@@ -551,10 +592,17 @@ export function ChatComposer({
       )}
       style={quick && rect ? { left: rect.left, bottom: (textRef.current?.ownerDocument.defaultView?.innerHeight ?? 0) - rect.top + 4, width: rect.width } : undefined}
     >
-    <ul id={listId} role="listbox" aria-label="Pull requests and workstreams" className="max-h-64 overflow-y-auto">
-      {matches.map((m, i) => (
+    <ul id={listId} role="listbox" aria-label={agents?.length ? "Agents, workstreams and pull requests" : "Workstreams and pull requests"} className="max-h-64 overflow-y-auto">
+      {/* One group per kind under a small muted heading (the look of shadcn's CommandGroup heading).
+          The options keep ONE flat index, so ↑/↓ moves across the groups and never stops on a heading. */}
+      {mentionGroups(matches).map((g) => (
+      <li key={g.kind} role="presentation" data-slot="mention-group" data-group={g.kind}>
+      <div id={`${listId}-group-${g.kind}`} role="presentation" data-slot="mention-group-heading" className="text-muted-foreground px-2 py-1.5 text-xs font-medium">{g.label}</div>
+      <ul role="group" aria-labelledby={`${listId}-group-${g.kind}`}>
+      {g.items.map(({ m, index: i }) => (
         <li
-          key={m.kind === "pr" ? `${m.ref.repo}#${m.ref.number}` : `${m.ref.repo}/${m.ref.branch}`}
+          key={m.kind === "pr" ? `${m.ref.repo}#${m.ref.number}` : m.kind === "agent" ? `agent:${m.ref.name}` : `${m.ref.repo}/${m.ref.branch}`}
+          data-mention={m.kind}
           id={optionId(i)}
           role="option"
           aria-selected={i === activeIdx}
@@ -563,7 +611,13 @@ export function ChatComposer({
           onMouseEnter={() => setActive(i)}
           onClick={() => pick(m)}
         >
-          {m.kind === "pr" ? (
+          {m.kind === "agent" ? (
+            <>
+              <AgentAvatar name={m.ref.name} size={20} />
+              <span className="min-w-0 flex-1 truncate">{m.ref.displayName}</span>
+              <span className="text-muted-foreground shrink-0 font-mono text-xs">@{m.ref.name}</span>
+            </>
+          ) : m.kind === "pr" ? (
             <>
               <span className="text-muted-foreground shrink-0 font-mono text-xs">#{m.ref.number}</span>
               <span className="min-w-0 flex-1 truncate">{m.ref.title}</span>
@@ -583,6 +637,9 @@ export function ChatComposer({
           )}
         </li>
       ))}
+      </ul>
+      </li>
+      ))}
     </ul>
     </div>
   );
@@ -598,9 +655,10 @@ export function ChatComposer({
         {/* The card's own clicks (a label, its padding) keep their focus: focusText would take it. */}
         <Collapse open={topOpen}><div data-slot="chat-composer-top" onMouseDown={(e) => e.stopPropagation()}>{top}</div></Collapse>
         {guardBar}
-        {/* Every attached item, one row, one chip component: images and files, then secrets. */}
-        {images.length + secrets.length > 0 && (
-          <div data-slot="chat-composer-attachments" className="flex flex-wrap gap-2 p-2 pb-0">
+        {/* Every attached item, one row, one chip component: recipients, images and files, then secrets. */}
+        {recipients.length + images.length + secrets.length > 0 && (
+          <div data-slot="chat-composer-attachments" className="flex flex-wrap items-center gap-2 p-2 pb-0">
+            {recipients.map((name) => <ComposerAttachment key={`agent:${name}`} item={{ kind: "agent", name, label: agentLabel(name) }} onRemove={() => setRecipients(latestRecipients.current.filter((r) => r !== name))} />)}
             {images.map((f, i) => <FileChip key={i} file={f} onRemove={() => setImages((p) => p.filter((_, j) => j !== i))} />)}
             {secrets.map((ref) => <ComposerAttachment key={ref} item={{ kind: "secret", name: ref }} onRemove={() => setSecrets(latestSecrets.current.filter((r) => r !== ref))} />)}
           </div>
@@ -650,11 +708,25 @@ export function ChatComposer({
       </div>
       {mentions && (quick && textRef.current ? createPortal(mentions, textRef.current.ownerDocument.body) : mentions)}
       {commandMenu && (quick && textRef.current ? createPortal(commandMenu, textRef.current.ownerDocument.body) : commandMenu)}
+      {sentTo && !quick && (
+        <p role="status" aria-live="polite" data-slot="chat-composer-sent-to" className="text-muted-foreground mt-1 flex min-w-0 items-center gap-1.5 px-1 text-xs">
+          <span className="truncate">Sent to {sentToLabel(sentTo.names.map(agentLabel))}</span>
+          {onOpenAgent && <>
+            <span aria-hidden>·</span>
+            <Button type="button" variant="link" size="sm" className="text-link h-auto p-0 text-xs" onClick={() => { const n = sentTo.names[0]!; setSentTo(null); onOpenAgent(n); }}>Open</Button>
+          </>}
+        </p>
+      )}
       {error && <p data-slot="chat-composer-error" className={cn("text-destructive text-xs break-words", quick ? "border-t px-3 py-1.5" : "mt-1 px-1")}>{error}</p>}
       {footer}
     </div>
   );
 }
+
+/** At most this many options in each `@` picker group (agents, workstreams, pull requests). */
+export const MENTION_GROUP_LIMIT = 5;
+/** How long the composer's "Sent to … · Open" receipt shows (ms). */
+export const SENT_TO_MS = 6000;
 
 // Opens and closes its content with a height + fade and a slight slide (200ms, ease-out): grid rows
 // 0fr → 1fr animate the real height, so the chat log above moves smoothly, never in one jump. The

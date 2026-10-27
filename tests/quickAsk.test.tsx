@@ -247,7 +247,7 @@ test("Q9: the box is the shared composer — @ opens the PR picker (# does not);
   await act(async () => { await store.refresh(); });
   await mount("/");
   await click($('[data-slot="quick-ask-pill"]')!);
-  const listbox = () => $('[role="listbox"][aria-label="Pull requests and workstreams"]');
+  const listbox = () => $('[role="listbox"][aria-label="Workstreams and pull requests"]');
   const typeAt = async (v: string) => act(async () => {
     const el = input();
     Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(el, v);

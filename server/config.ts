@@ -7,6 +7,7 @@ import { MERGE_WHEN_GREEN, type MergePolicy } from "../web/src/workstream";
 import { GOOGLE_CLIENT_ID_ENV, GOOGLE_CLIENT_SECRET_ENV, GOOGLE_REDIRECT_ORIGIN_ENV } from "../shared/serverKeys";
 import { serverSwitcherProblems, type ServerSwitcherConfig } from "./servers";
 import { serverIdentityProblems, type ServerIdentityConfig } from "../shared/serverIdentity";
+import { remotePreviewProblems, type RemotePreviewConfig } from "../shared/remotePreview";
 
 /** Preview service: `{port}` = this service's assigned port; `{svc:name}` = another's;
  *  `{url:name}` = the URL the browser opens for a service (HTTPS on a box, see server/tsserve.ts);
@@ -151,6 +152,9 @@ export type RepoConfig = {
    *  goes red on a required check, or gets actionable review threads is Address-PR'd by Orca on its
    *  own. On unless set to false. */
   autoUpkeep?: boolean;
+  /** Where this repo's PRs deploy a preview (shared/remotePreview.ts), so `orca-shot --preview`
+   *  shoots it instead of a local stack. Absent = no remote preview: `orca-shot <url>` only. */
+  remotePreview?: RemotePreviewConfig;
 };
 
 export type UiOptions = { showBoard?: boolean };
@@ -355,6 +359,7 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
     if (r.modelEscalation !== undefined && r.modelEscalation !== "suggest" && r.modelEscalation !== "apply") {
       errors.push(`${where}.modelEscalation must be "suggest" or "apply"`);
     }
+    if (r.remotePreview !== undefined) errors.push(...remotePreviewProblems(r.remotePreview, `${where}.remotePreview`));
     if (r.mergePolicy !== undefined) {
       const m = r.mergePolicy as Record<string, unknown> | null;
       if (!m || typeof m !== "object" || Array.isArray(m)) errors.push(`${where}.mergePolicy must be an object`);

@@ -4,8 +4,11 @@
 // lifecycle is the composer's: an item is added (paste, drop, the picker, "Save as secret"), removed
 // by its ✕, and cleared from the box on send, when it moves to the message.
 // A secret chip never holds the value: only the stored name and a lock icon.
+// An agent chip is a recipient (`To Research`, its avatar, ✕): a pick from the `@` picker in the
+// orchestrator's panel or quick-ask. It is a small pill, not a tile, and a send goes to it.
 import { FileText, Lock, Paperclip, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { AgentAvatar } from "@/components/AgentAvatar";
 import { ExpandableImage } from "@/components/ExpandableImage";
 import { Tip } from "@/components/ui/tip";
 import { cn } from "@/lib/utils";
@@ -15,7 +18,9 @@ export type AttachmentItem =
   | { kind: "image"; name: string; src: string; gallery?: { images: { src: string; alt: string }[]; index: number } }
   | { kind: "file"; name: string; href?: string }
   // `name`: the secret's reference, e.g. `chat/stripe_key`.
-  | { kind: "secret"; name: string };
+  | { kind: "secret"; name: string }
+  // `name`: the agent's name (`research`); `label`: its display name (`Research`).
+  | { kind: "agent"; name: string; label: string };
 
 /** The label a secret chip shows: the stored name, without its scope. */
 export const secretLabel = (ref: string) => ref.slice(ref.lastIndexOf("/") + 1);
@@ -24,7 +29,22 @@ export const secretLabel = (ref: string) => ref.slice(ref.lastIndexOf("/") + 1);
 const secretTip = (ref: string) => `Stored secret ${ref}. The message holds only its name.`;
 
 export function ComposerAttachment({ item, onRemove, look = "tile" }: { item: AttachmentItem; onRemove?: () => void; look?: "tile" | "chip" }) {
-  const label = item.kind === "secret" ? `Secret ${item.name}` : item.name;
+  const label = item.kind === "secret" ? `Secret ${item.name}` : item.kind === "agent" ? `To ${item.label}` : item.name;
+  if (item.kind === "agent") {
+    return (
+      <span data-slot={look === "tile" ? "composer-attachment" : "attachment-agent"} data-attachment="agent" data-agent={item.name} aria-label={label}
+        className="bg-muted/40 text-foreground inline-flex h-7 max-w-48 items-center gap-1.5 self-center rounded-md border pr-1 pl-1.5 text-xs">
+        <AgentAvatar name={item.name} size={16} />
+        <span className="truncate"><span className="text-muted-foreground">To </span>{item.label}</span>
+        {onRemove && (
+          <Button type="button" variant="ghost" size="icon" aria-label={`Remove ${label}`} data-slot="composer-attachment-remove" onClick={onRemove}
+            className="text-muted-foreground hover:text-foreground size-5 shrink-0 rounded-sm p-0">
+            <X className="size-3" />
+          </Button>
+        )}
+      </span>
+    );
+  }
   if (look === "chip") {
     const slot = { "data-slot": `attachment-${item.kind}`, "data-attachment": item.kind } as const;
     if (item.kind === "image") {

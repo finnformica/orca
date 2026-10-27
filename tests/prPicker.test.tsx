@@ -8,7 +8,7 @@ import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { ChatComposer } from "@/components/ChatComposer";
 import { Shortcuts } from "@/components/CommandPalette";
-import { filterMentions, filterPrRefs, filterWorkstreamRefs, insertPrRef, mentionLabel, prRefLabel, prTrigger, workstreamRefLabel, type PrRef, type WorkstreamRef } from "@/workstream";
+import { filterAgentMentions, filterMentions, mentionGroups, filterPrRefs, filterWorkstreamRefs, insertPrRef, mentionLabel, prRefLabel, prTrigger, sentToLabel, workstreamRefLabel, type AgentMention, type PrRef, type WorkstreamRef } from "@/workstream";
 
 describe("prTrigger", () => {
   test("fires on an @ at the start, after whitespace or a bracket, up to the caret", () => {
@@ -97,20 +97,21 @@ describe("workstream refs", () => {
     expect(mentionLabel({ kind: "pr", ref: refs[1]! }, refs, 1)).toBe("#6101");
     expect(insertPrRef("see @loc", 4, 8, "`web/orca/local-search-1a2b`")).toEqual({ text: "see `web/orca/local-search-1a2b` ", caret: 33 });
   });
-  test("filterMentions: open PRs, then workstreams with no listed PR, then merged; a workstream with a PR shows once", () => {
-    const label = (m: ReturnType<typeof filterMentions>[number]) => (m.kind === "pr" ? `#${m.ref.number}` : m.ref.branch);
-    expect(filterMentions(refs, wsRefs, "").map(label)).toEqual(["#6150", "#6101", "#42", "orca/local-search-1a2b", "rate-limits", "#6095", "#6090"]);
+  test("filterMentions: workstreams with no listed PR, then PRs (open, then merged); a workstream with a PR shows once", () => {
+    const label = (m: ReturnType<typeof filterMentions>[number]) => (m.kind === "pr" ? `#${m.ref.number}` : m.kind === "agent" ? `@${m.ref.name}` : m.ref.branch);
+    expect(filterMentions(refs, wsRefs, "").map(label)).toEqual(["orca/local-search-1a2b", "rate-limits", "#6150", "#6101", "#42", "#6095", "#6090"]);
     expect(filterMentions(refs, wsRefs, "auth").map(label)).toEqual(["#6101", "#42"]); // auth-flow is #6101
     // Its PR not in the list (e.g. not polled yet): the workstream itself shows.
     expect(filterMentions([], wsRefs, "auth").map(label)).toEqual(["auth-flow"]);
-    expect(filterMentions(refs, wsRefs, "", 4)).toHaveLength(4);
+    // The limit caps EACH group: 2 workstreams (all there are) and 4 PRs.
+    expect(filterMentions(refs, wsRefs, "", 4).map(label)).toEqual(["orca/local-search-1a2b", "rate-limits", "#6150", "#6101", "#42", "#6095"]);
   });
 
   // A PR whose title doesn't name its workstream (the bug: "More item check rules" / branch-demo
   // #6361 "feat: add compare, date, pattern checks" didn't show for a query on the workstream title).
   const titleRefs: PrRef[] = [...refs, { repo: "web", number: 6361, title: "feat: add compare, date, pattern checks", state: "open" }];
   const titleWsRefs: WorkstreamRef[] = [...wsRefs, { repo: "web", branch: "orca/item-check-rules-9f3a21", title: "More item check rules", prNumber: 6361 }];
-  const label = (m: ReturnType<typeof filterMentions>[number]) => (m.kind === "pr" ? `#${m.ref.number}` : m.ref.branch);
+  const label = (m: ReturnType<typeof filterMentions>[number]) => (m.kind === "pr" ? `#${m.ref.number}` : m.kind === "agent" ? `@${m.ref.name}` : m.ref.branch);
 
   test("filterMentions: a PR pick also matches its workstream's title", () => {
     expect(filterMentions(titleRefs, titleWsRefs, "more item").map(label)).toEqual(["#6361"]);
@@ -128,9 +129,9 @@ describe("workstream refs", () => {
     expect(hits[0]).toEqual({ kind: "pr", ref: titleRefs[5]! });
   });
 
-  test("filterMentions: current ordering is kept (open PRs, then no-PR workstreams, then merged)", () => {
+  test("filterMentions: group order (no-PR workstreams, then PRs), each group in its own ranking", () => {
     expect(filterMentions(titleRefs, titleWsRefs, "").map(label))
-      .toEqual(["#6361", "#6150", "#6101", "#42", "orca/local-search-1a2b", "rate-limits", "#6095", "#6090"]);
+      .toEqual(["orca/local-search-1a2b", "rate-limits", "#6361", "#6150", "#6101", "#42", "#6095", "#6090"]);
   });
 });
 
@@ -143,6 +144,7 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 let root: Root | undefined;
 let container: HTMLElement | undefined;
 let sent: string[] = [];
+let opened: string[] = [];
 
 afterEach(async () => {
   apiFake.reset();
@@ -152,9 +154,10 @@ afterEach(async () => {
   container?.remove();
   root = container = undefined;
   sent = [];
+  opened = [];
 });
 
-async function mountComposer(shortcuts = false) {
+async function mountComposer(shortcuts = false, agents?: AgentMention[], onSubmit?: (t: string, f: File[], to: string[]) => Promise<void>) {
   apiFake.prsData = [
     { branch: "auth", number: 6101, title: "Fix auth flow", url: "u", isDraft: false, reviewStatus: "approved" },
     { branch: "bill", number: 6150, title: "Billing page", url: "u", isDraft: true },
@@ -164,7 +167,7 @@ async function mountComposer(shortcuts = false) {
   document.body.appendChild(container);
   await act(async () => {
     root = createRoot(container!);
-    root.render(<>{shortcuts && <Shortcuts />}<ChatComposer repo="r" onSubmit={async (t) => { sent.push(t); }} /></>);
+    root.render(<>{shortcuts && <Shortcuts />}<ChatComposer repo="r" agents={agents} onOpenAgent={(n) => { opened.push(n); }} onSubmit={onSubmit ?? (async (t) => { sent.push(t); })} /></>);
     await flush();
   });
   return container.querySelector("textarea")!;
@@ -268,5 +271,136 @@ describe("ChatComposer @ picker", () => {
     expect(container!.querySelector('[role="listbox"]')).toBeNull();
     await type(box, "#61");
     expect(container!.querySelector('[role="listbox"]')).toBeNull();
+  });
+});
+
+// Named agents in the `@` picker (the orchestrator's panel and quick-ask): listed first, and a pick
+// is a recipient chip, not text.
+const team: AgentMention[] = [
+  { name: "chief", displayName: "Chief of Staff" },
+  { name: "research", displayName: "Research" },
+  { name: "assistant", displayName: "Assistant" },
+];
+
+describe("agent mentions (pure)", () => {
+  test("filterAgentMentions: each word starts the name or a display-name word", () => {
+    expect(filterAgentMentions(team, "").map((a) => a.name)).toEqual(["chief", "research", "assistant"]);
+    expect(filterAgentMentions(team, "res").map((a) => a.name)).toEqual(["research"]);
+    expect(filterAgentMentions(team, "staff").map((a) => a.name)).toEqual(["chief"]);
+    expect(filterAgentMentions(team, "@as").map((a) => a.name)).toEqual(["assistant"]);
+    expect(filterAgentMentions(team, "earch")).toEqual([]); // not mid-word
+  });
+  test("filterMentions: agents first on a match, then the PR/workstream order; none without the agents argument", () => {
+    const agentsFirst = filterMentions(refs, wsRefs, "", 8, team);
+    expect(agentsFirst.slice(0, 3).map((m) => m.kind)).toEqual(["agent", "agent", "agent"]);
+    expect(agentsFirst.slice(3).map((m) => m.kind === "pr" ? `#${m.ref.number}` : m.kind)).toEqual(["workstream", "workstream", "#6150", "#6101", "#42", "#6095", "#6090"]);
+    expect(filterMentions(refs, wsRefs, "auth").every((m) => m.kind !== "agent")).toBe(true);
+    // An agent that also matches still comes first: `a` hits Assistant and the `api` PR.
+    expect(filterMentions(refs, wsRefs, "a", 8, team).map((m) => m.kind === "agent" ? m.ref.name : m.kind)[0]).toBe("assistant");
+    expect(mentionLabel({ kind: "agent", ref: team[1]! }, refs, 1)).toBe("@research");
+  });
+  test("mentionGroups: Agents, Workstreams, Pull requests; flat indexes kept; an empty group left out", () => {
+    const groups = mentionGroups(filterMentions(refs, wsRefs, "", 8, team));
+    expect(groups.map((g) => g.label)).toEqual(["Agents", "Workstreams", "Pull requests"]);
+    expect(groups.flatMap((g) => g.items.map((x) => x.index))).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]) // 3 agents, 2 workstreams, 5 PRs;
+    expect(mentionGroups(filterMentions(refs, wsRefs, "auth", 8, team)).map((g) => g.label)).toEqual(["Pull requests"]);
+    expect(mentionGroups([])).toEqual([]);
+  });
+  test("sentToLabel joins names in plain words", () => {
+    expect(sentToLabel(["Research"])).toBe("Research");
+    expect(sentToLabel(["Research", "Assistant"])).toBe("Research and Assistant");
+    expect(sentToLabel(["A", "B", "C"])).toBe("A, B and C");
+  });
+});
+
+describe("ChatComposer @ agent recipients", () => {
+  const chips = () => [...container!.querySelectorAll<HTMLElement>('[data-attachment="agent"]')];
+
+  test("the list is grouped under muted headings; ↑/↓ cross the groups and never stop on a heading", async () => {
+    apiFake.agentsData = [{ branch: "orca/local-search", worktreePath: "/wt/local-search", agentStatus: "idle" }];
+    const box = await mountComposer(false, team);
+    await type(box, "@");
+    const headings = () => [...container!.querySelectorAll('[data-slot="mention-group-heading"]')].map((h) => h.textContent);
+    expect(headings()).toEqual(["Agents", "Workstreams", "Pull requests"]);
+    const groups = [...container!.querySelectorAll('[role="group"]')];
+    expect(groups.map((g) => document.getElementById(g.getAttribute("aria-labelledby")!)!.textContent)).toEqual(headings());
+    expect(groups.map((g) => g.querySelectorAll('[role="option"]').length)).toEqual([3, 1, 2]);
+    // ↑/↓ walk the options only: from the last agent to the workstream, then into the PRs, then wrap.
+    for (let i = 0; i < 2; i++) await key(box, "ArrowDown");
+    expect(selected()!.textContent).toBe("Assistant@assistant");
+    await key(box, "ArrowDown");
+    expect(selected()!.getAttribute("data-mention")).toBe("workstream");
+    await key(box, "ArrowDown");
+    expect(selected()!.textContent).toContain("#6150");
+    await key(box, "ArrowDown");
+    await key(box, "ArrowDown"); // wraps to the first agent
+    expect(selected()!.textContent).toBe("Chief of Staff@chief");
+    await key(box, "ArrowUp"); // and back to the last PR
+    expect(selected()!.textContent).toContain("#6101");
+    // An empty group has no heading.
+    await type(box, "@fix");
+    expect(headings()).toEqual(["Pull requests"]);
+  });
+
+  test("a workstream chat (no agents) lists no agent", async () => {
+    const box = await mountComposer();
+    await type(box, "@");
+    expect(container!.querySelector('[data-mention="agent"]')).toBeNull();
+  });
+
+  test("an agent pick removes the @query and adds a 'To …' chip with its avatar; ✕ removes it", async () => {
+    const box = await mountComposer(false, team);
+    await type(box, "please @res");
+    expect(options()[0]!.getAttribute("data-mention")).toBe("agent");
+    expect(options()[0]!.textContent).toBe("Research@research");
+    expect(options()[0]!.querySelector('svg[data-slot="agent-avatar"]')).not.toBeNull();
+    await key(box, "Enter");
+    expect(box.value).toBe("please ");
+    expect(chips().map((c) => c.textContent)).toEqual(["To Research"]);
+    expect(chips()[0]!.querySelector('svg[data-slot="agent-avatar"][data-agent="research"]')).not.toBeNull();
+    // A second pick of the same agent adds no second chip.
+    await type(box, "please @res");
+    await key(box, "Enter");
+    expect(chips()).toHaveLength(1);
+    await act(async () => { chips()[0]!.querySelector<HTMLElement>('[data-slot="composer-attachment-remove"]')!.click(); await flush(); });
+    expect(chips()).toHaveLength(0);
+  });
+
+  test("the send passes the chosen names, clears the chips and shows 'Sent to … · Open'", async () => {
+    const got: { text: string; to: string[] }[] = [];
+    const box = await mountComposer(false, team, async (text, _f, to) => { got.push({ text, to }); });
+    await type(box, "@res");
+    await key(box, "Enter");
+    await type(box, "@ass");
+    await key(box, "Enter");
+    await type(box, "dig into the flake");
+    await key(box, "Enter");
+    expect(got).toEqual([{ text: "dig into the flake", to: ["research", "assistant"] }]);
+    expect(chips()).toHaveLength(0);
+    const receipt = container!.querySelector('[data-slot="chat-composer-sent-to"]')!;
+    expect(receipt.textContent).toBe("Sent to Research and Assistant·Open");
+    await act(async () => { receipt.querySelector("button")!.click(); await flush(); });
+    expect(opened).toEqual(["research"]);
+    expect(container!.querySelector('[data-slot="chat-composer-sent-to"]')).toBeNull();
+  });
+
+  test("typed @name text with no chip stays text and sends with no recipients", async () => {
+    const got: string[][] = [];
+    const box = await mountComposer(false, team, async (_t, _f, to) => { got.push(to); });
+    await type(box, "ask @research");
+    await key(box, "Escape");
+    await key(box, "Enter");
+    expect(got).toEqual([[]]);
+    expect(container!.querySelector('[data-slot="chat-composer-sent-to"]')).toBeNull();
+  });
+
+  test("a failed send gives the chips back", async () => {
+    const box = await mountComposer(false, team, async () => { throw new Error("bridge down"); });
+    await type(box, "@res");
+    await key(box, "Enter");
+    await type(box, "hello");
+    await key(box, "Enter");
+    expect(box.value).toBe("hello");
+    expect(chips().map((c) => c.textContent)).toEqual(["To Research"]);
   });
 });

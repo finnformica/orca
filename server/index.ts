@@ -14,6 +14,7 @@ import { portFree, reclaimBridgePort, waitForPortFree } from "./net";
 import { RENEW_POLL_MS, refreshProfile, renewStaleLogins, routingInfo, setProfileEnabled, setProfileEnabledEverywhere, usage, usageAcrossInstances } from "./usage";
 import * as ledger from "./ledger";
 import * as db from "./db";
+import * as rooms from "./rooms";
 import * as outbox from "./outbox";
 import * as transcript from "./transcript";
 import { backfillRun } from "./backfill";
@@ -60,6 +61,8 @@ import { providerOfModel } from "../shared/models";
 import * as prShots from "./prShots";
 import * as terminal from "./terminal";
 import { diskStore, parseShotRequest, shooter, type ShotRequest } from "./screenshot";
+import * as remotePreview from "./remotePreview";
+import { joinPreviewPath } from "../shared/remotePreview";
 import * as heavy from "./heavy";
 import * as heavyLeaks from "./heavyLeaks";
 import { checkCaller, forwardedHeaders, instanceHosts, listServers, selfServer, serverGate, withIdentity, withTailscaleUser } from "./servers";
@@ -443,7 +446,7 @@ const NOTICE_WINDOW = 200;
 // the machine that produced it is asleep. Everything else touches a worktree or spawns a process and
 // must run where the repo lives.
 const DATABASE_ONLY = new Set([
-  "/api/turns", "/api/turns/local", "/api/enrichment", "/api/enrichment/import", "/api/config", "/api/config/document",
+  "/api/turns", "/api/turns/local", "/api/rooms", "/api/enrichment", "/api/enrichment/import", "/api/config", "/api/config/document",
   // /api/usage merges every reachable instance's reading (usageAcrossInstances); /api/usage/local is
   // what that merge fetches from a PEER — always this host's own, unmerged, never forwarded (a repo's
   // placement must not send it chasing a worktree that has nothing to do with hydra).
@@ -762,14 +765,40 @@ async function api(req: Request, url: URL): Promise<Response> {
   // object per line — `{queued: N}` while N jobs are still ahead, then the result — so the CLI can
   // print progress instead of sitting silent past its Bash caller's own patience; `req.signal` lets
   // a CLI that gave up waiting pull its job back out of the queue before a browser ever launches it.
+  // `preview: true` (orca-shot --preview) first finds the repo's remote PR preview and waits for it
+  // (server/remotePreview.ts, `{waiting}` lines meanwhile), then signs in and shoots `path` under it.
   if (req.method === "POST" && p === "/api/screenshot") {
     let shot: ShotRequest;
-    try { shot = parseShotRequest(body); } catch (e) { return json({ error: (e as Error).message }, 400); }
+    const preview = body?.preview === true;
+    let previewRepo: RepoConfig | undefined;
+    try {
+      shot = parseShotRequest(preview ? { ...body, url: "http://preview.invalid/" } : body);
+      if (preview) {
+        previewRepo = remotePreview.repoFor(cfg, { repo: typeof body.repo === "string" ? body.repo : undefined, cwd: typeof body.cwd === "string" ? body.cwd : undefined });
+        if (!previewRepo) throw new Error("orca-shot --preview: no repo in Orca's config holds this directory (run it in a workstream's worktree)");
+        if (!previewRepo.remotePreview) throw new Error(`repo ${previewRepo.name} has no remotePreview in Orca's config: shoot a URL instead (orca-shot <url>)`);
+        if (body.pr !== undefined && !(Number.isInteger(body.pr) && body.pr > 0)) throw new Error("--pr must be a PR number");
+      }
+    } catch (e) { return json({ error: (e as Error).message }, 400); }
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
       async start(controller) {
         const write = (obj: unknown) => { try { controller.enqueue(encoder.encode(`${JSON.stringify(obj)}\n`)); } catch { /* client gone */ } };
         try {
+          if (previewRepo) {
+            const found = await remotePreview.resolvePreview(previewRepo, {
+              cwd: typeof body.cwd === "string" ? body.cwd : undefined,
+              branch: typeof body.branch === "string" && body.branch ? body.branch : undefined,
+              pr: body.pr, maxWaitMs: typeof body.maxWaitMs === "number" ? body.maxWaitMs : undefined,
+            }, { signal: req.signal, onWait: (why) => write({ waiting: why }) });
+            shot.url = joinPreviewPath(found.url, typeof body.path === "string" ? body.path : undefined);
+            write({ preview: found.url, from: found.from, pr: found.pr, sha: found.sha });
+            const login = await remotePreview.loadLogin(previewRepo.remotePreview!.login, found.url);
+            if (login) {
+              const key = remotePreview.sessionKey(typeof body.runId === "string" && body.runId ? body.runId : String(body.cwd ?? ""), login.origin);
+              shot.login = { ...login, session: login.form ? remotePreview.sessionCookies(key) : undefined, onCookies: (c) => remotePreview.keepSession(key, c) };
+            }
+          }
           write(await shooter().shoot(shot, { signal: req.signal, onQueue: (ahead) => write({ queued: ahead }) }));
         } catch (e) {
           write({ error: (e as Error).message });
@@ -1452,7 +1481,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     }
     await gh.mergePr(repo.repoPath, body.pr);
     if (body.branch) await db.archive(repo.name, body.branch); // finished, not forgotten — the chat history stays
-    if (body.worktreePath) await git.removeWorktree(repo.repoPath, body.worktreePath).catch(() => {});
+    if (body.worktreePath) await git.removeWorktree(repo.repoPath, body.worktreePath, `merge PR #${body.pr}`).catch(() => {});
     return json({ ok: true });
   }
   if (req.method === "POST" && p === "/api/prs/close") {
@@ -1461,7 +1490,7 @@ async function api(req: Request, url: URL): Promise<Response> {
       agent.stop(body.worktreePath);
       await agent.killInWorktree(body.worktreePath);
       preview.stop(body.worktreePath, true); // teardown: drop this preview's DB
-      await git.removeWorktree(repo.repoPath, body.worktreePath).catch(() => {});
+      await git.removeWorktree(repo.repoPath, body.worktreePath, `close PR #${body.pr}`).catch(() => {});
     }
     if (body.branch) await git.deleteBranch(repo.repoPath, body.branch);
     if (body.branch) await db.archive(repo.name, body.branch);
@@ -1531,7 +1560,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     return json(await git.syncWorktrees(repo.repoPath, repo.worktreeRoot));
   }
   if (req.method === "POST" && p === "/api/worktrees/remove") {
-    await removeWorktree(repo, body.worktreePath, body.branch, Boolean(body.deleteBranch)); // never deletes a branch with an open PR
+    await removeWorktree(repo, body.worktreePath, body.branch, Boolean(body.deleteBranch), "discard route"); // never deletes a branch with an open PR
     return json({ ok: true });
   }
   if (req.method === "GET" && p === "/api/agents") {
@@ -1576,7 +1605,7 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (req.method === "POST" && p === "/api/merge-local") {
     await git.mergeLocal(repo.repoPath, repo.baseBranch, body.branch);
     if (body.branch) await db.archive(repo.name, body.branch);
-    if (body.worktreePath) await git.removeWorktree(repo.repoPath, body.worktreePath).catch(() => {});
+    if (body.worktreePath) await git.removeWorktree(repo.repoPath, body.worktreePath, "merge-local").catch(() => {});
     return json({ ok: true });
   }
   if (req.method === "POST" && p === "/api/agents/run") {
@@ -1774,6 +1803,14 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (req.method === "POST" && p === "/api/queued/cancel") {
     await db.cancelQueuedMessage(Number(body.id));
     return json({ ok: true });
+  }
+  if (req.method === "GET" && p === "/api/rooms") {
+    // A chat's agent-to-agent messages (docs/design/agent-rooms.md), read off its turns and the
+    // named agents' chats. Read only: nothing about routing or delivery changes.
+    const branch = url.searchParams.get("branch");
+    if (!branch) return json({ error: "branch required" }, 400);
+    try { return json({ entries: await rooms.roomEntries(repo.name, branch) }); }
+    catch (e) { if (db.isDbError(e)) return json({ entries: [], dbUnavailable: true }); throw e; }
   }
   if (req.method === "GET" && p === "/api/turns/steps") {
     // Catch-up after a dropped stream: the steps recorded since the cursor the client holds. The

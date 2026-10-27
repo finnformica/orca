@@ -31,6 +31,7 @@ import { hostname } from "os";
 import { join } from "path";
 import type { AgentOutcome, AgentProvider, AgentTurn, StopReason, TurnCheck, TurnOrigin, TurnSource } from "../shared/agent";
 import * as bus from "./bus";
+import { chatOwner, turnRoute, type Side, type TurnRoute } from "../shared/rooms";
 import type { Notification, NotificationInput } from "../shared/notifications";
 
 export type TurnStatus = "running" | "done" | "error" | "stopped";
@@ -1492,12 +1493,13 @@ type TurnRow = {
   started_at: string | number; finished_at: string | number | null;
 };
 
-/** `structured` holds the outcome AND, for a turn the orchestrator started, its `origin`: split
- *  them, so nothing that reads the outcome (the chat's sections, the handover) sees the origin. */
-function splitStructured(v: (AgentOutcome & { origin?: TurnOrigin }) | null): { structured?: AgentOutcome; origin?: TurnOrigin } {
+/** `structured` holds the outcome AND, for a turn the orchestrator started, its `origin`, AND the
+ *  turn's `route` (shared/rooms.ts: who sent it, to whom): split them, so nothing that reads the
+ *  outcome (the chat's sections, the handover) sees either. */
+function splitStructured(v: (AgentOutcome & { origin?: TurnOrigin; route?: TurnRoute }) | null): { structured?: AgentOutcome; origin?: TurnOrigin; route?: TurnRoute } {
   if (!v) return {};
-  const { origin, ...outcome } = v;
-  return { ...(Object.keys(outcome).length ? { structured: outcome as AgentOutcome } : {}), ...(origin ? { origin } : {}) };
+  const { origin, route, ...outcome } = v;
+  return { ...(Object.keys(outcome).length ? { structured: outcome as AgentOutcome } : {}), ...(origin ? { origin } : {}), ...(route ? { route } : {}) };
 }
 
 const toTurn = (r: TurnRow): AgentTurn => ({
@@ -1526,14 +1528,18 @@ export async function startTurn(input: {
   repo: string; branch: string; runId: string; provider: AgentProvider;
   instruction?: string; prompt: string; sessionId?: string; startedAt: number; source?: TurnSource;
   origin?: TurnOrigin; // the orchestrator wake that started it (spawn / send / address): kept in `structured`
+  /** Who sent it, when the caller knows and the text does not say (the upkeep tick). */
+  sender?: Side;
 }): Promise<void> {
+  // Who sent the turn and to whom, recorded once here for every write path (shared/rooms.ts).
+  const route = turnRoute(chatOwner(input.repo, input.branch), input);
   return withRetry(async (sql) => {
     const id = await workstreamId(input.repo, input.branch);
     await sql`
       INSERT INTO turn (workstream_id, user_id, instance, run_id, provider, status, instruction, prompt, session_id, raw_ref, started_at, source, structured)
       VALUES (${id}, ${currentUser()}, ${instanceName()}, ${input.runId}, ${input.provider}, 'running', ${input.instruction ?? null}, ${input.prompt},
               ${input.sessionId ?? null}, ${input.sessionId ?? null}, ${input.startedAt}, ${input.source ?? null},
-              ${input.origin ? { origin: input.origin } : null}::jsonb)
+              ${{ route, ...(input.origin ? { origin: input.origin } : {}) }}::jsonb)
       ON CONFLICT (run_id) DO NOTHING`;
     bus.publish({ kind: "turn", runId: input.runId, repo: input.repo, branch: input.branch });
   });
@@ -1560,9 +1566,10 @@ export async function finishTurn(runId: string, input: {
         UPDATE turn SET
           status = ${input.status},
           response = ${input.response ?? null},
-          -- The outcome replaces what was there, but an origin written at the start stays.
-          structured = CASE WHEN turn.structured->'origin' IS NULL THEN ${input.structured ?? null}::jsonb
-            ELSE COALESCE(${input.structured ?? null}::jsonb, '{}'::jsonb) || jsonb_build_object('origin', turn.structured->'origin') END,
+          -- The outcome replaces what was there, but the origin and route written at the start stay.
+          structured = CASE WHEN turn.structured->'origin' IS NULL AND turn.structured->'route' IS NULL THEN ${input.structured ?? null}::jsonb
+            ELSE COALESCE(${input.structured ?? null}::jsonb, '{}'::jsonb)
+              || jsonb_strip_nulls(jsonb_build_object('origin', turn.structured->'origin', 'route', turn.structured->'route')) END,
           stop_reason = ${input.stopReason ?? null},
           session_id = COALESCE(${input.sessionId ?? null}, session_id),
           raw_ref = COALESCE(${input.sessionId ?? null}, raw_ref),
@@ -1711,6 +1718,35 @@ export async function turnPage(repo: string, branch: string, opts: { limit?: num
     turns: page.map(toTurn),
     older: hasMore && oldest ? `${Number(oldest.started_at)}~${String(oldest.id)}` : null,
   };
+  });
+}
+
+/** The turns that may hold a chat's room entries (docs/design/agent-rooms.md), newest `limit` of
+ *  each kind, oldest first: its own turns another agent sent (the recorded `route`; a row from
+ *  before it by its markers: an origin for a worker, an agent's message or wake for an agent), and
+ *  the other `@orca` chats' turns from `viewer` (the recorded sender, or `needle` in the text: an
+ *  ask of its inside a wake that was also yours, an old row). A wide net: shared/rooms.ts decides.
+ *  Same `user_id` scope as the chat itself: a room is readable only with its chats. */
+export async function roomTurns(repo: string, branch: string, viewer: Side, needle: string, limit = 200): Promise<{ repo: string; branch: string; turn: AgentTurn }[]> {
+  return withRetry(async (sql) => {
+    const legacy = viewer.kind === "agent" ? "markers" : "origin";
+    const mine = await sql`
+      SELECT t.*, w.repo AS ws_repo, w.branch AS ws_branch FROM turn t JOIN workstream w ON w.id = t.workstream_id
+      WHERE w.user_id = ${currentUser()} AND w.repo = ${repo} AND w.branch = ${branch} AND w.archived_at IS NULL
+        AND (t.structured->'route'->'sender'->>'kind' = 'agent'
+          OR (t.structured->'route' IS NULL AND (
+            (${legacy} = 'origin' AND t.structured->'origin' IS NOT NULL)
+            OR (${legacy} = 'markers' AND (position('[from ' in coalesce(t.instruction, '')) > 0 OR position('on agent:' in coalesce(t.instruction, '')) > 0)))))
+      ORDER BY t.started_at DESC, t.id DESC LIMIT ${limit}`;
+    const theirs = await sql`
+      SELECT t.*, w.repo AS ws_repo, w.branch AS ws_branch FROM turn t JOIN workstream w ON w.id = t.workstream_id
+      WHERE w.user_id = ${currentUser()} AND w.repo = '@orca' AND w.archived_at IS NULL
+        AND NOT (w.repo = ${repo} AND w.branch = ${branch})
+        AND (t.structured->'route'->'sender' = ${viewer}::jsonb OR position(${needle} in coalesce(t.instruction, '')) > 0)
+      ORDER BY t.started_at DESC, t.id DESC LIMIT ${limit}`;
+    return ([...mine, ...theirs] as (TurnRow & { ws_repo: string; ws_branch: string })[])
+      .map((r) => ({ repo: r.ws_repo, branch: r.ws_branch, turn: toTurn(r) }))
+      .sort((a, b) => (a.turn.startedAt ?? 0) - (b.turn.startedAt ?? 0));
   });
 }
 

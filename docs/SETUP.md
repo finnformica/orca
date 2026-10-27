@@ -476,6 +476,9 @@ limits. This browser needs a `chrome-headless-shell` on the box. Use the Playwri
 `~/.cache/ms-playwright`, or set one with `ORCA_SHOT_BROWSER`. cloud-init does not install a
 browser.
 
+A repo that deploys a preview for each PR can set `remotePreview`. Then workers shoot that preview
+with `orca-shot --preview` and do not start a local stack. See [remote-previews.md](remote-previews.md).
+
 <a id="heavy-commands"></a>
 **Heavy commands** go through a box-wide queue (`server/heavy.ts`). Agents on one box ran
 Playwright, Jest, `eslint` and builds at the same time. On a 4 vCPU, 15.7 GB box this caused OOM

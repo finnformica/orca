@@ -2,26 +2,40 @@ import { existsSync, realpathSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { dlopen, FFIType, suffix } from "bun:ffi";
 import { run } from "./run";
 import { changelogOnlyConflict, defaultPrBody, type MechanicalMerge, type SyncOutcome, type SyncResult } from "../web/src/workstream";
 
 const real = (p: string) => { try { return realpathSync(p); } catch { return p; } };
 
-// APFS copy-on-write directory clone via clonefile(2) — clones a whole tree in O(1) (block-shared
-// until modified). Bound lazily; on any non-macOS/non-APFS context the binding or the call fails
-// and callers fall back. clonefile requires `dst` to not already exist.
-let _clonefile: ((src: Buffer, dst: Buffer, flags: number) => number) | null | undefined;
-function cloneTree(src: string, dst: string): boolean {
-  if (_clonefile === undefined) {
-    try {
-      _clonefile = dlopen(`libSystem.${suffix}`, {
-        clonefile: { args: [FFIType.cstring, FFIType.cstring, FFIType.u32], returns: FFIType.i32 },
-      }).symbols.clonefile as (s: Buffer, d: Buffer, f: number) => number;
-    } catch { _clonefile = null; }
-  }
-  if (!_clonefile) return false;
-  try { return _clonefile(Buffer.from(`${src}\0`), Buffer.from(`${dst}\0`), 0) === 0; }
+// Copy a whole dependency tree (node_modules) into a worktree, in a CHILD process. The copy must
+// never block the bridge's event loop: on ext4 `cp --reflink=auto` is a full copy (about 2.5 GB
+// for branch-demo, 5+ minutes at an EBS disk cap), and a `spawnSync` copy froze every API call
+// for that time (2026-10-27). The child runs at idle IO class and lowest CPU priority, so it also
+// leaves the disk and the cores to the rest of the box.
+// macOS: APFS copy-on-write clone via clonefile(2), O(1) and block-shared until modified. It runs
+// in a short Bun child too: a synchronous FFI call still holds the event loop for seconds.
+const CLONEFILE = `const { dlopen, FFIType } = require("bun:ffi");
+const f = dlopen("libSystem.dylib", { clonefile: { args: [FFIType.cstring, FFIType.cstring, FFIType.u32], returns: FFIType.i32 } });
+const [src, dst] = process.argv.slice(-2);
+process.exit(f.symbols.clonefile(Buffer.from(src + "\\0"), Buffer.from(dst + "\\0"), 0) === 0 ? 0 : 1);`;
+
+/** The argv that copies `src` to a new `dst` at low priority — `ionice -c3` and `nice -n 19` when
+ *  the box has them. Exported for the tests. */
+export function treeCopyCommand(src: string, dst: string, platform: string = process.platform): string[] | null {
+  const copy = platform === "darwin" ? [process.execPath, "-e", CLONEFILE, src, dst]
+    : platform === "linux" ? ["cp", "-a", "--reflink=auto", src, dst]
+    : null;
+  if (!copy) return null;
+  const nice = Bun.which("nice") ? ["nice", "-n", "19"] : [];
+  const ionice = platform === "linux" && Bun.which("ionice") ? ["ionice", "-c3"] : [];
+  return [...ionice, ...nice, ...copy];
+}
+
+/** Copy a tree without blocking the event loop. False when the platform has no copy or it failed. */
+async function copyTree(src: string, dst: string): Promise<boolean> {
+  const cmd = treeCopyCommand(src, dst);
+  if (!cmd) return false;
+  try { return (await Bun.spawn(cmd, { env: process.env, stdout: "ignore", stderr: "ignore" }).exited) === 0; }
   catch { return false; }
 }
 
@@ -202,7 +216,8 @@ export async function copyToWorktree(
  * Provision heavy shared dirs (e.g. `node_modules`) from the main repo into a worktree — a fresh
  * checkout has none, and a real per-worktree install is slow + disk-heavy. Best-effort per path.
  *
- * `node_modules` is special-cased: it's CLONED, not symlinked, via APFS copy-on-write (clonefile).
+ * `node_modules` is special-cased: it's CLONED, not symlinked, via APFS copy-on-write (clonefile),
+ * or `cp --reflink=auto` on Linux, in a child process (`copyTree`) that never blocks the bridge.
  * A copy-on-write clone is near-instant and shares disk blocks with the source until a file is
  * modified, so it costs almost nothing — but each worktree gets a fully INDEPENDENT tree. That
  * isolation is the point: when worktrees shared one node_modules (a whole-dir symlink, or even
@@ -227,10 +242,10 @@ export async function linkToWorktree(repoPath: string, worktreePath: string, pat
     }
     // APFS CoW directory clone: ~2s for an 82k-file node_modules (vs ~40s for per-file `cp -c`),
     // block-shared with the source until modified, but a fully independent tree per worktree.
-    if (cloneTree(src, dest)) return;
     // Linux: GNU cp's reflink is the same idea (block-shared on btrfs/xfs, a real copy elsewhere);
-    // either way the worktree gets its own tree, which is the property that matters.
-    if (process.platform === "linux" && Bun.spawnSync(["cp", "-a", "--reflink=auto", src, dest]).exitCode === 0) return;
+    // either way the worktree gets its own tree, which is the property that matters. Both run in a
+    // low-priority child process and are awaited (copyTree), so the bridge keeps answering.
+    if (await copyTree(src, dest)) return;
     // Non-APFS / clonefile unavailable → degrade to the old per-entry symlink (keeps .vite local).
     await rm(dest, { recursive: true, force: true }).catch(() => {});
     await mkdir(dest, { recursive: true }).catch(() => {});
@@ -307,8 +322,11 @@ export async function localBranches(repoPath: string): Promise<{ branch: string;
   return out.split("\n").filter(Boolean).map((l) => { const [branch = "", worktreePath = ""] = l.split("\t"); return { branch, worktreePath }; });
 }
 
-/** Remove a worktree (does NOT touch the branch — that's an explicit, separate op). */
-export async function removeWorktree(repoPath: string, worktreePath: string): Promise<void> {
+/** Remove a worktree (does NOT touch the branch — that's an explicit, separate op). `why` names the
+ *  caller in one log line, so a worktree that went missing can be traced (2026-10-27: a live
+ *  workstream's worktree went, and nothing said what removed it). */
+export async function removeWorktree(repoPath: string, worktreePath: string, why = "unspecified"): Promise<void> {
+  console.log(`orca: removing worktree ${worktreePath} (${why})`);
   await git(repoPath, "worktree", "remove", "--force", worktreePath);
 }
 

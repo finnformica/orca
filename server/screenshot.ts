@@ -18,6 +18,7 @@ import * as cgroup from "./cgroup";
 import { stateDir } from "./state";
 import { killTree } from "./preview";
 import { scrubbedEnv } from "./env";
+import type { SessionCookie, ShotLogin } from "./remotePreview";
 
 export const SHOT_MEMORY_MAX_GB = 1.5;
 export const SHOT_CPU_WEIGHT = 50;
@@ -39,6 +40,10 @@ export type ShotRequest = {
   label?: string;
   /** Return the page's exceptions, console errors and warnings, and failed requests with the shot. */
   console?: boolean;
+  /** Set by the bridge for `orca-shot --preview` (server/remotePreview.ts), NEVER from a request
+   *  body: sign in to the preview before the page. `session` is the cookies an earlier shot of the
+   *  same run got; `onCookies` hears the cookies a form login got, so the next shot reuses them. */
+  login?: ShotLogin & { session?: SessionCookie[]; onCookies?: (cookies: SessionCookie[]) => void };
 };
 export type Shot = { id: string; path: string; bytes: number; label?: string; console?: string[] };
 
@@ -229,12 +234,14 @@ export function createShooter(deps: {
     const abort = new AbortController();
     const launching = launch(argv, scoped ? cgroup.runtimeEnv() : {}, unit, abort.signal);
     let timer: ReturnType<typeof setTimeout> | undefined;
+    // A form login is a second page load (and a submit) before the shot.
+    const limitMs = req.login?.form ? timeoutMs * 2 : timeoutMs;
     try {
       const timeout = new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
           abort.abort();
-          reject(new Error(`screenshot timed out after ${Math.round(timeoutMs / 1000)}s`));
-        }, timeoutMs);
+          reject(new Error(`screenshot timed out after ${Math.round(limitMs / 1000)}s`));
+        }, limitMs);
       });
       const png = await Promise.race([launching.then((session) => session.capture(req, log)), timeout]);
       const saved = await store.put(`${id}.png`, png);
@@ -400,15 +407,22 @@ async function capture(cdp: Cdp, req: ShotRequest, log: string[]): Promise<Uint8
   }
   await s("Emulation.setDeviceMetricsOverride", { width: vp.width, height: vp.height, deviceScaleFactor: 1, mobile: vp.width < 768 });
   await s("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: req.dark ? "dark" : "light" }] });
-  const loaded = cdp.once("Page.loadEventFired", sessionId);
-  const nav = await s("Page.navigate", { url: req.url });
-  if (nav.errorText) throw new Error(`could not load ${req.url}: ${nav.errorText}`);
-  await loaded;
+  const navigate = async (url: string) => {
+    const loaded = cdp.once("Page.loadEventFired", sessionId);
+    const nav = await s("Page.navigate", { url });
+    if (nav.errorText) throw new Error(`could not load ${url}: ${nav.errorText}`);
+    await loaded;
+  };
   const evaluate = async (expression: string) => (await s("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true })).result?.value;
   const waitFor = async (selector: string) => {
     const ok = await evaluate(`new Promise((r) => { const t0 = Date.now(); const f = () => document.querySelector(${JSON.stringify(selector)}) ? r(true) : Date.now() - t0 > 15000 ? r(false) : setTimeout(f, 100); f(); })`);
     if (!ok) throw new Error(`timed out waiting for ${selector}`);
   };
+  if (req.login) {
+    await signIn(cdp, s, req.login, { navigate, evaluate, waitFor, target: req.url });
+  } else {
+    await navigate(req.url);
+  }
   if (req.waitFor) await waitFor(req.waitFor);
   for (const step of req.steps ?? []) {
     if ("click" in step) {
@@ -435,6 +449,62 @@ async function capture(cdp: Cdp, req: ShotRequest, log: string[]): Promise<Uint8
   await Bun.sleep(300); // a settle for fonts and the last transition
   const { data } = await s("Page.captureScreenshot", { format: "png", captureBeyondViewport: !!req.fullPage });
   return Uint8Array.from(Buffer.from(data, "base64"));
+}
+
+/** Sign in to a remote preview, then leave the page on `target`. Headers go only to the preview
+ *  origin (a `Fetch` pattern, so a font or analytics host never sees them); cookies are set on that
+ *  origin. A form login reuses the run's session cookies when they still work, else types the user
+ *  and password and submits. No error message carries a credential. */
+async function signIn(
+  cdp: Cdp, s: (method: string, params?: object) => Promise<any>, login: NonNullable<ShotRequest["login"]>,
+  page: { navigate(url: string): Promise<void>; evaluate(expr: string): Promise<any>; waitFor(sel: string): Promise<void>; target: string },
+): Promise<void> {
+  if (login.headers && Object.keys(login.headers).length) {
+    const extra = Object.entries(login.headers);
+    const names = new Set(extra.map(([h]) => h.toLowerCase()));
+    cdp.on((method, p) => {
+      if (method !== "Fetch.requestPaused") return;
+      const kept = Object.entries(p.request.headers as Record<string, string>).filter(([h]) => !names.has(h.toLowerCase()));
+      void s("Fetch.continueRequest", { requestId: p.requestId, headers: [...kept, ...extra].map(([name, value]) => ({ name, value })) }).catch(() => {});
+    });
+    await s("Fetch.enable", { patterns: [{ urlPattern: `${login.origin}/*`, requestStage: "Request" }] });
+  }
+  const cookies = [...(login.cookies ?? []), ...(login.session ?? [])];
+  if (cookies.length) {
+    await s("Network.setCookies", { cookies: cookies.map((c) => ({ ...c, ...(("domain" in c && c.domain) ? {} : { url: login.origin }) })) });
+  }
+  await page.navigate(page.target);
+  const form = login.form;
+  if (!form) return;
+  const onLoginForm = () => page.evaluate(`(() => {
+    const u = document.querySelector(${JSON.stringify(form.userField)}), p = document.querySelector(${JSON.stringify(form.passwordField)});
+    return !!(u && p) || location.pathname === ${JSON.stringify(new URL(form.url).pathname)};
+  })()`);
+  // A session from an earlier shot of this run that still works: no second login.
+  if (login.session?.length && !(await onLoginForm())) return;
+  if (new URL(page.target).toString() !== new URL(form.url).toString()) await page.navigate(form.url);
+  try { await page.waitFor(form.userField); await page.waitFor(form.passwordField); }
+  catch { throw new Error(`login failed: no login form at ${form.url} (${form.userField}, ${form.passwordField})`); }
+  const typeInto = async (selector: string, text: string) => {
+    await page.evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); el.focus(); if ("select" in el) el.select(); })()`);
+    await s("Input.insertText", { text });
+  };
+  await typeInto(form.userField, form.user);
+  await typeInto(form.passwordField, form.password);
+  await page.waitFor(form.submit).catch(() => { throw new Error(`login failed: no submit button ${form.submit}`); });
+  await clickSelector(s, page.evaluate, form.submit);
+  // Signed in when the success selector shows, else when the password field is gone.
+  const done = form.waitFor
+    ? `!!document.querySelector(${JSON.stringify(form.waitFor)})`
+    : `!document.querySelector(${JSON.stringify(form.passwordField)})`;
+  const ok = await page.evaluate(`new Promise((r) => { const t0 = Date.now(); const f = () => { try { if (${done}) return r(true); } catch {} Date.now() - t0 > 20000 ? r(false) : setTimeout(f, 200); }; f(); })`).catch(() => undefined);
+  // A full-page submit replaces the document mid-evaluate; look once more on the new page.
+  if (!ok && !(await page.evaluate(done).catch(() => false))) {
+    throw new Error(`login failed: ${form.waitFor ? `${form.waitFor} did not show` : "still on the login form"} 20s after submit (check the user and the password secret)`);
+  }
+  const { cookies: got } = await s("Network.getCookies", { urls: [login.origin] });
+  login.onCookies?.((got ?? []).map((c: any) => ({ name: c.name, value: c.value, domain: c.domain, path: c.path, secure: c.secure, httpOnly: c.httpOnly, sameSite: c.sameSite, ...(c.expires > 0 ? { expires: c.expires } : {}) })));
+  await page.navigate(page.target);
 }
 
 /** A real mouse click on a selector: move, press and release at its centre over CDP, which fires the

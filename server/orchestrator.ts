@@ -796,10 +796,10 @@ async function grantOrigin(g: Grant): Promise<{ by?: string; via?: string }> {
 
 /** The wake in flight as the origin of a turn it starts (spawn / send / address): its run id and the
  *  ids of the person's messages it handled — references, never the text. Undefined outside a wake. */
-async function wakeOrigin(b: Blob): Promise<TurnOrigin | undefined> {
+async function wakeOrigin(b: Blob, agent: string): Promise<TurnOrigin | undefined> {
   const h = b.handling;
   if (!h || h.instance !== db.instanceName()) return undefined;
-  return turnOrigin({ runId: h.runId, messages: h.messages, ids: h.ids ?? [] });
+  return turnOrigin({ runId: h.runId, messages: h.messages, ids: h.ids ?? [], agent });
 }
 
 /** Run one `orca <verb>` and return what it prints. Throws with a message the model can act on. */
@@ -979,10 +979,10 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       const title = typeof args.title === "string" ? args.title : undefined;
       const prompt = withAttachments(workerBrief(brief), await attachArgs(args));
       if (on !== db.instanceName()) {
-        const ws = await viaInstance(cfg, on, "/api/workstreams/spawn", { repo: repo.name, prompt, title, model: args.model, ...restricted, origin: await wakeOrigin(b) });
+        const ws = await viaInstance(cfg, on, "/api/workstreams/spawn", { repo: repo.name, prompt, title, model: args.model, ...restricted, origin: await wakeOrigin(b, ag.name) });
         return `Spawned ${repo.name}/${ws.branch} "${ws.title}" on ${on}. End your turn; you are woken when it finishes.`;
       }
-      const ws = await verbs.createWorkstream(cfg, repo, { prompt, title, model: String(args.model), fields: { orchestrated: true, ...restricted }, origin: await wakeOrigin(b) });
+      const ws = await verbs.createWorkstream(cfg, repo, { prompt, title, model: String(args.model), fields: { orchestrated: true, ...restricted }, origin: await wakeOrigin(b, ag.name) });
       return `Spawned ${repo.name}/${ws.branch} "${ws.title}"${cfg.instances ? ` on ${on}` : ""}. End your turn; you are woken when it finishes.`;
     }
     case "send": {
@@ -1001,8 +1001,8 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       if (Object.keys(steer).length) await db.patchEnrichment(repo.name, branch, steer);
       const home = await verbs.placement(repo, { branch });
       const { status } = home !== db.instanceName()
-        ? (await viaInstance(cfg, home, "/api/workstreams/followup", { repo: repo.name, branch, instruction: text, origin: await wakeOrigin(b) }) as { status: string })
-        : await verbs.followUp(cfg, repo, branch, { instruction: text, origin: await wakeOrigin(b) });
+        ? (await viaInstance(cfg, home, "/api/workstreams/followup", { repo: repo.name, branch, instruction: text, origin: await wakeOrigin(b, ag.name) }) as { status: string })
+        : await verbs.followUp(cfg, repo, branch, { instruction: text, origin: await wakeOrigin(b, ag.name) });
       await db.patchEnrichment(repo.name, branch, { orchestrated: true }); // now yours to hear back from
       return status === "queued" ? "Queued behind the run in flight; it is sent when that finishes." : `Sent to ${repo.name}/${branch}. End your turn; you are woken when it finishes.`;
     }
@@ -1012,8 +1012,8 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       if (Object.keys(steer).length) await db.patchEnrichment(repo.name, branch, steer);
       const home = await verbs.placement(repo, { branch });
       const { status, pr } = home !== db.instanceName()
-        ? (await viaInstance(cfg, home, "/api/workstreams/address", { repo: repo.name, branch, origin: await wakeOrigin(b) }) as { status: string; pr: number })
-        : await verbs.addressPr(cfg, repo, branch, { origin: await wakeOrigin(b) });
+        ? (await viaInstance(cfg, home, "/api/workstreams/address", { repo: repo.name, branch, origin: await wakeOrigin(b, ag.name) }) as { status: string; pr: number })
+        : await verbs.addressPr(cfg, repo, branch, { origin: await wakeOrigin(b, ag.name) });
       await db.patchEnrichment(repo.name, branch, { orchestrated: true });
       if (status === "resolved") return `#${pr}'s only conflict was in its changelog: Orca merged the base, kept both sides' entries and pushed. Nothing else needed an agent, so none was started.`;
       return `${status === "queued" ? "Queued" : "Started"} Address PR for #${pr}. End your turn; you are woken when it finishes.`;
