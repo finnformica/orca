@@ -1,18 +1,23 @@
-// `orca cloudflare …`: the orchestrator's read access and limited write access to one Cloudflare
-// account (docs/integrations/cloudflare.md). The bridge calls Cloudflare; `bin/orca` only talks to
-// the bridge, like every other verb. The token and the account id come from the connected
-// Cloudflare integration (server/integrations/adapters/cloudflare.ts: the variable its secret_ref
-// names, default `ORCA_SECRET_CLOUDFLARE`, and `config.accountId`), else from the environment:
-// `ORCA_SECRET_CLOUDFLARE` and `ORCA_CLOUDFLARE_ACCOUNT_ID`. The `ORCA_SECRET_` prefix means
-// `scrubbedEnv` drops the token from every spawn, so no agent run sees it; it is never printed or
-// logged. The account id is in env.ts ORCA_SECRETS, so agents don't get it either.
+// `orca cloudflare …`: the orchestrator's read access and limited write access to the Cloudflare
+// accounts of one connection (docs/integrations/cloudflare.md). The bridge calls Cloudflare; `bin/orca`
+// only talks to the bridge, like every other verb. The token and the account ids come from the
+// connected Cloudflare integration (server/integrations/adapters/cloudflare.ts: the variable its
+// secret_ref names, default `ORCA_SECRET_CLOUDFLARE`, and `config.accountIds` / `config.accountId`),
+// else from the environment: `ORCA_SECRET_CLOUDFLARE` and `ORCA_CLOUDFLARE_ACCOUNT_ID`. With no
+// account id anywhere, the connection covers every account the token can see (`GET /accounts`).
+// `--cf-account <name or id>` picks one of them; with one account no flag is needed. With several and
+// no flag, a list read shows each account under its name, a Worker read finds the account that has
+// the Worker, a zone verb finds the account from the zone, and any other write refuses and names the
+// accounts (`Scope`). The `ORCA_SECRET_` prefix means `scrubbedEnv` drops the token from every spawn,
+// so no agent run sees it; it is never printed or logged. The account id is in env.ts ORCA_SECRETS,
+// so agents don't get it either.
 //
 // Writes are a dry run unless `--confirm`, and each confirmed one is logged (who, what, when, the
 // result): roll a Worker back to a version, delete a Worker, add or remove a Worker route, attach or
 // detach a Worker custom domain, add or remove a DNS record. There is deliberately NO upload of
 // Worker code: new Workers come from the repos' deploy pipelines.
 // A 401/403 names the token permission that call needs, so the fix is one edit in the dashboard.
-// The account watcher (server/cloudflareWatch.ts) reuses this client.
+// The account watcher (server/integrations/adapters/cloudflare.ts) reuses this client.
 
 
 export const CLOUDFLARE_TOKEN_ENV = "ORCA_SECRET_CLOUDFLARE";
@@ -25,8 +30,9 @@ const MAX_PAGES = 20;
 type Env = Record<string, string | undefined>;
 export type CloudflareOpts = {
   env?: Env; base?: string; fetch?: typeof fetch; log?: (line: string) => void; now?: () => Date;
-  /** From the connected integration; each falls back to the environment when absent. */
-  token?: string; account?: string;
+  /** From the connected integration; each falls back to the environment when absent. `accounts`
+   *  (the connection's account ids) wins over `account`; neither and no env id = every account. */
+  token?: string; account?: string; accounts?: string[];
   /** Called after each confirmed write with the names and ids it touched, so the account watcher
    *  can leave Orca's own changes out (`isOwnWrite`). */
   onWrite?: (targets: string[], at: number) => unknown;
@@ -141,18 +147,173 @@ export class Client {
   acct(path: string): string {
     return `/accounts/${encodeURIComponent(this.account)}${path}`;
   }
+
+  /** The same token on another account. */
+  on(account: string): Client {
+    return new Client(this.token, account, this.base, this.f);
+  }
 }
 
-/** The client, or an error that names what to set. */
+/** The client, or an error that names what to set. Its account is the first id the connection
+ *  names (or "" when it names none): `Scope` picks the account for each verb. */
 export function client(opts: CloudflareOpts): Client {
   const env = opts.env ?? process.env;
   const token = opts.token?.trim() || env[CLOUDFLARE_TOKEN_ENV]?.trim();
-  const account = opts.account?.trim() || env[CLOUDFLARE_ACCOUNT_ENV]?.trim();
-  const missing = [!token && CLOUDFLARE_TOKEN_ENV, !account && CLOUDFLARE_ACCOUNT_ENV].filter(Boolean);
-  if (missing.length) {
-    throw new CloudflareError(`Cloudflare is not set up on this bridge: connect the Cloudflare integration (Integrations > Connect: account id, and its secret variable set in this bridge's environment), or set ${missing.join(" and ")} and restart it. Create the token with the permissions in ${DOC}.`);
+  if (!token) {
+    throw new CloudflareError(`Cloudflare is not set up on this bridge: connect the Cloudflare integration (Integrations > Connect, with its token in Orca's secret store or in a secret variable of this bridge), or set ${CLOUDFLARE_TOKEN_ENV} and restart it. Create the token with the permissions in ${DOC}.`);
   }
-  return new Client(token!, account!, (opts.base ?? env.ORCA_CLOUDFLARE_API ?? CLOUDFLARE_API).replace(/\/$/, ""), opts.fetch ?? Bun.fetch);
+  return new Client(token, accountIds(opts)[0] ?? "", (opts.base ?? env.ORCA_CLOUDFLARE_API ?? CLOUDFLARE_API).replace(/\/$/, ""), opts.fetch ?? Bun.fetch);
+}
+
+/** A list of account ids: an array, or one string with commas or spaces between ids. Pure. */
+export function idList(v: unknown): string[] {
+  const parts = Array.isArray(v) ? v.map(String) : typeof v === "string" ? v.split(/[\s,;]+/) : [];
+  return [...new Set(parts.map((s) => s.trim()).filter(Boolean))];
+}
+
+/** The account ids a connection's config names: `accountIds`, else `accountId` (one id, or several
+ *  with commas). Empty = every account the token can see. Pure. */
+export function configAccountIds(config: Record<string, unknown> | undefined): string[] {
+  const ids = idList(config?.accountIds);
+  return ids.length ? ids : idList(config?.accountId);
+}
+
+/** The account ids in effect: `opts.accounts`, else `opts.account`, else the environment's. Pure. */
+export function accountIds(opts: CloudflareOpts): string[] {
+  const env = opts.env ?? process.env;
+  for (const v of [opts.accounts, opts.account, env[CLOUDFLARE_ACCOUNT_ENV]]) {
+    const ids = idList(v);
+    if (ids.length) return ids;
+  }
+  return [];
+}
+
+export type Account = { id: string; name: string };
+
+/** Every account the token can see (`GET /accounts`), by name. */
+export async function tokenAccounts(c: Client): Promise<Account[]> {
+  const list = await c.all<{ id: string; name?: string }>("/accounts", PERMISSIONS.account, 50);
+  return list.map((a) => ({ id: a.id, name: a.name || a.id }));
+}
+
+/** The accounts a connection covers: the ids it names (named from `GET /accounts` when there are
+ *  several), else every account the token can see. One named id needs no call. */
+export async function coveredAccounts(c: Client, ids: string[]): Promise<Account[]> {
+  if (ids.length === 1) return [{ id: ids[0]!, name: ids[0]! }];
+  const all = await tokenAccounts(c);
+  if (!ids.length) {
+    if (!all.length) throw new CloudflareError(`the token sees no Cloudflare account. Give it access to an account in the Cloudflare dashboard (${DOC})`);
+    return all;
+  }
+  return ids.map((id) => all.find((a) => a.id === id) ?? { id, name: id });
+}
+
+/** The account that `pick` (a name or an id, any case) names among `accounts`. Pure. */
+export function pickAccount(accounts: Account[], pick: string): Account | undefined {
+  const p = pick.trim().toLowerCase();
+  return accounts.find((a) => a.id.toLowerCase() === p) ?? accounts.find((a) => a.name.toLowerCase() === p);
+}
+
+/** "SMF Studio (3fb5…), Finn (a847…)". Pure. */
+export const accountNames = (accounts: Account[]): string => accounts.map((a) => (a.name === a.id ? a.id : `${a.name} (${a.id})`)).join(", ");
+
+type ZoneRow = { id: string; name: string; account?: { id?: string; name?: string } };
+
+/** Which account each verb runs on, for one connection. */
+export class Scope {
+  private covered?: Promise<Account[]>;
+  constructor(readonly base: Client, private ids: string[], private pick: string | undefined) {}
+
+  accounts(): Promise<Account[]> {
+    return (this.covered ??= coveredAccounts(this.base, this.ids));
+  }
+
+  /** The account `--cf-account` names, else the only covered one, else undefined (several). */
+  async chosen(): Promise<Account | undefined> {
+    let list = await this.accounts();
+    if (this.pick) {
+      let hit = pickAccount(list, this.pick);
+      // One named id has no name yet: read the names once to match a name.
+      if (!hit && list.some((a) => a.name === a.id)) {
+        const all = await tokenAccounts(this.base).catch(() => [] as Account[]);
+        list = list.map((a) => all.find((x) => x.id === a.id) ?? a);
+        hit = pickAccount(list, this.pick);
+      }
+      if (!hit) throw new CloudflareError(`--cf-account "${this.pick}" is not an account of this connection. Its accounts: ${accountNames(list)}`);
+      return hit;
+    }
+    return list.length === 1 ? list[0] : undefined;
+  }
+
+  /** The one account for a verb that cannot span accounts, or an error that names them. */
+  async one(verb: string): Promise<Client> {
+    const a = await this.chosen();
+    if (a) return this.base.on(a.id);
+    throw new CloudflareError(`this connection covers ${(await this.accounts()).length} Cloudflare accounts: ${accountNames(await this.accounts())}. Pick one for "${verb}" with --cf-account <name or id>`);
+  }
+
+  /** A list read: the chosen account alone, else one section per account under its name. One
+   *  account's failure (a missing permission) shows in its section and does not hide the others. */
+  async each(fn: (c: Client, a: Account) => Promise<string>, header = true): Promise<string> {
+    const a = await this.chosen();
+    if (a) return fn(this.base.on(a.id), a);
+    const out: string[] = [];
+    for (const acc of await this.accounts()) {
+      const text = await fn(this.base.on(acc.id), acc).catch((e) => { if (!(e instanceof CloudflareError)) throw e; return e.message; });
+      out.push(header ? `Account ${acc.name} (${acc.id}):\n${text}` : text);
+    }
+    return out.join(header ? "\n\n" : "\n");
+  }
+
+  /** The account of `zone` (a name or an id): the chosen one, else the zone's own account, which
+   *  this connection must cover. */
+  async forZone(zone: string): Promise<Client> {
+    if (await this.chosen()) return this.one("zone");
+    const z = ZONE_ID.test(zone)
+      ? await this.base.get<ZoneRow>(`/zones/${zone}`, PERMISSIONS.dns)
+      : (await this.base.all<ZoneRow>(`/zones?name=${encodeURIComponent(zone)}`, PERMISSIONS.dns, 50))[0];
+    const covered = await this.accounts();
+    if (!z?.account?.id) throw new CloudflareError(`no zone "${zone}" in the accounts of this connection (${accountNames(covered)}), or the token has no zone permission on it`);
+    if (!covered.some((a) => a.id === z.account!.id)) throw new CloudflareError(`zone ${z.name} is in account ${z.account.name ?? z.account.id}, which this connection does not cover (${accountNames(covered)})`);
+    return this.base.on(z.account.id);
+  }
+
+  /** The account that has Worker `name`: the chosen one, else the one covered account that has it. */
+  async forWorker(name: string): Promise<Client> {
+    if (await this.chosen()) return this.one("worker");
+    const covered = await this.accounts();
+    const has: Account[] = [];
+    for (const a of covered) {
+      const list = await this.base.on(a.id).get<Script[]>(this.base.on(a.id).acct("/workers/scripts"), PERMISSIONS.scripts) ?? [];
+      if (list.some((s) => s.id === name)) has.push(a);
+    }
+    if (has.length === 1) return this.base.on(has[0]!.id);
+    if (!has.length) throw new CloudflareError(`no Worker "${name}" in the accounts of this connection (${accountNames(covered)}). orca cloudflare workers lists them`);
+    throw new CloudflareError(`Worker "${name}" is in several accounts: ${accountNames(has)}. Pick one with --cf-account <name or id>`);
+  }
+
+  /** The account whose zone holds `hostname` (the longest zone name that matches). */
+  async forHostname(hostname: string): Promise<Client> {
+    if (await this.chosen()) return this.one("hostname");
+    const host = hostname.toLowerCase();
+    let best: { zone: string; account: string } | undefined;
+    for (const a of await this.accounts()) {
+      for (const z of await zones(this.base.on(a.id), undefined)) {
+        const n = z.name.toLowerCase();
+        if ((host === n || host.endsWith(`.${n}`)) && (!best || n.length > best.zone.length)) best = { zone: n, account: a.id };
+      }
+    }
+    if (!best) throw new CloudflareError(`no zone in the accounts of this connection holds ${hostname} (orca cloudflare zones lists them; or pass --zone)`);
+    return this.base.on(best.account);
+  }
+
+  /** "Account <name>: " before the answer when the connection covers several accounts. */
+  async label(c: Client): Promise<string> {
+    const list = await this.accounts();
+    if (list.length < 2) return "";
+    const a = list.find((x) => x.id === c.account);
+    return a ? `Account ${a.name} (${a.id}):\n` : "";
+  }
 }
 
 export type Zone = { id: string; name: string };
@@ -530,13 +691,15 @@ async function dnsWrite(c: Client, words: string[], args: Args, opts: Cloudflare
 }
 
 export const CLOUDFLARE_USAGE = [
-  "orca cloudflare account | workers | deployments <worker> | versions <worker> | routes [--zone z] | domains",
+  "orca cloudflare [--cf-account <name or id>] account | workers | deployments <worker> | versions <worker> | routes [--zone z] | domains",
   "  | pages | r2 | d1 | zones | dns --zone z [--type t] [--name n] | analytics [--worker w] [--since 24h] [--until t]",
   "  | audit [--resource name] [--actor email] [--since 7d] [--until t] [--limit 50]",
   "  | rollback <worker> --version <id> [--message m] [--confirm] | delete <worker> [--confirm]",
   "  | route add --zone z --pattern p --worker w [--confirm] | route remove --zone z (--id i | --pattern p) [--confirm]",
   "  | domain add --worker w --hostname h [--zone z] [--confirm] | domain remove (--hostname h | --id i) [--confirm]",
   "  | dns add --zone z --type t --name n --content c [--proxied] [--ttl s] [--comment m] [--confirm] | dns remove --zone z --id i [--confirm]",
+  "--cf-account picks one Cloudflare account of the connection. With one account it is not needed. With several, a list",
+  "  shows each account, a Worker or zone verb finds its account, and any other write asks for --cf-account.",
   "No command uploads Worker code: new Workers come from the repo's deploy pipeline.",
 ].join("\n");
 
@@ -549,27 +712,39 @@ export async function cloudflareTool(args: Args, opts: CloudflareOpts & { by?: s
   const words = (args._ ?? []).map(String);
   const sub = words[0] ?? "";
   if (!sub || sub === "help") return CLOUDFLARE_USAGE;
-  const c = client(opts);
+  const base = client(opts);
+  const scope = new Scope(base, accountIds(opts), str(args["cf-account"]));
   const now = (opts.now ?? (() => new Date()))();
   const who = { by: opts.by ?? "orchestrator" };
+  // A verb with a missing argument runs on `base`: it prints its usage before any call.
+  const zone = str(args.zone), worker = words[1];
+  const onZone = async () => (zone ? scope.forZone(zone) : base);
+  const onWorker = async () => (worker ? scope.forWorker(worker) : base);
+  const onOne = async (verb: string) => (worker ? scope.one(verb) : base);
+  const labelled = async (c: Client, run: (c: Client) => Promise<string>) => `${c === base ? "" : await scope.label(c)}${await run(c)}`;
   switch (sub) {
-    case "account": return account(c);
-    case "workers": return workers(c);
-    case "deployments": return deployments(c, words);
-    case "versions": return versions(c, words);
-    case "routes": return routes(c, args);
-    case "domains": return domains(c);
-    case "pages": return pages(c);
-    case "r2": return r2(c);
-    case "d1": return d1(c);
-    case "zones": return zoneList(c);
-    case "dns": return words[1] === "add" || words[1] === "remove" ? dnsWrite(c, words, args, opts, who, now) : dns(c, args);
-    case "analytics": return analytics(c, args, now);
-    case "audit": return audit(c, args, now);
-    case "rollback": return rollback(c, words, args, opts, who, now);
-    case "delete": return remove(c, words, args, opts, who, now);
-    case "route": return route(c, words, args, opts, who, now);
-    case "domain": return domain(c, words, args, opts, who, now);
+    case "account": return scope.each((c) => account(c), false);
+    case "workers": return scope.each((c) => workers(c));
+    case "deployments": return labelled(await onWorker(), (c) => deployments(c, words));
+    case "versions": return labelled(await onWorker(), (c) => versions(c, words));
+    case "routes": return zone ? labelled(await onZone(), (c) => routes(c, args)) : scope.each((c) => routes(c, args));
+    case "domains": return scope.each((c) => domains(c));
+    case "pages": return scope.each((c) => pages(c));
+    case "r2": return scope.each((c) => r2(c));
+    case "d1": return scope.each((c) => d1(c));
+    case "zones": return scope.each((c) => zoneList(c));
+    case "dns": return labelled(await onZone(), (c) => (words[1] === "add" || words[1] === "remove" ? dnsWrite(c, words, args, opts, who, now) : dns(c, args)));
+    case "analytics": return scope.each((c) => analytics(c, args, now));
+    case "audit": return scope.each((c) => audit(c, args, now));
+    case "rollback": return labelled(await onOne("rollback"), (c) => rollback(c, words, args, opts, who, now));
+    case "delete": return labelled(await onOne("delete"), (c) => remove(c, words, args, opts, who, now));
+    case "route": return labelled(await onZone(), (c) => route(c, words, args, opts, who, now));
+    case "domain": {
+      const host = str(args.hostname);
+      const c = words[1] === "add" ? (zone ? await scope.forZone(zone) : host && str(args.worker) ? await scope.forHostname(host) : base)
+        : words[1] === "remove" && (host || str(args.id)) ? await scope.one("domain remove") : base;
+      return labelled(c, (c) => domain(c, words, args, opts, who, now));
+    }
     default: throw new CloudflareError(`unknown subcommand "${sub}".\n${CLOUDFLARE_USAGE}`);
   }
 }

@@ -1,6 +1,7 @@
 // The Cloudflare adapter (setup: docs/integrations/cloudflare.md). Inbound only: the bridge has no
 // public address, so there are no Cloudflare webhooks. Every `pollSeconds` (default 120, at least 30)
-// it reads one account with
+// it reads each account the connection covers (`config.accountIds` / `config.accountId`; none = every
+// account the token can see, `GET /accounts` each tick) with
 // the account API token its secret_ref names (default ORCA_SECRET_CLOUDFLARE, or `secret:<name>` for
 // Orca's secret store — the registry loads it, server/integrations/secretRefs.ts) and compares
 // with what it saw last time:
@@ -11,18 +12,19 @@
 //   - each Worker's error rate over the last window, against a threshold → `ext.cloudflare.errors`
 // One poll's changes become ONE envelope per topic and place (`zone:<name>`, else `account`), so a
 // burst of changes is one message, and the core's gate, subscriptions and routing apply as for every
-// adapter. No actor: a poller is a machine sender, so the link's level is the grant. Connect makes a
+// adapter. Each envelope names its account (`display.place`, the text, `raw.account`); with several
+// accounts each read command in it carries `--cf-account <id>`. No actor: a poller is a machine sender, so the link's level is the grant. Connect makes a
 // Viewer (`ask`) catch-all link and subscribes the orchestrator to the topics (`ensureDefaults`); the
 // deploys topic comes as an hourly digest. Left out: Orca's own confirmed writes (`orca cloudflare
 // … --confirm` stores them, `OWN_WRITES_CURSOR`), and the entries of the deploy actors (default: any
 // actor that names GitHub) — their deploys still show in the deploys summary. The state (audit
-// cursor, seen ids, Workers, domains, the Workers now alerting) is ONE JSON value in
+// cursor, seen ids, Workers, domains, the Workers now alerting) of every account is ONE JSON value in
 // integration_cursor, so a restart neither replays nor misses a change. Outbound: none — there is no
 // place to post, so `caps.outbound` is false and `orca post` to its link is refused.
 import { createHash } from "crypto";
 import {
-  CLOUDFLARE_ACCOUNT_ENV, CLOUDFLARE_TOKEN_ENV, PERMISSIONS, client, isOwnWrite, workerTotals,
-  type AuditLog, type Client, type Deployment, type Domain, type OwnWrite, type Script, type WorkerTotals,
+  CLOUDFLARE_ACCOUNT_ENV, CLOUDFLARE_TOKEN_ENV, PERMISSIONS, client, configAccountIds, coveredAccounts, idList, isOwnWrite, workerTotals,
+  type Account, type AuditLog, type Client, type Deployment, type Domain, type OwnWrite, type Script, type WorkerTotals,
 } from "../../cloudflare";
 import { CATCH_ALL, storedSecretName, type Capabilities, type InboundEnvelope, type SendResult } from "../../../shared/integrations";
 import type { Adapter, AdapterContext, Connection } from "../adapter";
@@ -34,9 +36,10 @@ export const CLOUDFLARE_CAPS: Capabilities = {
 };
 export const DEFAULT_POLL_SECONDS = 120;
 export const MIN_POLL_SECONDS = 30;
-/** Deployment reads in one tick at most (one per new or changed Worker). The rest wait for the
- *  next tick, so a tick costs at most this + 4 calls: audit, Workers, custom domains, GraphQL.
- *  At the minimum interval that is 140 calls in 5 minutes; Cloudflare allows 1,200 per token. */
+/** Deployment reads in one tick at most (one per new or changed Worker), over all the accounts. The
+ *  rest wait for the next tick, so a tick costs at most this + 4 calls an account (audit, Workers,
+ *  custom domains, GraphQL), + 1 (`GET /accounts`) when the config names no account. At the minimum
+ *  interval with one account that is 140 calls in 5 minutes; Cloudflare allows 1,200 per token. */
 export const MAX_DEPLOYMENT_READS = 10;
 /** After a 429 the next tick waits twice as long each time, up to this; a clean tick resets it. */
 export const MAX_BACKOFF_MS = 15 * 60_000;
@@ -58,7 +61,8 @@ export const DEFAULT_SUBSCRIPTIONS: { topic: `ext.cloudflare.${CloudflareTopic}`
 
 // ── Config ───────────────────────────────────────────────────────────────────────────────────────
 
-export type CloudflareConfig = { accountId?: string; pollSeconds: number; errorRatePct: number; minRequests: number; zones: string[]; deployActors: string[] };
+/** `accountIds`: the accounts to watch and act on; empty = every account the token can see. */
+export type CloudflareConfig = { accountIds: string[]; pollSeconds: number; errorRatePct: number; minRequests: number; zones: string[]; deployActors: string[] };
 
 const list = (v: unknown): string[] | undefined =>
   Array.isArray(v) ? v.map(String).map((s) => s.trim().toLowerCase()).filter(Boolean)
@@ -70,9 +74,9 @@ const num = (v: unknown, fallback: number, min: number): number => {
 
 /** The Settings form saves every value as a string: parse it, with the defaults. Pure. */
 export function cloudflareConfig(raw: Record<string, unknown>, env: Record<string, string | undefined> = process.env): CloudflareConfig {
-  const accountId = (typeof raw.accountId === "string" && raw.accountId.trim()) || env[CLOUDFLARE_ACCOUNT_ENV]?.trim() || undefined;
+  const named = configAccountIds(raw);
   return {
-    ...(accountId ? { accountId } : {}),
+    accountIds: named.length ? named : idList(env[CLOUDFLARE_ACCOUNT_ENV]),
     // `pollMinutes` is the first cut's key, kept as an alias when `pollSeconds` is not set.
     // Under the minimum is raised to it, not dropped to the default.
     pollSeconds: Math.max(MIN_POLL_SECONDS, num(raw.pollSeconds ?? (raw.pollMinutes !== undefined && raw.pollMinutes !== "" ? Number(raw.pollMinutes) * 60 : undefined), DEFAULT_POLL_SECONDS, 1)),
@@ -106,7 +110,7 @@ export async function readOwnWrites(): Promise<OwnWrite[]> {
  *  subscriptions. A later edit adds nothing, so a link or subscription you removed stays removed. */
 export async function ensureDefaults(c: Pick<Connection, "id">): Promise<void> {
   const links = (await store.links()).filter((l) => l.integrationId === c.id);
-  if (!links.length) await store.addLink({ id: `${c.id}-account`.slice(0, 63), integrationId: c.id, externalId: CATCH_ALL, label: "Whole account", level: "ask", repos: [], requireMention: false });
+  if (!links.length) await store.addLink({ id: `${c.id}-account`.slice(0, 63), integrationId: c.id, externalId: CATCH_ALL, label: "Every account", level: "ask", repos: [], requireMention: false });
   const subs = await store.subscriptions();
   for (const d of DEFAULT_SUBSCRIPTIONS) {
     if (subs.some((s) => s.topicPattern === d.topic && s.targetKind === "orchestrator")) continue;
@@ -129,6 +133,22 @@ export type WatchState = {
 export function parseState(raw: string | undefined): WatchState | undefined {
   if (!raw) return undefined;
   try { const s = JSON.parse(raw) as WatchState; return s && s.v === 1 ? s : undefined; } catch { return undefined; }
+}
+
+/** The cursor of a connection: each account's state by account id. */
+export type CursorState = { v: 2; accounts: Record<string, WatchState> };
+
+/** Each account's state from the stored cursor. A one-account cursor (v1, before a connection could
+ *  cover several) is that account's state when the connection covers exactly one account; else each
+ *  account starts with a new baseline. Pure. */
+export function parseCursor(raw: string | undefined, accounts: string[]): Record<string, WatchState> {
+  if (!raw) return {};
+  try {
+    const s = JSON.parse(raw) as CursorState | WatchState;
+    if (s?.v === 2 && s.accounts && typeof s.accounts === "object") return Object.fromEntries(Object.entries(s.accounts).filter(([, w]) => w?.v === 1));
+    if (s?.v === 1 && accounts.length === 1) return { [accounts[0]!]: s };
+  } catch { /* a bad cursor is a new baseline */ }
+  return {};
 }
 
 /** One change. `key` is stable for the change, so the batch it rides in has a stable key too. */
@@ -260,25 +280,28 @@ const TITLE: Record<CloudflareTopic, (n: number) => string> = {
 };
 
 /** One envelope per topic and place, its lines oldest first. The key hashes the items' keys, so the
- *  same batch handed in twice (a poll retried after a failure) is a core duplicate. Pure. */
-export function batchEnvelopes(connectionId: string, account: string, items: WatchItem[]): InboundEnvelope[] {
+ *  same batch handed in twice (a poll retried after a failure) is a core duplicate. `account` is the
+ *  account's name; `many` (the account's id) when the connection covers several accounts: its id goes
+ *  in the key and `--cf-account <id>` on each read command. Pure. */
+export function batchEnvelopes(connectionId: string, account: string, items: WatchItem[], many?: { id: string }): InboundEnvelope[] {
   const groups = new Map<string, WatchItem[]>();
   for (const i of items) { const k = `${i.topic}|${i.place}`; groups.set(k, [...(groups.get(k) ?? []), i]); }
   return [...groups.values()].map((g) => {
     const sorted = [...g].sort((a, b) => a.at - b.at || a.key.localeCompare(b.key));
     const { topic, place } = sorted[0]!;
     const hash = createHash("sha256").update(sorted.map((i) => i.key).join("\n")).digest("hex").slice(0, 16);
-    const where = place === "account" ? `account ${account}` : `zone ${place.slice("zone:".length)}`;
-    const title = `Cloudflare: ${TITLE[topic](sorted.length)}`;
+    const where = place === "account" ? `account ${account}` : `zone ${place.slice("zone:".length)} (account ${account})`;
+    const title = `Cloudflare${many ? ` ${account}` : ""}: ${TITLE[topic](sorted.length)}`;
+    const line = (l: string) => (many ? l.replace(/(· read: orca cloudflare .*)$/, `$1 --cf-account ${many.id}`) : l);
     return {
-      key: `cloudflare:${connectionId}:${topic}:${place}:${hash}`,
+      key: `cloudflare:${connectionId}:${many ? `${many.id}:` : ""}${topic}:${place}:${hash}`,
       topic: `ext.cloudflare.${topic}` as const,
       at: sorted.at(-1)!.at || Date.now(),
       source: { adapter: "cloudflare", integrationId: connectionId, channel: place, ...(place === "account" ? {} : { parents: ["account"] }) },
       display: { sender: "Cloudflare", place: where },
       title,
-      text: [`${title} in ${where}. Each line: time · actor · action · resource · a read command to dig in.`, ...sorted.map((i) => `- ${i.line.slice(0, LINE_MAX)}`)].join("\n"),
-      raw: { keys: sorted.map((i) => i.key) },
+      text: [`${title} in ${where}. Each line: time · actor · action · resource · a read command to dig in.`, ...sorted.map((i) => `- ${line(i.line.slice(0, LINE_MAX))}`)].join("\n"),
+      raw: { keys: sorted.map((i) => i.key), account: { name: account, ...(many ? { id: many.id } : {}) } },
     };
   });
 }
@@ -303,7 +326,7 @@ export function cloudflareAdapter(connection: Connection, deps: CloudflareDeps =
   const cfg = cloudflareConfig(connection.config, env);
   const now = deps.now ?? (() => new Date());
   let ctx: AdapterContext | undefined;
-  let accountName: string | undefined;
+  let accounts: Account[] = [];
   let lastEventAt: number | undefined, lastPollAt: number | undefined;
   let inFlight: Promise<PollResult> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -312,99 +335,121 @@ export function cloudflareAdapter(connection: Connection, deps: CloudflareDeps =
   // The registry loaded a stored secret before start (and loads it again on rotation).
   const fromStore = storedSecretName(tokenRef(connection)) !== undefined;
   const token = () => ctx?.secret() ?? secretValue(tokenRef(connection), env);
-  const api = (): Client => client({ token: token() ?? "", account: cfg.accountId ?? "", env: { ORCA_CLOUDFLARE_API: env.ORCA_CLOUDFLARE_API }, ...(deps.base ? { base: deps.base } : {}), ...(deps.fetch ? { fetch: deps.fetch } : {}) });
+  const api = (): Client => client({ token: token() ?? "", accounts: cfg.accountIds, env: { ORCA_CLOUDFLARE_API: env.ORCA_CLOUDFLARE_API }, ...(deps.base ? { base: deps.base } : {}), ...(deps.fetch ? { fetch: deps.fetch } : {}) });
   const missing = (): string | undefined =>
-    !token() ? (fromStore ? `${tokenSource(connection)} is not loaded on this bridge` : `${tokenRef(connection)} is not set on this bridge`) : !cfg.accountId ? "the account id is not set (config accountId)" : undefined;
+    !token() ? (fromStore ? `${tokenSource(connection)} is not loaded on this bridge` : `${tokenRef(connection)} is not set on this bridge`) : undefined;
+  const names = () => accounts.map((a) => a.name).join(", ") || cfg.accountIds.join(", ") || "?";
 
-  async function account(c: Client): Promise<string> {
-    const a = await c.get<{ name?: string }>(c.acct(""), PERMISSIONS.account);
-    return a?.name ?? cfg.accountId!;
+  /** The covered accounts by name. One named id is read by id (its name, and a token check). */
+  async function resolve(c: Client): Promise<Account[]> {
+    if (cfg.accountIds.length === 1) {
+      const a = await c.get<{ name?: string }>(c.acct(""), PERMISSIONS.account);
+      return [{ id: cfg.accountIds[0]!, name: a?.name ?? cfg.accountIds[0]! }];
+    }
+    return coveredAccounts(c, cfg.accountIds);
   }
 
   async function pollNow(): Promise<PollResult> {
     if (!ctx) return { items: 0, ingested: 0, problems: [], error: "not started" };
-    const c = api();
+    const base = api();
     const t = now();
     const iso = t.toISOString();
-    const prev = parseState(await ctx.cursor.get());
+    // With no account named, the token's accounts are read each tick, so a new account joins the watch.
+    if (!cfg.accountIds.length) accounts = await resolve(base);
+    const many = accounts.length > 1;
+    const states = parseCursor(await ctx.cursor.get(), accounts.map((a) => a.id));
     const own = await (deps.ownWrites ?? readOwnWrites)().catch(() => [] as OwnWrite[]);
-    const next: WatchState = prev ? structuredClone(prev) : { v: 1, polledAt: iso, auditAt: iso, seen: [], workers: {}, domains: {}, alerting: [] };
-    const items: WatchItem[] = [];
+    const nextStates: Record<string, WatchState> = {};
     const problems: string[] = [];
+    let total = 0, ingested = 0, watched = 0;
     // A 429 ends the tick: the steps after it keep their last state and run on the next tick.
     let rateLimited = false;
-    const step = async (name: string, fn: () => Promise<void>) => {
-      if (rateLimited) return;
-      try { await fn(); } catch (e) { problems.push(`${name}: ${errText(e)}`); if (isRateLimit(e)) rateLimited = true; }
-    };
+    // At most MAX_DEPLOYMENT_READS deployment reads a tick, over all the accounts.
+    let reads = 0;
+    const budget = () => reads++ < MAX_DEPLOYMENT_READS;
 
-    await step("audit log", async () => {
-      if (!prev) return; // the first poll starts the cursor at now: no history replayed
-      const q = `since=${encodeURIComponent(prev.auditAt)}&before=${encodeURIComponent(iso)}&direction=asc`;
-      const logs = await c.all<AuditLog>(c.acct(`/audit_logs?${q}`), PERMISSIONS.audit, 1000);
-      items.push(...auditItems(logs, new Set(prev.seen), cfg, own));
-      Object.assign(next, nextAudit(logs, prev));
-    });
-    await step("workers", async () => {
-      const scripts = await c.get<Script[]>(c.acct("/workers/scripts"), PERMISSIONS.scripts) ?? [];
-      const before = prev?.workers ?? {};
-      const diff = workerDiff(before, scripts);
-      const newest = async (name: string) =>
-        (await c.get<{ deployments?: Deployment[] }>(c.acct(`/workers/scripts/${encodeURIComponent(name)}/deployments`), PERMISSIONS.scripts))?.deployments?.[0];
-      next.workers = Object.fromEntries(scripts.map((s) => [s.id, { ...before[s.id], modified: s.modified_on, created: s.created_on }]));
-      if (!prev) return; // the first poll is the baseline
-      // At most MAX_DEPLOYMENT_READS deployment reads a tick: a Worker past the cap keeps its old
-      // state (a new one stays unknown), so the next tick sees it as new or changed again.
-      let reads = 0;
-      const budget = () => reads++ < MAX_DEPLOYMENT_READS;
-      for (const s of diff.added) {
-        if (!budget()) { delete next.workers[s.id]; continue; }
-        const d = await newest(s.id).catch(() => undefined);
-        next.workers[s.id]!.deployment = d?.id;
-        if (isOwnWrite(s.id, ms(s.created_on), own)) continue;
-        const at = ms(s.created_on) || t.getTime();
-        items.push({ key: `worker:+${s.id}:${s.created_on ?? ""}`, topic: "worker", place: "account", at,
-          line: [utc(at), one(d?.author_email ?? "unknown author"), "new Worker", one(s.id), `read: orca cloudflare deployments ${one(s.id)}`].join(" · ") });
-      }
-      for (const name of diff.removed) {
-        if (isOwnWrite(name, t.getTime(), own)) continue;
-        items.push({ key: `worker:-${name}:${before[name]?.modified ?? ""}`, topic: "worker", place: "account", at: t.getTime(),
-          line: [utc(t.getTime()), "deleted Worker", one(name), `read: orca cloudflare audit --resource ${one(name)} --since ${prev.polledAt}`].join(" · ") });
-      }
-      for (const s of diff.changed) {
-        if (!budget()) { next.workers[s.id] = before[s.id]!; continue; }
-        const d = await newest(s.id);
-        const it = deployItem(s.id, d, before[s.id]?.deployment, own);
-        if (d) next.workers[s.id]!.deployment = d.id;
-        if (it) items.push(it);
-      }
-    });
-    await step("custom domains", async () => {
-      const domains = await c.get<Domain[]>(c.acct("/workers/domains"), PERMISSIONS.scripts) ?? [];
-      if (prev) items.push(...domainItems(prev.domains, domains, prev.polledAt, cfg, own, t.getTime()));
-      next.domains = Object.fromEntries(domains.map((d) => [d.hostname.toLowerCase(), { service: d.service, ...(d.zone_name ? { zone: d.zone_name.toLowerCase() } : {}) }]));
-    });
-    await step("analytics", async () => {
-      // The window is the time since the last poll, at least 5 minutes: a short window is noise.
-      const since = Math.min(prev ? ms(prev.polledAt) : t.getTime(), t.getTime() - 5 * 60_000);
-      const totals = await workerTotals(c, new Date(since), t);
-      const r = errorItems(totals, prev?.alerting ?? [], cfg, { since, until: t.getTime() });
-      items.push(...r.items);
-      next.alerting = r.alerting;
-    });
+    for (const acc of accounts) {
+      const c = base.on(acc.id);
+      const prev = states[acc.id];
+      const next: WatchState = prev ? structuredClone(prev) : { v: 1, polledAt: iso, auditAt: iso, seen: [], workers: {}, domains: {}, alerting: [] };
+      const items: WatchItem[] = [];
+      const step = async (name: string, fn: () => Promise<void>) => {
+        if (rateLimited) return;
+        try { await fn(); } catch (e) { problems.push(`${many ? `${acc.name}: ` : ""}${name}: ${errText(e)}`); if (isRateLimit(e)) rateLimited = true; }
+      };
 
-    let ingested = 0;
-    for (const e of batchEnvelopes(connection.id, accountName ?? cfg.accountId ?? "?", items)) {
-      // A failed ingest throws out of the poll before the state is saved: the next poll makes the
-      // same batch again, and the core drops the copy of any batch it already has.
-      if (["new", "noted"].includes(await ctx.ingest(e))) { ingested++; lastEventAt = Date.now(); }
+      await step("audit log", async () => {
+        if (!prev) return; // the first poll starts the cursor at now: no history replayed
+        const q = `since=${encodeURIComponent(prev.auditAt)}&before=${encodeURIComponent(iso)}&direction=asc`;
+        const logs = await c.all<AuditLog>(c.acct(`/audit_logs?${q}`), PERMISSIONS.audit, 1000);
+        items.push(...auditItems(logs, new Set(prev.seen), cfg, own));
+        Object.assign(next, nextAudit(logs, prev));
+      });
+      await step("workers", async () => {
+        const scripts = await c.get<Script[]>(c.acct("/workers/scripts"), PERMISSIONS.scripts) ?? [];
+        const before = prev?.workers ?? {};
+        const diff = workerDiff(before, scripts);
+        const newest = async (name: string) =>
+          (await c.get<{ deployments?: Deployment[] }>(c.acct(`/workers/scripts/${encodeURIComponent(name)}/deployments`), PERMISSIONS.scripts))?.deployments?.[0];
+        next.workers = Object.fromEntries(scripts.map((s) => [s.id, { ...before[s.id], modified: s.modified_on, created: s.created_on }]));
+        if (!prev) return; // the first poll is the baseline
+        // A Worker past the read cap keeps its old state (a new one stays unknown), so the next tick
+        // sees it as new or changed again.
+        for (const s of diff.added) {
+          if (!budget()) { delete next.workers[s.id]; continue; }
+          const d = await newest(s.id).catch(() => undefined);
+          next.workers[s.id]!.deployment = d?.id;
+          if (isOwnWrite(s.id, ms(s.created_on), own)) continue;
+          const at = ms(s.created_on) || t.getTime();
+          items.push({ key: `worker:+${s.id}:${s.created_on ?? ""}`, topic: "worker", place: "account", at,
+            line: [utc(at), one(d?.author_email ?? "unknown author"), "new Worker", one(s.id), `read: orca cloudflare deployments ${one(s.id)}`].join(" · ") });
+        }
+        for (const name of diff.removed) {
+          if (isOwnWrite(name, t.getTime(), own)) continue;
+          items.push({ key: `worker:-${name}:${before[name]?.modified ?? ""}`, topic: "worker", place: "account", at: t.getTime(),
+            line: [utc(t.getTime()), "deleted Worker", one(name), `read: orca cloudflare audit --resource ${one(name)} --since ${prev.polledAt}`].join(" · ") });
+        }
+        for (const s of diff.changed) {
+          if (!budget()) { next.workers[s.id] = before[s.id]!; continue; }
+          const d = await newest(s.id);
+          const it = deployItem(s.id, d, before[s.id]?.deployment, own);
+          if (d) next.workers[s.id]!.deployment = d.id;
+          if (it) items.push(it);
+        }
+      });
+      await step("custom domains", async () => {
+        const domains = await c.get<Domain[]>(c.acct("/workers/domains"), PERMISSIONS.scripts) ?? [];
+        if (prev) items.push(...domainItems(prev.domains, domains, prev.polledAt, cfg, own, t.getTime()));
+        next.domains = Object.fromEntries(domains.map((d) => [d.hostname.toLowerCase(), { service: d.service, ...(d.zone_name ? { zone: d.zone_name.toLowerCase() } : {}) }]));
+      });
+      await step("analytics", async () => {
+        // The window is the time since the last poll, at least 5 minutes: a short window is noise.
+        const since = Math.min(prev ? ms(prev.polledAt) : t.getTime(), t.getTime() - 5 * 60_000);
+        const totals = await workerTotals(c, new Date(since), t);
+        const r = errorItems(totals, prev?.alerting ?? [], cfg, { since, until: t.getTime() });
+        items.push(...r.items);
+        next.alerting = r.alerting;
+      });
+
+      for (const e of batchEnvelopes(connection.id, acc.name, items, many ? { id: acc.id } : undefined)) {
+        // A failed ingest throws out of the poll before the state is saved: the next poll makes the
+        // same batch again, and the core drops the copy of any batch it already has.
+        if (["new", "noted"].includes(await ctx.ingest(e))) { ingested++; lastEventAt = Date.now(); }
+      }
+      // A new account cut off by a 429 keeps no state: a saved empty baseline would make every
+      // Worker and domain of it "new" on the next tick.
+      if (!prev && rateLimited) continue;
+      next.polledAt = iso;
+      nextStates[acc.id] = next;
+      total += items.length;
+      watched += Object.keys(next.workers).length;
     }
-    next.polledAt = iso;
-    await ctx.cursor.set(JSON.stringify(next));
+
+    await ctx.cursor.set(JSON.stringify({ v: 2, accounts: nextStates } satisfies CursorState));
     lastPollAt = Date.now();
-    const detail = problems.length ? problems.join("; ") : `connected to ${accountName ?? cfg.accountId}, ${Object.keys(next.workers).length} Workers watched`;
+    const detail = problems.length ? problems.join("; ") : `connected to ${names()}, ${watched} Workers watched`;
     await ctx.status({ ok: !problems.length, detail, lastPollAt, ...(lastEventAt ? { lastEventAt } : {}) });
-    return { items: items.length, ingested, problems, ...(rateLimited ? { rateLimited } : {}) };
+    return { items: total, ingested, problems, ...(rateLimited ? { rateLimited } : {}) };
   }
 
   /** One poll at a time: a call while one runs waits for it, then polls again. */
@@ -435,8 +480,8 @@ export function cloudflareAdapter(connection: Connection, deps: CloudflareDeps =
       ctx = c;
       const why = missing();
       if (why) throw new Error(why);
-      accountName = await account(api()); // a bad token fails the start, and names the permission
-      c.log(`watching account ${accountName} every ${cfg.pollSeconds}s`);
+      accounts = await resolve(api()); // a bad token fails the start, and names the permission
+      c.log(`watching ${accounts.length === 1 ? "account" : "accounts"} ${names()} every ${cfg.pollSeconds}s`);
       loop(c.signal);
     },
     async stop() {
@@ -446,13 +491,13 @@ export function cloudflareAdapter(connection: Connection, deps: CloudflareDeps =
       ctx = undefined;
     },
     async send(): Promise<SendResult> {
-      return { ok: false, retryable: false, error: "the cloudflare adapter takes no posts (it only watches the account)" };
+      return { ok: false, retryable: false, error: "the cloudflare adapter takes no posts (it only watches the accounts)" };
     },
     async health(): Promise<Health> {
       const polled = { ...(lastEventAt ? { lastEventAt } : {}), ...(lastPollAt ? { lastPollAt } : {}) };
       const why = missing();
       if (why) return { ok: false, detail: why, ...polled };
-      try { accountName = await account(api()); return { ok: true, detail: `connected to ${accountName}`, ...polled }; }
+      try { accounts = await resolve(api()); return { ok: true, detail: `connected to ${names()}`, ...polled }; }
       catch (e) { return { ok: false, detail: errText(e), ...polled }; }
     },
   };

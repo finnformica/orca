@@ -1,13 +1,14 @@
 # Cloudflare
 
-The Cloudflare adapter (`server/integrations/adapters/cloudflare.ts`) connects one Cloudflare
-account to Orca. It follows the adapter contract in [ADAPTERS.md](ADAPTERS.md).
+The Cloudflare adapter (`server/integrations/adapters/cloudflare.ts`) connects Cloudflare to Orca.
+One connection covers every Cloudflare account that its token can see, or only the accounts that
+you name (section 5a). It follows the adapter contract in [ADAPTERS.md](ADAPTERS.md).
 
 - Inbound: a poll of the Cloudflare API. No webhook and no public URL: the bridge is not reachable
   from the internet.
 - Outbound: none. The adapter takes no posts. `orca post` to its link is refused.
 - `orca cloudflare …` gives the orchestrator read commands and a small set of write commands
-  (`server/cloudflare.ts`). They use the token and the account id of the connected integration.
+  (`server/cloudflare.ts`). They use the token and the accounts of the connected integration.
 - The token is in Orca's encrypted secret store, or in an environment variable. No agent run sees
   it. The orca repo is public, so never put the token or the account id in a file in the repo.
 
@@ -26,9 +27,12 @@ permissions that the write commands need.
    | Zone | Workers Routes | Edit | `route add`, `route remove` |
    | Zone | DNS | Edit | `dns add`, `dns remove` |
 
-4. Under **Zone Resources**, select **Specific zone** for each zone that Orca may change. The zone
+4. For several accounts in one connection, make a user API token instead (**My Profile → API
+   Tokens**). Use the same rows, and select each account under **Account Resources**. An account
+   API token covers only its own account.
+5. Under **Zone Resources**, select **Specific zone** for each zone that Orca may change. The zone
    list applies to every zone permission of the token, so Orca reads only these zones too.
-5. Create the token. Copy it once.
+6. Create the token. Copy it once.
 
 If the account token page has no "Read all resources" template, select **Custom token** and add each
 Read row from the table in section 8.
@@ -93,14 +97,15 @@ Agents never see an `ORCA_SECRET_*` variable (`server/env.ts`).
    - Path A: under **Stored secret**, choose the name you stored. The secret variable becomes
      `secret:<name>`.
    - Path B: leave **Secret variable** empty for `ORCA_SECRET_CLOUDFLARE`.
-   - Account id: the 32-character id on the account home page in the dashboard. It is not a secret.
+   - Account ids: leave empty to cover every account the token can see. Or write the 32-character
+     id from each account home page, with commas between the ids. An id is not a secret.
    - The other fields: empty for the defaults (section 7).
 3. Save. Wait for the next sync (at most one minute).
-4. Click **Test** on the Cloudflare card. The result is `OK · connected to <account name>`.
+4. Click **Test** on the Cloudflare card. The result is `OK · connected to <account names>`.
 
 The first Connect also makes:
 
-- one link, `<id>-account`: place `*` (the whole account), level Viewer (`ask`), Require mention off;
+- one link, `<id>-account`: place `*` (every account), level Viewer (`ask`), Require mention off;
 - one subscription to the orchestrator for each topic in section 4.
 
 A later edit does not make them again. A link or a subscription that you remove stays removed.
@@ -112,7 +117,8 @@ permission does not start the adapter. The card shows the error, for example
 
 ## 4. What comes in
 
-Every `pollSeconds` (default 120, at least 30), the adapter reads the account and compares it with the last poll.
+Every `pollSeconds` (default 120, at least 30), the adapter reads each account of the connection and
+compares it with the last poll.
 
 | Topic | What it reports | Read command on each line |
 |---|---|---|
@@ -127,6 +133,9 @@ Every `pollSeconds` (default 120, at least 30), the adapter reads the account an
   the resource and a read command.
 - The place is `zone:<name>` for a change in a zone, else `account`. The core tries the zone link,
   then `account`, then the `*` link.
+- Each event names its account: `account <name>`, or `zone <name> (account <name>)`, and
+  `raw.account`. With several accounts the title has the account name, and each read command ends
+  with `--cf-account <account id>`.
 - An event has no `actor`. A poller is a machine sender, so the grant is the link's level.
 - The first poll reads from now. It records the Workers and domains as they are, and reports
   nothing.
@@ -163,6 +172,33 @@ These changes do not come in:
 - To send a topic to a channel, add a subscription with a link target, for example
   `ext.cloudflare.errors` to a Discord channel link.
 
+## 5a. Several accounts in one connection
+
+- The `accountId` field takes one id, several ids with commas, or nothing. A config document can
+  also set `accountIds` as a list. It wins over `accountId`.
+- Nothing: the connection covers every account the token can see (`GET /accounts`, Account Settings
+  Read). The watcher reads that list on each poll, so a new account joins the watch.
+- One id: the old behaviour. No `GET /accounts` call, and no flag in a command.
+- `ORCA_CLOUDFLARE_ACCOUNT_ID` is still the fallback when the connection names no account. Unset it
+  to cover every account.
+- The watcher keeps one state for each account in its cursor. The first poll of a new account is a
+  baseline. A cursor from an older bridge stays valid when the connection covers one account.
+- One tick reads at most 10 deployments over all the accounts, plus 4 calls for each account.
+
+`--cf-account <name or id>` picks one Cloudflare account inside the connection. `--account` still
+picks the connection (shared with Slack, Gmail and Granola). With several accounts and no
+`--cf-account`:
+
+| Command | What it does |
+|---|---|
+| `account`, `workers`, `routes` (no `--zone`), `domains`, `pages`, `r2`, `d1`, `zones`, `analytics`, `audit` | Shows each account under `Account <name> (<id>):`. A refusal in one account shows in its section only. |
+| `deployments <worker>`, `versions <worker>` | Finds the account that has the Worker. A Worker in two accounts needs `--cf-account`. |
+| `dns`, `dns add`, `dns remove`, `route add`, `route remove`, `routes --zone` | Finds the account from the zone. A zone of an account outside the connection is refused. |
+| `domain add` | Finds the account from `--zone`, else from the zone that holds the hostname. |
+| `rollback`, `delete`, `domain remove` | Refuses, and names the accounts. Run it again with `--cf-account`. |
+
+An answer from a found account starts with `Account <name> (<id>):`, so you see where a write goes.
+
 ## 6. In the orchestrator's chat
 
 An event comes in as an outside message from the Cloudflare integration, with the Viewer grant. Its
@@ -173,7 +209,7 @@ look, uses the read commands, and tells you what matters.
 
 | Form field (`config` key) | Default | Meaning |
 |---|---|---|
-| Account id (`accountId`) | `ORCA_CLOUDFLARE_ACCOUNT_ID` | The account to watch and to act on. |
+| Account ids (`accountId`, or `accountIds`) | every account of the token | The accounts to watch and to act on (section 5a). Empty uses `ORCA_CLOUDFLARE_ACCOUNT_ID` when it is set. |
 | Poll every (`pollSeconds`) | 120 | Seconds between two polls. A smaller value than 30 becomes 30. The old key `pollMinutes` still works when `pollSeconds` is not set. |
 | Error-rate threshold (`errorRatePct`) | 5 | The error rate in percent that alerts. |
 | Fewest requests (`minRequests`) | 100 | Fewer requests in the window give no error alert. |
@@ -185,11 +221,11 @@ Environment variables:
 | Variable | Use |
 |---|---|
 | `ORCA_SECRET_CLOUDFLARE` | The token for path B. The default secret variable of the integration. |
-| `ORCA_CLOUDFLARE_ACCOUNT_ID` | Fallback account id, when no integration gives one. |
+| `ORCA_CLOUDFLARE_ACCOUNT_ID` | Fallback account ids (commas between them), when the integration names none. |
 | `ORCA_CLOUDFLARE_API` | Another API base URL. Only for tests. |
 
 `orca cloudflare` reads the token of the first enabled Cloudflare integration: the stored secret or
-the variable that its secret_ref names. It reads the account id from the integration's config. With no
+the variable that its secret_ref names. It reads the account ids from the integration's config. With no
 integration, it reads `ORCA_SECRET_CLOUDFLARE` and `ORCA_CLOUDFLARE_ACCOUNT_ID`, so a setup with only
 the variables still works. If the stored secret cannot be read, the command stops and says why. It
 does not try another token.
@@ -243,7 +279,8 @@ does not try another token.
   - the account's **Access** setting: with **Read**, Orca refuses every write verb, also in your
     own chat ([POLICY.md](POLICY.md));
   - the grant check, below.
-- With several Cloudflare accounts connected, name one with `--account <id or name>`.
+- With several Cloudflare connections, name one with `--account <id or name>`. With several
+  accounts in one connection, name one with `--cf-account <name or id>` (section 5a).
 - Only your own chat can run a write command. Orca refuses it for an outside sender at every level
   (`grantRefusal` in `shared/integrations.ts`).
 

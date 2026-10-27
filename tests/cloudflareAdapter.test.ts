@@ -10,7 +10,7 @@ import * as store from "../server/integrations/store";
 import type { AdapterContext, Connection } from "../server/integrations/adapter";
 import {
   DEFAULT_SUBSCRIPTIONS, OWN_WRITES_CURSOR, auditItems, batchEnvelopes, cloudflareAdapter, cloudflareConfig, errorItems,
-  MAX_BACKOFF_MS, MAX_DEPLOYMENT_READS, nextAudit, pollDelayMs, readOwnWrites, recordOwnWrite, tokenSource, type CloudflareAdapter,
+  MAX_BACKOFF_MS, MAX_DEPLOYMENT_READS, nextAudit, parseCursor, pollDelayMs, readOwnWrites, recordOwnWrite, tokenSource, type CloudflareAdapter, type WatchState,
 } from "../server/integrations/adapters/cloudflare";
 import * as secrets from "../server/secrets";
 import * as policy from "../server/integrations/policy";
@@ -23,6 +23,9 @@ import { freshSchema, type TestDb } from "./pg";
 const R = native.Response;
 const TOKEN = "cfat_FAKEtokenFAKEtokenFAKEtokenFAKEtoken654321";
 const ACCT = "acct0000000000000000000000000002";
+const ACCT2 = "acct0000000000000000000000000020"; // a second account on the same token
+let scripts2: { id: string; created_on: string; modified_on: string }[] = [];
+let domains2: { id: string; hostname: string; service: string; zone_name?: string }[] = [];
 
 type Dep = { id: string; created_on: string; author_email?: string; source?: string; versions?: { version_id: string; percentage: number }[]; annotations?: Record<string, string> };
 let scripts: { id: string; created_on: string; modified_on: string }[] = [];
@@ -47,8 +50,13 @@ beforeAll(() => {
       calls.push(path);
       if (limited.has(path)) return R.json({ success: false, errors: [{ code: 971, message: "Please wait and consider throttling your request speed" }] }, { status: 429 });
       if (deny.has(path)) return R.json({ success: false, errors: [{ code: 9109, message: "Unauthorized to access requested resource" }] }, { status: 403 });
-      const a = `/accounts/${ACCT}`;
+      const a = `/accounts/${ACCT}`, b = `/accounts/${ACCT2}`;
+      if (path === "/accounts") return ok([{ id: ACCT, name: "Test account" }, { id: ACCT2, name: "Studio" }], { result_info: { total_pages: 1 } });
       if (path === a) return ok({ id: ACCT, name: "Test account" });
+      if (path === b) return ok({ id: ACCT2, name: "Studio" });
+      if (path === `${b}/workers/scripts`) return ok(scripts2);
+      if (path === `${b}/workers/domains`) return ok(domains2);
+      if (path === `${b}/audit_logs`) return ok([], { result_info: { total_pages: 1 } });
       if (path === `${a}/workers/scripts`) return ok(scripts);
       const dep = path.match(/^\/accounts\/[^/]+\/workers\/scripts\/([^/]+)\/deployments$/);
       if (dep) return ok({ deployments: deployments[decodeURIComponent(dep[1]!)] ?? [] });
@@ -68,6 +76,7 @@ beforeEach(() => {
   scripts = [{ id: "edge-api", created_on: "2026-01-01T00:00:00Z", modified_on: "2026-10-01T00:00:00Z" }];
   deployments = { "edge-api": [{ id: "dep-1", created_on: "2026-10-01T00:00:00Z", author_email: "dev@example.com", source: "wrangler" }] };
   domains = [{ id: "d1", hostname: "api.example.com", service: "edge-api", zone_name: "example.com" }];
+  scripts2 = []; domains2 = [];
   audit = []; totals = []; deny = new Set(); limited = new Set(); calls = []; auditQueries = [];
 });
 
@@ -95,8 +104,10 @@ describe("pure decisions", () => {
 
   test("config: strings from the form, defaults, the env account id as a fallback", () => {
     expect(cloudflareConfig({ pollSeconds: "300", errorRatePct: "2.5", minRequests: "50", zones: "Example.com, example.org" }, {}))
-      .toEqual({ pollSeconds: 300, errorRatePct: 2.5, minRequests: 50, zones: ["example.com", "example.org"], deployActors: ["github"] });
-    expect(cloudflareConfig({ errorRatePct: "x" }, { ORCA_CLOUDFLARE_ACCOUNT_ID: ACCT })).toMatchObject({ accountId: ACCT, pollSeconds: 120, errorRatePct: 5, minRequests: 100 });
+      .toEqual({ accountIds: [], pollSeconds: 300, errorRatePct: 2.5, minRequests: 50, zones: ["example.com", "example.org"], deployActors: ["github"] });
+    expect(cloudflareConfig({ errorRatePct: "x" }, { ORCA_CLOUDFLARE_ACCOUNT_ID: ACCT })).toMatchObject({ accountIds: [ACCT], pollSeconds: 120, errorRatePct: 5, minRequests: 100 });
+    expect(cloudflareConfig({ accountId: `${ACCT}, ${ACCT2}` }, { ORCA_CLOUDFLARE_ACCOUNT_ID: "x" }).accountIds).toEqual([ACCT, ACCT2]);
+    expect(cloudflareConfig({ accountIds: [ACCT2] }, {}).accountIds).toEqual([ACCT2]);
     expect(cloudflareConfig({ pollSeconds: "10" }, {}).pollSeconds).toBe(30); // raised to the minimum
     expect(cloudflareConfig({ pollSeconds: "x" }, {}).pollSeconds).toBe(120);
     expect(cloudflareConfig({ pollMinutes: "10" }, {}).pollSeconds).toBe(600); // the old key, as an alias
@@ -221,7 +232,7 @@ describe("the poll loop", () => {
     await a.start(f.ctx);
     await a.poll();
     expect(f.ingested).toEqual([]); // the first poll is the baseline: no history replayed
-    expect(JSON.parse(f.cursor.v!)).toMatchObject({ v: 1, auditAt: new Date(T0).toISOString(), workers: { "edge-api": {} } });
+    expect(JSON.parse(f.cursor.v!)).toMatchObject({ v: 2, accounts: { [ACCT]: { v: 1, auditAt: new Date(T0).toISOString(), workers: { "edge-api": {} } } } });
     expect(f.statuses.at(-1)).toMatchObject({ ok: true, detail: "connected to Test account, 1 Workers watched" });
 
     // Five minutes of changes.
@@ -289,6 +300,65 @@ describe("the poll loop", () => {
   });
 });
 
+describe("one connection, many accounts", () => {
+  test("the cursor: v2 by account; a v1 cursor is the one account's state; with several accounts each starts a baseline", () => {
+    const v1: WatchState = { v: 1, polledAt: "t", auditAt: "t", seen: [], workers: { w: {} }, domains: {}, alerting: [] };
+    expect(parseCursor(JSON.stringify(v1), [ACCT])).toEqual({ [ACCT]: v1 });
+    expect(parseCursor(JSON.stringify(v1), [ACCT, ACCT2])).toEqual({});
+    expect(parseCursor(JSON.stringify({ v: 2, accounts: { [ACCT2]: v1 } }), [ACCT])).toEqual({ [ACCT2]: v1 });
+    expect(parseCursor("nonsense", [ACCT])).toEqual({});
+    expect(parseCursor(undefined, [ACCT])).toEqual({});
+  });
+
+  test("no account in the config: the watcher covers every account of the token and names the account in each event", async () => {
+    let now = new Date(T0);
+    const f = fakeCtx();
+    const a = cloudflareAdapter(conn({ accountId: "" }), { env: {}, base: base(), now: () => now, ownWrites: async () => [] }) as CloudflareAdapter;
+    await a.start(f.ctx);
+    expect(await a.health()).toMatchObject({ ok: true, detail: "connected to Test account, Studio" });
+    scripts2 = [{ id: "studio-site", created_on: "2026-01-01T00:00:00Z", modified_on: "2026-10-01T00:00:00Z" }];
+    await a.poll(); // baseline for both
+    expect(Object.keys(JSON.parse(f.cursor.v!).accounts).sort()).toEqual([ACCT, ACCT2]);
+    expect(f.statuses.at(-1)).toMatchObject({ ok: true, detail: "connected to Test account, Studio, 2 Workers watched" });
+
+    now = new Date(T0 + 120_000);
+    scripts2 = [...scripts2, { id: "studio-api", created_on: "2026-10-24T12:01:00Z", modified_on: "2026-10-24T12:01:00Z" }];
+    domains2 = [{ id: "s1", hostname: "www.studio.net", service: "studio-site", zone_name: "studio.net" }];
+    domains = [...domains, { id: "d9", hostname: "new.example.com", service: "edge-api", zone_name: "example.com" }];
+    await a.poll();
+    const by = Object.fromEntries(f.ingested.map((e) => [`${e.topic} ${e.source.channel} ${e.display?.place}`, e]));
+    expect(Object.keys(by).sort()).toEqual([
+      "ext.cloudflare.domain zone:example.com zone example.com (account Test account)",
+      "ext.cloudflare.domain zone:studio.net zone studio.net (account Studio)",
+      "ext.cloudflare.worker account account Studio",
+    ]);
+    const worker = by["ext.cloudflare.worker account account Studio"]!;
+    expect(worker.title).toBe("Cloudflare Studio: 1 Worker change (new, deleted or rolled back)");
+    expect(worker.text).toContain(`new Worker · studio-api · read: orca cloudflare deployments studio-api --cf-account ${ACCT2}`);
+    expect(worker.key).toStartWith(`cloudflare:cf:${ACCT2}:worker:account:`);
+    expect(worker.raw).toMatchObject({ account: { id: ACCT2, name: "Studio" } });
+    expect(by["ext.cloudflare.domain zone:studio.net zone studio.net (account Studio)"]!.text).toContain("custom domain www.studio.net added → Worker studio-site");
+    await a.stop();
+  });
+
+  test("a v1 cursor carries over to the one named account: no new baseline, no replay", async () => {
+    const f = fakeCtx();
+    const first = cloudflareAdapter(conn(), { env: {}, base: base(), now: () => new Date(T0), ownWrites: async () => [] }) as CloudflareAdapter;
+    await first.start(f.ctx);
+    await first.poll();
+    await first.stop();
+    f.cursor.v = JSON.stringify(JSON.parse(f.cursor.v!).accounts[ACCT]); // the cursor as an older bridge wrote it
+    const g = fakeCtx(f.cursor);
+    const b = cloudflareAdapter(conn(), { env: {}, base: base(), now: () => new Date(T0 + 120_000), ownWrites: async () => [] }) as CloudflareAdapter;
+    await b.start(g.ctx);
+    scripts = [...scripts, { id: "fresh", created_on: "2026-10-24T12:01:00Z", modified_on: "2026-10-24T12:01:00Z" }];
+    await b.poll();
+    expect(g.ingested.map((e) => e.title)).toEqual(["Cloudflare: 1 Worker change (new, deleted or rolled back)"]); // one account: no name in the title
+    expect(g.ingested[0]!.text).not.toContain("--cf-account");
+    await b.stop();
+  });
+});
+
 describe("the token from Orca's secret store", () => {
   test("the token source names the stored secret or the variable", () => {
     expect(tokenSource({ ...conn(), secretRef: "secret:cf-token" })).toBe('the stored secret "cf-token"');
@@ -337,7 +407,7 @@ describe("with Postgres", () => {
     const a = registry.adapterFor("cf") as CloudflareAdapter;
     await a.poll(); // after the loop's own first poll: the baseline
     const state = JSON.parse((await store.cursor("cf"))!);
-    expect(state).toMatchObject({ v: 1, workers: { "edge-api": {} } });
+    expect(state).toMatchObject({ v: 2, accounts: { [ACCT]: { v: 1, workers: { "edge-api": {} } } } });
     // A domain change and an error spike: the gate gives them the link's level, the orchestrator gets them.
     await recordOwnWrite(["orca.example.com"], Date.now());
     expect((await readOwnWrites()).map((w) => w.targets)).toEqual([["orca.example.com"]]);

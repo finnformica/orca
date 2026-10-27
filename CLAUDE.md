@@ -314,7 +314,12 @@ subscriptions (deploys as an hourly digest). It leaves out Orca's own confirmed 
 cloudflare … --confirm` as cursor row `cloudflare:own-writes`) and the deploy actors' audit entries (default
 `github`). `caps.outbound` is false: `orca post` to it is refused (`outboundRefusal`). The token is its secret_ref
 (default `ORCA_SECRET_CLOUDFLARE`, or `secret:<name>`, below). The verb reads the same token and
-`config.accountId`, else the env (`ORCA_CLOUDFLARE_ACCOUNT_ID`). Reads cover Workers, deployments, versions, routes,
+the accounts of `config.accountIds` / `config.accountId` (one id or a comma list), else the env
+(`ORCA_CLOUDFLARE_ACCOUNT_ID`), else every account the token sees (`GET /accounts`): ONE connection
+covers many accounts. `--cf-account <name or id>` picks one inside it (`--account` still picks the
+connection); with several and no flag a list read shows each account, a Worker or zone verb finds its
+account, and rollback / delete / domain remove refuse (`Scope` in `server/cloudflare.ts`). The cursor
+is `{ v: 2, accounts }` (a v1 cursor carries over with one account) and each event names its account. Reads cover Workers, deployments, versions, routes,
 domains, Pages, R2, D1, DNS, analytics and the audit log. The writes are `rollback`, `delete`, `route
 add|remove`, `domain add|remove` and `dns add|remove`: a dry run without `--confirm`, a check of the target,
 a `[cloudflare]` log line with it, and your own chat only. ONE table, `CLOUDFLARE_VERBS`
