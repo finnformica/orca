@@ -37,7 +37,7 @@ import { stateDir } from "./state";
 import { API_PORT } from "./ports";
 import { reachable } from "./peer";
 import { machineReport } from "./liveMetrics";
-import { CLOUDFLARE_ACCOUNT_ENV, CLOUDFLARE_TOKEN_ENV, cloudflareTool, cloudflareVerb } from "./cloudflare";
+import { CLOUDFLARE_TOKEN_ENV, cloudflareTool, cloudflareVerb, configAccountIds } from "./cloudflare";
 import { recordOwnWrite as recordCloudflareWrite } from "./integrations/adapters/cloudflare";
 import { slackTool } from "./slackTool";
 import { gmailTool } from "./gmailTool";
@@ -1065,15 +1065,16 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
     case "handoff": return handoffVerb(cfg, words, args);
     // `orca cloudflare …` (server/cloudflare.ts): reads, and the writes behind --confirm. The grant
     // check above keeps the writes to the user's own chat; the write log names who woke it.
-    // `--account` picks one Cloudflare account, and its access is checked (policy.useAccount). The
-    // token is the account's secret_ref (a variable, or a stored secret that useAccount loaded).
+    // `--account` picks one Cloudflare connection, and its access is checked (policy.useAccount). The
+    // token is the connection's secret_ref (a variable, or a stored secret that useAccount loaded).
+    // Its config names the Cloudflare accounts it covers (none = every account the token can see);
+    // `--cf-account` picks one of them inside the connection (server/cloudflare.ts Scope).
     // Each confirmed write is recorded, so the account watcher leaves Orca's own change out.
     case "cloudflare": {
       const by = wakeGrant ? `outside sender (${wakeGrant.level} grant)` : "orchestrator (your chat)";
       if (!words.length || words[0] === "help") return cloudflareTool(args, { by });
       const c = await policy.useAccount("cloudflare", cloudflareVerb(words), args.account);
-      const accountId = typeof c?.config.accountId === "string" ? c.config.accountId : undefined;
-      return cloudflareTool(args, { by, env: policy.accountEnv(c, CLOUDFLARE_TOKEN_ENV, { [CLOUDFLARE_ACCOUNT_ENV]: accountId }), onWrite: recordCloudflareWrite });
+      return cloudflareTool(args, { by, env: policy.accountEnv(c, CLOUDFLARE_TOKEN_ENV), accounts: configAccountIds(c?.config), onWrite: recordCloudflareWrite });
     }
     // `orca slack …` (server/slackTool.ts): read, search and post as the user. The grant check above
     // keeps it to the user's own chat (an unknown verb is the owner's); the post log names who.

@@ -77,19 +77,19 @@ register("linear", linearAdapter, {
 });
 
 register("cloudflare", (c) => cloudflareAdapter(c), {
-  label: "Cloudflare", caps: CLOUDFLARE_CAPS, place: "place (* = the whole account, zone:<name>)",
+  label: "Cloudflare", caps: CLOUDFLARE_CAPS, place: "place (* = every account, zone:<name>)",
   secretExample: "ORCA_SECRET_CLOUDFLARE", secretDefault: "ORCA_SECRET_CLOUDFLARE",
   // The class of each `orca cloudflare` verb, for the account policy (POLICY.md): the ONE table.
   verbs: CLOUDFLARE_VERBS,
   config: [
-    { key: "accountId", label: "Account id", placeholder: "32 hex characters, from the account home page" },
+    { key: "accountId", label: "Account ids (comma-separated; empty = every account the token can see)", placeholder: "empty, or 32 hex characters from each account's home page" },
     { key: "pollSeconds", label: "Poll every (seconds, at least 30)", placeholder: "120" },
     { key: "errorRatePct", label: "Worker error-rate threshold (%)", placeholder: "5" },
     { key: "minRequests", label: "Fewest requests for an error alert", placeholder: "100" },
     { key: "zones", label: "Zones to watch (comma-separated; empty = all)", placeholder: "example.com" },
     { key: "deployActors", label: "Deploy actors to leave out (comma-separated)", placeholder: "github" },
   ],
-  help: "An account API token, in Orca's secret store (Stored secret) or a secret variable. Orca polls the account (audit log, deploys, Worker errors, custom domains, DNS) and tells the orchestrator; it takes no posts. Setup: docs/integrations/cloudflare.md.",
+  help: "An account API token, in Orca's secret store (Stored secret) or a secret variable. Orca polls each account the token can see, or the ones you name (audit log, deploys, Worker errors, custom domains, DNS) and tells the orchestrator; it takes no posts. Setup: docs/integrations/cloudflare.md.",
 }, cloudflareDefaults);
 register("gmail", gmailAdapter, {
   label: "Gmail", caps: GMAIL_CAPS, place: "sender address (* = every sender)",
