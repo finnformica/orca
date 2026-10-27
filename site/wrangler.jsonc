@@ -3,6 +3,8 @@
 // account, and the custom domain is added in the dashboard. ORCA_ORIGIN is a dashboard variable.
 {
   "name": "orca-site",
+  // Pin the account: Workers Builds must resolve the Worker in this account.
+  "account_id": "a84767ecbbb94d3154e915832507314d",
   "main": "src/worker.ts",
   "compatibility_date": "2026-10-01",
   // Keep ORCA_ORIGIN (set in the dashboard) on each Workers Builds deploy: this file declares no vars.
