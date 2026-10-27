@@ -47,6 +47,7 @@ describe("the static pages", () => {
   test("home links to Privacy and Terms; privacy names the scope, the policy sentence and the contact", () => {
     expect(page("index.html")).toContain('href="/privacy"');
     expect(page("index.html")).toContain('href="/terms"');
+    expect(page("index.html")).toContain('<a href="https://github.com/finnformica/orca">GitHub</a>'); // same tab: no target
     const privacy = page("privacy.html");
     const plain = privacy.replace(/<[^>]+>/g, "");
     for (const s of ["Finn Formica", "gmail.readonly", "Orca never sends mail", "encrypted", "finnformica@gmail.com"]) expect(plain).toContain(s);

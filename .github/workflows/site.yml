@@ -1,0 +1,38 @@
+# Deploy the public page (site/) to Cloudflare Workers on each push to main that changes it.
+# The repository secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID give the account; with no
+# token the steps skip and the run passes. ORCA_ORIGIN is a dashboard variable on the Worker, kept on
+# each deploy by keep_vars in site/wrangler.jsonc. See site/README.md.
+name: site
+
+on:
+  push:
+    branches: [main]
+    paths: ['site/**', '.github/workflows/site.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: site-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # A job-level `if:` cannot read env or secrets, so each step checks the job's env instead.
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - name: No Cloudflare token
+        if: env.CLOUDFLARE_API_TOKEN == ''
+        run: echo "::notice::CLOUDFLARE_API_TOKEN is not set. The site deploy is skipped."
+      - uses: actions/checkout@v4
+        if: env.CLOUDFLARE_API_TOKEN != ''
+      - uses: cloudflare/wrangler-action@v4
+        if: env.CLOUDFLARE_API_TOKEN != ''
+        with:
+          workingDirectory: site
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy
