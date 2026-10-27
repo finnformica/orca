@@ -516,6 +516,9 @@ export function OrchestratorPage() {
   const [tab, setTab] = useAtom(orchestratorTabAtom);
   const team = useAgentList(true);
   const current = team.find((a) => a.agent === tab && a.agent !== "chief");
+  // The `@` picker's agents, as in the side panel: a chip sends to that agent only, Open switches to it.
+  const agents = useAgentMentions(team);
+  const mention = useMemo(() => agents && { agents, sendTo: sendToAgents, onOpen: setTab }, [agents, setTab]);
   const row: Row = {
     repo: ORCHESTRATOR_REPO, hasRemote: false, branch: ORCHESTRATOR_BRANCH, title: "Orca", prompt: "", lane: "LOCAL",
     worktreePath: state?.key, agentStatus: state?.running ? "running" : "idle",
@@ -523,8 +526,9 @@ export function OrchestratorPage() {
   return (
     <div data-slot="orchestrator-page" data-keyboard-fill className={cn("flex flex-col", ORCHESTRATOR_PAGE_NARROW)}>
       {/* Narrow: the desktop's 48px row (it was 60px, padded 12px all round) with the conversation's
-          12px at the sides; it is the phone's ONLY header here, Back included. */}
-      <div data-slot="orchestrator-page-header" className="flex h-12 shrink-0 items-center gap-2 border-b max-md:px-3">
+          12px at the sides; it is the phone's ONLY header here, Back included. At least 48px: the
+          agent menu's 36px touch target and the status line under it may need a little more. */}
+      <div data-slot="orchestrator-page-header" className="flex min-h-12 shrink-0 items-center gap-2 border-b py-1 max-md:px-3">
         <Button size="icon" variant="ghost" className="-ml-2 size-9 shrink-0" aria-label="Back" onClick={() => history.back()}>
           <ArrowLeft className="size-4" />
         </Button>
@@ -536,11 +540,11 @@ export function OrchestratorPage() {
         </div>
       </div>
       <div className={cn("min-h-0 max-md:flex-1", ORCHESTRATOR_PAGE_HEIGHT)} hidden={Boolean(current)}>
-        <OrchestratorChat row={row} prefill={prefill} controls={controls} load={load} />
+        <OrchestratorChat row={row} prefill={prefill} controls={controls} load={load} mention={mention} />
       </div>
       {current && (
         <div key={current.agent} className={cn("min-h-0 max-md:flex-1", ORCHESTRATOR_PAGE_HEIGHT)} data-slot="agent-chat" data-agent={current.agent}>
-          <AgentChat agent={current.agent!} displayName={current.displayName ?? current.agent!} branch={current.branch ?? current.agent!} active win={window} />
+          <AgentChat agent={current.agent!} displayName={current.displayName ?? current.agent!} branch={current.branch ?? current.agent!} active win={window} mention={mention} />
         </div>
       )}
     </div>

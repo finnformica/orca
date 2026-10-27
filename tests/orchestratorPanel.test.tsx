@@ -16,6 +16,8 @@ import { orchestratorActivityAtom, orchestratorOpenAtom, orchestratorPrefillAtom
 import { DOCK_PAGE_MIN_W, NAV_RAIL_W, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, PANEL_MIN_W, clampPanelWidth, dayLabel } from "@/workstream";
 import { openTip } from "./tip";
 import { NARROW_QUERY } from "@/lib/viewport";
+import { agentMessage } from "../shared/agents";
+import { agentSide, roomId } from "../shared/rooms";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -638,20 +640,65 @@ test("with only the Chief of Staff (an older bridge, or no other agent) there is
   expect(panel()!.querySelector("#orchestrator-title")!.textContent).toBe("Orca");
 });
 
-test("the phone's Orca page has the same agent menu in its header; a pick shows that agent's chat", async () => {
-  const now = Date.now();
-  apiFake.turnsData.set("@orca::assistant", [{ id: "run-a", provider: "claude", instruction: "triage #ops", prompt: "p", response: "Two questions, one for the chief.", startedAt: now - 500, finishedAt: now }]);
-  apiFake.extraAgents = [{ agent: "assistant", displayName: "Assistant", branch: "assistant", state: "idle", running: false, paused: false, notes: "", model: "claude-sonnet-5-5", key: "/state/agents/assistant" }];
-  await mount(<OrchestratorPage />);
-  await act(async () => { await flush(); await flush(); });
-  const page = container!.querySelector<HTMLElement>('[data-slot="orchestrator-page"]')!;
-  const menu = () => page.querySelector<HTMLElement>('[data-slot="agent-menu"]')!;
-  expect(menu().querySelector('[data-slot="agent-pill"]')!.textContent).toBe("Chief of Staff");
-  expect(page.querySelector('[data-slot="agent-chat"]')).toBeNull();
-  await pointerdown(menu());
-  await click([...document.body.querySelectorAll<HTMLElement>('[data-slot="agent-option"]')].find((o) => o.dataset.agent === "assistant")!);
-  await act(async () => { await flush(); await flush(); });
-  expect(menu().querySelector('[data-slot="agent-pill"]')!.getAttribute("data-agent")).toBe("assistant");
-  expect(page.querySelector('[data-slot="agent-chat"][data-agent="assistant"]')!.textContent).toContain("Two questions, one for the chief.");
-  getDefaultStore().set(orchestratorTabAtom, "chief");
+test("the phone's Orca page (390px): the header's agent menu, the @ picker's agents, a switch, and a room open there", async () => {
+  const realMatchMedia = window.matchMedia;
+  // A phone: the app's narrow query matches (lib/viewport NARROW_QUERY, below md).
+  window.matchMedia = ((q: string) => ({ matches: q === NARROW_QUERY, media: q, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
+  try {
+    const now = Date.now();
+    apiFake.turnsData.set("@orca::assistant", [
+      { id: "run-a", provider: "claude", instruction: "triage #ops", prompt: "p", response: "Two questions, one for the chief.", startedAt: now - 9000, finishedAt: now - 8000 },
+      { id: "ask-1", provider: "claude", instruction: agentMessage("chief", "Summarise the inbox"), prompt: "", response: "Inbox: two threads.", startedAt: now - 5000, finishedAt: now - 4000 },
+    ]);
+    apiFake.roomsData.set("@orca::assistant", [{ id: "ask-1", room: roomId(agentSide("chief"), agentSide("assistant")), sender: agentSide("chief"), recipient: agentSide("assistant"), kind: "ask",
+      messages: ["Summarise the inbox"], reply: "Inbox: two threads.", startedAt: now - 5000, finishedAt: now - 4000, chat: agentSide("assistant") }]);
+    apiFake.extraAgents = [{ agent: "assistant", displayName: "Assistant", branch: "assistant", state: "idle", running: false, paused: false, notes: "", model: "claude-sonnet-5-5", key: "/state/agents/assistant" }];
+    await mount(<OrchestratorPage />);
+    await act(async () => { await flush(); await flush(); });
+    const page = container!.querySelector<HTMLElement>('[data-slot="orchestrator-page"]')!;
+    const menu = () => page.querySelector<HTMLElement>('[data-slot="agent-menu"]')!;
+    // The header shows the menu, as the chosen agent's pill, with a phone's touch height.
+    const header = page.querySelector<HTMLElement>('[data-slot="orchestrator-page-header"]')!;
+    expect(header.contains(menu())).toBe(true);
+    expect(header.className).toContain("min-h-12"); // grows for the 36px trigger and its status line
+    expect(menu().className).toContain("max-md:h-9");
+    expect(menu().querySelector('[data-slot="agent-pill"]')!.textContent).toBe("Chief of Staff");
+    expect(page.querySelector('[data-slot="agent-chat"]')).toBeNull();
+
+    // The page's composer lists the named agents under @, as the side panel's does.
+    const textarea = page.querySelector("textarea")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, "@ass");
+      textarea.setSelectionRange(4, 4);
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      await flush();
+    });
+    expect(page.querySelector('[role="option"][data-mention="agent"] [data-slot="agent-pill"]')!.textContent).toBe("Assistant");
+    await act(async () => { textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); await flush(); });
+
+    // Switch agents in the menu: each option is the agent's pill with a 44px row on a phone.
+    await pointerdown(menu());
+    const options = [...document.body.querySelectorAll<HTMLElement>('[data-slot="agent-option"]')];
+    expect(options.map((o) => o.querySelector('[data-slot="agent-pill"]')!.textContent)).toEqual(["Chief of Staff", "Assistant"]);
+    expect(options[1]!.className).toContain("max-md:min-h-11");
+    await click(options.find((o) => o.dataset.agent === "assistant")!);
+    await act(async () => { await flush(); await flush(); });
+    expect(menu().querySelector('[data-slot="agent-pill"]')!.getAttribute("data-agent")).toBe("assistant");
+    const chat = page.querySelector<HTMLElement>('[data-slot="agent-chat"][data-agent="assistant"]')!;
+    expect(chat.textContent).toContain("Two questions, one for the chief.");
+
+    // The room with the Chief of Staff opens in the page: Back, then the two pills with the swap arrow.
+    const pill = chat.querySelector<HTMLElement>('[data-slot="room-pill"]')!;
+    expect(pill.getAttribute("aria-label")).toBe("2 messages with Chief of Staff");
+    await click(pill);
+    const title = chat.querySelector('[data-slot="room-title"]')!;
+    expect([...title.querySelectorAll('[data-slot="agent-pill"]')].map((e) => e.textContent)).toEqual(["Assistant", "Chief of Staff"]);
+    expect(chat.querySelector('[data-slot="room-back"]')!.className).toContain("max-md:size-9");
+    expect(chat.querySelector('[data-slot="room-log"]')!.textContent).toContain("Inbox: two threads.");
+    await click(chat.querySelector('[data-slot="room-back"]')!);
+    expect(chat.querySelector('[data-slot="room-log"]')).toBeNull();
+  } finally {
+    window.matchMedia = realMatchMedia;
+    getDefaultStore().set(orchestratorTabAtom, "chief");
+  }
 });

@@ -121,7 +121,7 @@ const send = view === "sending" || view === "chips" ? () => new Promise<void>(()
 createRoot(document.getElementById("root")!).render(panelView ? (
   view === "panel"
     ? <div className="bg-background flex h-screen"><div className="flex-1" /><Dock /><OrchestratorPanel /></div>
-    : <div className="bg-background h-screen p-4"><OrchestratorPage /></div>
+    : <div className="bg-background h-screen px-4 pt-6"><OrchestratorPage /></div>
 ) : (
   <div className="bg-background flex min-h-screen items-center justify-center p-6">
     <div className="bg-card text-foreground h-[80vh] w-[90vw] max-w-2xl overflow-hidden rounded-lg border">
