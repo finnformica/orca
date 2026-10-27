@@ -11,6 +11,7 @@ import * as store from "@/store";
 import { App } from "@/App";
 import { navigate } from "@/lib/route";
 import * as notificationStore from "@/lib/notificationStore";
+import { brandTitle, isIntegrationKind } from "@/components/BrandIcon";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -335,6 +336,18 @@ describe("the Integrations page", () => {
     const icon = all("integration-card")[0]!.querySelector<SVGElement>('[data-slot="brand-icon"][data-kind="cloudflare"]')!;
     expect(icon.tagName.toLowerCase()).toBe("svg");
     expect([...icon.querySelectorAll("path")].map((p) => p.getAttribute("fill"))).toEqual(["#F38020", "#FBAE40"]);
+  });
+
+  test("the Granola logo is its own one-colour spiral, in the text colour, on the card and for the inbox", async () => {
+    apiFake.integrationsData = { ...overview(), kinds: [{ kind: "granola", label: "Granola", caps: {} }],
+      integrations: [{ id: "granola", kind: "granola", name: "Granola", instance: "*", enabled: true, config: {}, access: "read", events: "off", running: true, health: { ok: true } }], links: [], pairings: [] };
+    await open("/integrations");
+    const icon = all("integration-card")[0]!.querySelector<SVGElement>('[data-slot="brand-icon"][data-kind="granola"]')!;
+    expect(icon.tagName.toLowerCase()).toBe("svg");
+    expect(icon.classList.contains("lucide")).toBe(false); // not the generic plug
+    expect([...icon.querySelectorAll("path")].map((p) => p.getAttribute("fill"))).toEqual(["currentColor"]);
+    expect(isIntegrationKind("granola")).toBe(true); // the Inbox chip and the bell draw it too
+    expect(brandTitle("granola")).toBe("Granola");
   });
 
   test("Settings > Google sign-in: the operator sets the client id and points the secret at a stored secret", async () => {
