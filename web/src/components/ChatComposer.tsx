@@ -7,7 +7,7 @@ import { ComposerAttachment } from "@/components/ComposerAttachment";
 import { Shortcut } from "@/components/ui/kbd";
 import { Tip } from "@/components/ui/tip";
 import { usePrRefs, useVoiceInput, useWorkstreamRefs } from "@/store";
-import { NO_WALK, appendQuote, filterMentions, filterSlashCommands, historyKey, historyStep, insertPrRef, listContinuation, mentionLabel, prTrigger, removeSlashQuery, sentToLabel, slashActive, slashStep, slashTrigger, withSecretRefs, type AgentMention, type HistoryWalk, type MentionRef } from "@/workstream";
+import { NO_WALK, appendQuote, filterMentions, filterSlashCommands, historyKey, historyStep, insertPrRef, listContinuation, mentionLabel, prTrigger, mentionGroups, removeSlashQuery, sentToLabel, slashActive, slashStep, slashTrigger, withSecretRefs, type AgentMention, type HistoryWalk, type MentionRef } from "@/workstream";
 import { lineVisualRow, scrollCaretIntoView } from "@/lib/caretRow";
 import { cn, PipContext } from "@/lib/utils";
 import { clearDraft, draftFiles, loadDraft, saveDraft } from "@/lib/composerDraft";
@@ -176,10 +176,14 @@ export function ChatComposer({
   const pendingFocus = useRef(true);
   const listId = useId();
   const trig = prTrigger(value, caret);
-  const matches = trig && trig.start !== dismissedAt ? filterMentions(refs, wsRefs, trig.query, 8, agents) : [];
+  const matches = trig && trig.start !== dismissedAt ? filterMentions(refs, wsRefs, trig.query, MENTION_GROUP_LIMIT, agents) : [];
   const picking = matches.length > 0;
   const activeIdx = Math.min(active, Math.max(0, matches.length - 1));
   const optionId = (i: number) => `${listId}-pr-${i}`;
+  // ↑/↓ walk the flat list across the groups: keep the active option in view of the list's scroll.
+  useEffect(() => {
+    if (picking) textRef.current?.ownerDocument.getElementById(optionId(activeIdx))?.scrollIntoView?.({ block: "nearest" });
+  }, [picking, activeIdx]);
   // `/` menu: the same rules as the @ picker (↑/↓, Enter/Tab, Escape, a blur dismisses that `/`).
   // The two never both match: a slash trigger is a `/` at a line start or after whitespace, then a name.
   const strig = commands ? slashTrigger(value, caret) : null;
@@ -588,8 +592,14 @@ export function ChatComposer({
       )}
       style={quick && rect ? { left: rect.left, bottom: (textRef.current?.ownerDocument.defaultView?.innerHeight ?? 0) - rect.top + 4, width: rect.width } : undefined}
     >
-    <ul id={listId} role="listbox" aria-label={agents?.length ? "Agents, pull requests and workstreams" : "Pull requests and workstreams"} className="max-h-64 overflow-y-auto">
-      {matches.map((m, i) => (
+    <ul id={listId} role="listbox" aria-label={agents?.length ? "Agents, workstreams and pull requests" : "Workstreams and pull requests"} className="max-h-64 overflow-y-auto">
+      {/* One group per kind under a small muted heading (the look of shadcn's CommandGroup heading).
+          The options keep ONE flat index, so ↑/↓ moves across the groups and never stops on a heading. */}
+      {mentionGroups(matches).map((g) => (
+      <li key={g.kind} role="presentation" data-slot="mention-group" data-group={g.kind}>
+      <div id={`${listId}-group-${g.kind}`} role="presentation" data-slot="mention-group-heading" className="text-muted-foreground px-2 py-1.5 text-xs font-medium">{g.label}</div>
+      <ul role="group" aria-labelledby={`${listId}-group-${g.kind}`}>
+      {g.items.map(({ m, index: i }) => (
         <li
           key={m.kind === "pr" ? `${m.ref.repo}#${m.ref.number}` : m.kind === "agent" ? `agent:${m.ref.name}` : `${m.ref.repo}/${m.ref.branch}`}
           data-mention={m.kind}
@@ -626,6 +636,9 @@ export function ChatComposer({
             </>
           )}
         </li>
+      ))}
+      </ul>
+      </li>
       ))}
     </ul>
     </div>
@@ -710,6 +723,8 @@ export function ChatComposer({
   );
 }
 
+/** At most this many options in each `@` picker group (agents, workstreams, pull requests). */
+export const MENTION_GROUP_LIMIT = 5;
 /** How long the composer's "Sent to … · Open" receipt shows (ms). */
 export const SENT_TO_MS = 6000;
 
