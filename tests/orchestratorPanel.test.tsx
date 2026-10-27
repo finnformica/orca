@@ -569,6 +569,42 @@ test("named agents: a tab per agent with its state dot, the Chief of Staff first
   expect(panel()!.querySelector<HTMLElement>('[data-slot="agent-chat"][data-agent="assistant"]')!.hidden).toBe(true);
 });
 
+test("@agent in the panel: a recipient chip sends to that agent only, the view stays on its tab, Open switches", async () => {
+  apiFake.extraAgents = [{ agent: "research", displayName: "Research", branch: "research", state: "idle", running: false, paused: false, notes: "", model: "claude-sonnet-5-5", key: "/state/agents/research" }];
+  await mount(<Entry />);
+  await click(launcher());
+  await afterSlide();
+  const tabs = () => [...panel()!.querySelectorAll<HTMLElement>('[data-slot="agent-tab"]')];
+  // Each tab carries its agent's identicon.
+  expect(tabs().map((t) => t.querySelector('svg[data-slot="agent-avatar"]')?.getAttribute("data-agent"))).toEqual(["chief", "research"]);
+  const textarea = panel()!.querySelector("textarea")!;
+  const typeIn = async (text: string) => {
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, text);
+      textarea.setSelectionRange(text.length, text.length);
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      await flush();
+    });
+  };
+  const press = async (k: string) => { await act(async () => { textarea.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true })); await flush(); await flush(); }); };
+  await typeIn("@res");
+  expect(panel()!.querySelector('[role="option"]')!.getAttribute("data-mention")).toBe("agent");
+  await press("Enter");
+  expect(textarea.value).toBe("");
+  expect(panel()!.querySelector('[data-attachment="agent"]')!.textContent).toBe("To Research");
+  await typeIn("check the flaky test");
+  await press("Enter");
+  await act(async () => { await flush(); await flush(); await flush(); });
+  // Only to Research: nothing went to the Chief of Staff, and the panel stays on its tab.
+  expect(apiFake.orchestratorMessages).toEqual([{ text: "check the flaky test", attachments: [], agent: "research" }]);
+  expect(tabs()[0]!.dataset.state).toBe("active");
+  const receipt = panel()!.querySelector('[data-slot="chat-composer-sent-to"]')!;
+  expect(receipt.textContent).toBe("Sent to Research·Open");
+  await click(receipt.querySelector("button")!);
+  await afterSlide();
+  expect(tabs()[1]!.dataset.state).toBe("active");
+});
+
 test("with only the Chief of Staff (an older bridge, or no other agent) there is no tab row", async () => {
   await mount(<Entry />);
   await click(launcher());

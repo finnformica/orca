@@ -7,7 +7,8 @@ import { ChatPanel } from "@/views/Chat";
 import type { ChatControlsProps, CompactControl } from "@/components/ChatControls";
 import { api, type AgentStatus } from "../api";
 import { useWorkstreams, type Row } from "../store";
-import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, agentStateTone, agentStatusText, orchestratorStatus } from "../workstream";
+import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, agentStateTone, agentStatusText, orchestratorStatus, type AgentMention } from "../workstream";
+import { AgentAvatar } from "@/components/AgentAvatar";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StatusDot } from "@/components/console";
 import { PanelHeader, SidePanel, usePanelWidth, useSlideSettled, type SwipeProps } from "@/components/SidePanel";
@@ -19,7 +20,7 @@ import { poll } from "@/lib/poll";
 import { type OrchestratorPrefill, orchestratorActivityAtom, orchestratorOpenAtom, orchestratorPrefillAtom, orchestratorTabAtom, orchestratorWidthAtom } from "@/lib/atoms";
 import { useCoarse, useNarrow } from "@/lib/viewport";
 import { openOrchestrator } from "@/lib/orchestratorOpen";
-import { sendToOrchestrator } from "@/lib/orchestratorOutbox";
+import { sendToAgents, sendToOrchestrator } from "@/lib/orchestratorOutbox";
 import { useSwipeToDismiss } from "@/lib/gestures";
 import { useRoute } from "@/lib/route";
 
@@ -261,6 +262,10 @@ export function OrchestratorPanel() {
   const current = team.find((a) => a.agent === tab && a.agent !== "chief");
   const [seen, setSeen] = useState<string[]>([]);
   if (current && !seen.includes(current.agent!)) setSeen([...seen, current.agent!]);
+  // The `@` picker's agents in every tab's composer. A send with recipient chips goes to those agents
+  // only; the panel stays on the current tab, and the receipt's Open switches to the agent's tab.
+  const agents = useAgentMentions(team);
+  const mention = useMemo(() => agents && { agents, sendTo: sendToAgents, onOpen: setTab }, [agents, setTab]);
   // Closing drops the pending ask, so a later open can't re-apply it to a freshly mounted composer.
   useEffect(() => { if (!open) { pip?.close(); setPrefill(null); } }, [open]);
   // An ask while popped out lands in the PiP window's composer; bring that window forward.
@@ -354,11 +359,11 @@ export function OrchestratorPanel() {
       <div className="min-h-0 flex-1" hidden={Boolean(current)}>
         {/* Mounted at once, not after the status read: the composer must exist to take focus in the
             same commit that opens the panel, or the first keystrokes go nowhere. */}
-        <OrchestratorChat row={row} prefill={prefill} controls={controls} load={load} />
+        <OrchestratorChat row={row} prefill={prefill} controls={controls} load={load} mention={mention} />
       </div>
       {team.filter((a) => a.agent !== "chief" && seen.includes(a.agent!)).map((a) => (
         <div key={a.agent} className="min-h-0 flex-1" hidden={current?.agent !== a.agent} data-slot="agent-chat" data-agent={a.agent}>
-          <AgentChat agent={a.agent!} displayName={a.displayName ?? a.agent!} branch={a.branch ?? a.agent!} active={current?.agent === a.agent} win={pip ?? window} />
+          <AgentChat agent={a.agent!} displayName={a.displayName ?? a.agent!} branch={a.branch ?? a.agent!} active={current?.agent === a.agent} win={pip ?? window} mention={mention} />
         </div>
       ))}
     </>
@@ -399,15 +404,28 @@ export function useAgentList(active: boolean, win: Window = window): AgentStatus
   return team;
 }
 
-/** The tab row (shadcn Tabs): one tab per agent with its state dot, the Chief of Staff first. */
+/** The agents for the composer's `@` picker: every named agent, once there is more than one (as for
+ *  the tab row). The same array while the names stay, so a 5 s poll does not re-render the chats. */
+export function useAgentMentions(team: AgentStatus[]): AgentMention[] | undefined {
+  const key = team.length > 1 ? team.map((a) => `${a.agent ?? "chief"}\t${a.displayName ?? a.agent ?? "chief"}`).join("\n") : "";
+  return useMemo(() => (key ? key.split("\n").map((l) => {
+    const [name, displayName] = l.split("\t") as [string, string];
+    return { name, displayName };
+  }) : undefined), [key]);
+}
+
+type MentionProps = { agents: AgentMention[]; sendTo: (agents: string[], text: string, images: File[]) => Promise<unknown>; onOpen: (name: string) => void };
+
+/** The tab row (shadcn Tabs): one tab per agent with its avatar and state dot, the Chief of Staff first. */
 function AgentTabs({ team, tab, onTab }: { team: AgentStatus[]; tab: string; onTab: (name: string) => void }) {
   return (
     <Tabs value={tab} onValueChange={onTab} className="shrink-0 gap-0 border-b px-2 py-1.5" data-slot="agent-tabs">
       <TabsList className="h-7">
         {team.map((a) => (
           <TabsTrigger key={a.agent} value={a.agent ?? "chief"} className="h-7 flex-none px-2.5 text-xs" data-slot="agent-tab" data-agent={a.agent}>
-            <StatusDot tone={agentStateTone(a.state)} className={cn("size-1.5", a.state === "working" && "animate-pulse")} />
+            <AgentAvatar name={a.agent ?? "chief"} size={16} />
             {a.displayName ?? a.agent}
+            <StatusDot tone={agentStateTone(a.state)} className={cn("size-1.5", a.state === "working" && "animate-pulse")} />
           </TabsTrigger>
         ))}
       </TabsList>
@@ -426,7 +444,7 @@ function AgentStatusLine({ agent }: { agent: AgentStatus }) {
 
 /** Another named agent's conversation: the same ChatPanel over its own workstream (`@orca`, its
  *  branch), its replies under its name, its messages to its own queue. Nothing forks the chat. */
-const AgentChat = memo(function AgentChat({ agent, displayName, branch, active, win }: { agent: string; displayName: string; branch: string; active: boolean; win: Window }) {
+const AgentChat = memo(function AgentChat({ agent, displayName, branch, active, win, mention }: { agent: string; displayName: string; branch: string; active: boolean; win: Window; mention?: MentionProps }) {
   const { state, load, controls } = useOrchestratorState(active, win, agent);
   const key = state?.key, running = !!state?.running;
   const row: Row = useMemo(() => ({
@@ -435,7 +453,7 @@ const AgentChat = memo(function AgentChat({ agent, displayName, branch, active, 
   }), [branch, displayName, key, running]);
   return (
     <ChatPanel
-      row={row} author={displayName} controls={controls}
+      row={row} author={displayName} controls={controls} mention={mention}
       send={async (text, images) => {
         const refs = images.length ? await api.uploadAttachments(images) : [];
         await api.orchestratorMessage(text, refs, agent);
@@ -500,10 +518,10 @@ export function OrchestratorPage() {
  *  uses, with its replies under "Orchestrator", its messages through the shared outbox, and the
  *  composer's toolbar (Claude models only; changing the model keeps the session) fed its own values. */
 /** Memoized: an open or close of the panel re-renders the panel, never this (its props are stable). */
-const OrchestratorChat = memo(function OrchestratorChat({ row, prefill, controls, load }: { row: Row; prefill: OrchestratorPrefill | null; controls: ChatControlsProps; load: () => Promise<unknown> }) {
+const OrchestratorChat = memo(function OrchestratorChat({ row, prefill, controls, load, mention }: { row: Row; prefill: OrchestratorPrefill | null; controls: ChatControlsProps; load: () => Promise<unknown>; mention?: MentionProps }) {
   return (
     <ChatPanel
-      row={row} author="Orca" prefill={prefill} outbox controls={controls}
+      row={row} author="Orca" prefill={prefill} outbox controls={controls} mention={mention}
       send={async (text, images) => {
         await sendToOrchestrator(text, images);
         await load();

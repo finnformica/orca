@@ -2374,8 +2374,21 @@ export function removeSlashQuery(text: string, start: number, caret: number): { 
 // local branch with no PR yet can be named too. A workstream with a PR is listed once, as its PR.
 
 export type WorkstreamRef = { repo: string; branch: string; title: string; instance?: string; prNumber?: number };
+/** A named agent the `@` picker can list (the orchestrator's panel and quick-ask only). A pick is
+ *  not text: it makes a recipient chip, and the message goes to each chosen agent. */
+export type AgentMention = { name: string; displayName: string };
 /** One option in the `@` picker. */
-export type MentionRef = { kind: "pr"; ref: PrRef } | { kind: "workstream"; ref: WorkstreamRef };
+export type MentionRef = { kind: "pr"; ref: PrRef } | { kind: "workstream"; ref: WorkstreamRef } | { kind: "agent"; ref: AgentMention };
+
+/** Each word of the query must start the agent's name or a word of its display name. Order kept. */
+export function filterAgentMentions(agents: AgentMention[], query: string): AgentMention[] {
+  const words = query.toLowerCase().replace(/^[#@]/, "").split(/\s+/).filter(Boolean);
+  const hit = (a: AgentMention) => {
+    const hays = [a.name.toLowerCase(), ...a.displayName.toLowerCase().split(/[^a-z0-9]+/)];
+    return words.every((w) => hays.some((h) => h.startsWith(w)));
+  };
+  return agents.filter(hit);
+}
 
 /** Each word of the query must start at a word boundary of the repo name, the branch or the title,
  *  so `at-ref` finds `orca/at-reference-…`. Board order is kept. */
@@ -2388,10 +2401,11 @@ export function filterWorkstreamRefs(refs: WorkstreamRef[], query: string, limit
   return refs.filter(hit).slice(0, limit);
 }
 
-/** The picker's options: open PRs, then workstreams with no PR among `prs`, then merged PRs. A PR
- *  pick also matches its own workstream's title and branch (same repo + PR number), so a query that
- *  names the workstream — not the PR title — still finds it. */
-export function filterMentions(prs: PrRef[], workstreams: WorkstreamRef[], query: string, limit = 8): MentionRef[] {
+/** The picker's options: named agents (only where `agents` is given), then open PRs, then
+ *  workstreams with no PR among `prs`, then merged PRs. A PR pick also matches its own workstream's
+ *  title and branch (same repo + PR number), so a query that names the workstream — not the PR
+ *  title — still finds it. */
+export function filterMentions(prs: PrRef[], workstreams: WorkstreamRef[], query: string, limit = 8, agents: AgentMention[] = []): MentionRef[] {
   const prKeys = new Set(prs.map((p) => `${p.repo}#${p.number}`));
   const own = workstreams.filter((w) => w.prNumber === undefined || !prKeys.has(`${w.repo}#${w.prNumber}`));
   const wsByPr = new Map(workstreams.filter((w) => w.prNumber !== undefined).map((w) => [`${w.repo}#${w.prNumber}`, w] as const));
@@ -2400,6 +2414,7 @@ export function filterMentions(prs: PrRef[], workstreams: WorkstreamRef[], query
     return ws ? [ws.title, ws.branch] : [];
   });
   return [
+    ...filterAgentMentions(agents, query).map((ref): MentionRef => ({ kind: "agent", ref })),
     ...prHits.filter((p) => p.state !== "merged").map((ref): MentionRef => ({ kind: "pr", ref })),
     ...filterWorkstreamRefs(own, query, limit).map((ref): MentionRef => ({ kind: "workstream", ref })),
     ...prHits.filter((p) => p.state === "merged").map((ref): MentionRef => ({ kind: "pr", ref })),
@@ -2413,9 +2428,16 @@ export function workstreamRefLabel(ref: WorkstreamRef, repoCount: number, contex
   return contextRepo === undefined || (repoCount > 1 && contextRepo !== ref.repo) ? `\`${ref.repo}/${ref.branch}\`` : `\`${ref.branch}\``;
 }
 
-/** The text a pick of either kind inserts. */
+/** The text a pick inserts. An agent pick inserts nothing (it becomes a recipient chip); its label
+ *  is `@name` for any caller that wants one. */
 export function mentionLabel(m: MentionRef, prs: PrRef[], repoCount: number, contextRepo?: string): string {
-  return m.kind === "pr" ? prRefLabel(m.ref, prs, repoCount, contextRepo) : workstreamRefLabel(m.ref, repoCount, contextRepo);
+  return m.kind === "pr" ? prRefLabel(m.ref, prs, repoCount, contextRepo)
+    : m.kind === "agent" ? `@${m.ref.name}` : workstreamRefLabel(m.ref, repoCount, contextRepo);
+}
+
+/** The composer's "Sent to …" receipt after a send to recipient chips. */
+export function sentToLabel(names: string[]): string {
+  return names.length <= 2 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
 }
 
 // ---- The overview (the board's default List view) ----

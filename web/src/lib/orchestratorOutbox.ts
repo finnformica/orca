@@ -11,7 +11,8 @@ import { useSyncExternalStore } from "react";
 import { api } from "../api";
 import { attachmentRefs, type AttachmentRef } from "../workstream";
 
-export type OutgoingMessage = { id: number; text: string; attachments?: AttachmentRef[] };
+/** `agent`: a named agent's message (a recipient chip); absent = the Chief of Staff's. */
+export type OutgoingMessage = { id: number; text: string; attachments?: AttachmentRef[]; agent?: string };
 
 let pending: OutgoingMessage[] = [];
 let seq = 0;
@@ -28,10 +29,12 @@ let chain: Promise<unknown> = Promise.resolve();
 
 /** Send `text` (and any files) to the orchestrator: drawn in its chat at once, delivered in order,
  *  reconciled with the recorded turn / queued entry. Rejects (the entry withdrawn) if the bridge
- *  refuses it, so the caller can give the text back. */
-export function sendToOrchestrator(text: string, files: File[] = []): Promise<{ status: "running" | "queued" }> {
+ *  refuses it, so the caller can give the text back. `agent` names another named agent (a recipient
+ *  chip); none, or `chief`, is the Chief of Staff. */
+export function sendToOrchestrator(text: string, files: File[] = [], agent?: string): Promise<{ status: "running" | "queued" }> {
   const id = ++seq;
-  pending = [...pending, { id, text }];
+  const to = agent && agent !== "chief" ? agent : undefined;
+  pending = [...pending, { id, text, ...(to ? { agent: to } : {}) }];
   changed();
   const sent = chain.then(async () => {
     const refs = files.length ? await api.uploadAttachments(files) : [];
@@ -42,7 +45,7 @@ export function sendToOrchestrator(text: string, files: File[] = []): Promise<{ 
       pending = pending.map((m) => (m.id === id ? { ...m, attachments: attachmentRefs(refs.join("\n")) } : m));
       changed();
     }
-    return api.orchestratorMessage(text, refs);
+    return api.orchestratorMessage(text, refs, to);
   });
   chain = sent.catch(() => {});
   const settle = () => { pending = pending.filter((m) => m.id !== id); changed(); };
@@ -65,8 +68,20 @@ export function onOrchestratorDelivered(hook: () => Promise<void>): () => void {
 const subscribe = (l: () => void) => { listeners.add(l); return () => { listeners.delete(l); }; };
 const snapshot = () => pending;
 const none: OutgoingMessage[] = [];
-/** The messages still on their way; `on: false` reads none (a chat that isn't the orchestrator's). */
+let chiefOf: OutgoingMessage[] = [], chiefList: OutgoingMessage[] = [];
+/** The Chief of Staff's share of `pending`, the same array while `pending` is unchanged. */
+const chiefOnly = (all: OutgoingMessage[]) => {
+  if (all !== chiefOf) { chiefOf = all; chiefList = all.some((m) => m.agent) ? all.filter((m) => !m.agent) : all; }
+  return chiefList;
+};
+/** The Chief of Staff's messages still on their way; `on: false` reads none (a chat that isn't the
+ *  orchestrator's). A message to another named agent is not drawn here. */
 export function useOrchestratorOutbox(on: boolean): OutgoingMessage[] {
   const all = useSyncExternalStore(subscribe, snapshot, snapshot);
-  return on ? all : none;
+  return on ? chiefOnly(all) : none;
+}
+
+/** Send one message to each named agent in `agents` (recipient chips), and only to them. */
+export function sendToAgents(agents: string[], text: string, files: File[] = []): Promise<unknown> {
+  return Promise.all(agents.map((a) => sendToOrchestrator(text, files, a)));
 }
