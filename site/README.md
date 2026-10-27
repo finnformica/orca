@@ -14,24 +14,33 @@ The site is plain HTML and CSS in `public/`, with a self-hosted font (Unbounded,
 
 ## Deploy with Workers Builds
 
-1. In the Cloudflare dashboard, open **Workers & Pages**. Click **Create**.
-2. Select **Import a repository**. Connect the GitHub repo `finnformica/orca`.
-3. Set **Root directory** to `site/`.
-4. Set **Deploy command** to `npx wrangler deploy`. Leave the build command empty.
-5. Click **Deploy**. Each push to `main` then deploys again.
+Use these settings in the Cloudflare dashboard (**Workers & Pages > Create > Import a repository**):
+
+| Setting | Value |
+| --- | --- |
+| Repository | `finnformica/orca` |
+| Branch | `main` |
+| Root directory | `site` |
+| Build watch paths | `site/**` |
+| Build command | (empty) |
+| Deploy command | `npx wrangler deploy` |
+
+Each push to `main` that changes a file under `site/` deploys the Worker again.
 
 `wrangler.jsonc` holds no account id and no routes. Workers Builds gives the account. Add the custom
 domain in the dashboard: open the Worker, then **Settings > Domains & Routes > Add > Custom domain**.
+`workers_dev` is on and `preview_urls` is off.
 
 ## The variable
 
-Set one variable on the Worker: **Settings > Variables and Secrets > Add**.
+Set one variable on the Worker in the dashboard: **Settings > Variables and Secrets > Add**.
 
-| Name | Value |
-| --- | --- |
-| `ORCA_ORIGIN` | The `https://` origin of your Orca server, with no path. |
+| Name | Type | Value |
+| --- | --- | --- |
+| `ORCA_ORIGIN` | Text | The `https://` origin of your Orca server, with no path. |
 
-Do not put this value in the repo. The repo is public.
+Do not put this value in the repo. The repo is public. `wrangler.jsonc` sets `keep_vars: true`, so a
+deploy keeps the dashboard variable.
 
 ## Connect Orca to it
 

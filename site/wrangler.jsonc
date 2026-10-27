@@ -5,6 +5,10 @@
   "name": "orca-site",
   "main": "src/worker.ts",
   "compatibility_date": "2026-10-01",
+  // Keep ORCA_ORIGIN (set in the dashboard) on each Workers Builds deploy: this file declares no vars.
+  "keep_vars": true,
+  "workers_dev": true,
+  "preview_urls": false,
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
