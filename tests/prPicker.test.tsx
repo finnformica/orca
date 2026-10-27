@@ -8,7 +8,7 @@ import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { ChatComposer } from "@/components/ChatComposer";
 import { Shortcuts } from "@/components/CommandPalette";
-import { filterAgentMentions, filterMentions, filterPrRefs, filterWorkstreamRefs, insertPrRef, mentionLabel, prRefLabel, prTrigger, sentToLabel, workstreamRefLabel, type AgentMention, type PrRef, type WorkstreamRef } from "@/workstream";
+import { filterAgentMentions, filterMentions, mentionGroups, filterPrRefs, filterWorkstreamRefs, insertPrRef, mentionLabel, prRefLabel, prTrigger, sentToLabel, workstreamRefLabel, type AgentMention, type PrRef, type WorkstreamRef } from "@/workstream";
 
 describe("prTrigger", () => {
   test("fires on an @ at the start, after whitespace or a bracket, up to the caret", () => {
@@ -97,13 +97,14 @@ describe("workstream refs", () => {
     expect(mentionLabel({ kind: "pr", ref: refs[1]! }, refs, 1)).toBe("#6101");
     expect(insertPrRef("see @loc", 4, 8, "`web/orca/local-search-1a2b`")).toEqual({ text: "see `web/orca/local-search-1a2b` ", caret: 33 });
   });
-  test("filterMentions: open PRs, then workstreams with no listed PR, then merged; a workstream with a PR shows once", () => {
+  test("filterMentions: workstreams with no listed PR, then PRs (open, then merged); a workstream with a PR shows once", () => {
     const label = (m: ReturnType<typeof filterMentions>[number]) => (m.kind === "pr" ? `#${m.ref.number}` : m.kind === "agent" ? `@${m.ref.name}` : m.ref.branch);
-    expect(filterMentions(refs, wsRefs, "").map(label)).toEqual(["#6150", "#6101", "#42", "orca/local-search-1a2b", "rate-limits", "#6095", "#6090"]);
+    expect(filterMentions(refs, wsRefs, "").map(label)).toEqual(["orca/local-search-1a2b", "rate-limits", "#6150", "#6101", "#42", "#6095", "#6090"]);
     expect(filterMentions(refs, wsRefs, "auth").map(label)).toEqual(["#6101", "#42"]); // auth-flow is #6101
     // Its PR not in the list (e.g. not polled yet): the workstream itself shows.
     expect(filterMentions([], wsRefs, "auth").map(label)).toEqual(["auth-flow"]);
-    expect(filterMentions(refs, wsRefs, "", 4)).toHaveLength(4);
+    // The limit caps EACH group: 2 workstreams (all there are) and 4 PRs.
+    expect(filterMentions(refs, wsRefs, "", 4).map(label)).toEqual(["orca/local-search-1a2b", "rate-limits", "#6150", "#6101", "#42", "#6095"]);
   });
 
   // A PR whose title doesn't name its workstream (the bug: "More item check rules" / branch-demo
@@ -128,9 +129,9 @@ describe("workstream refs", () => {
     expect(hits[0]).toEqual({ kind: "pr", ref: titleRefs[5]! });
   });
 
-  test("filterMentions: current ordering is kept (open PRs, then no-PR workstreams, then merged)", () => {
+  test("filterMentions: group order (no-PR workstreams, then PRs), each group in its own ranking", () => {
     expect(filterMentions(titleRefs, titleWsRefs, "").map(label))
-      .toEqual(["#6361", "#6150", "#6101", "#42", "orca/local-search-1a2b", "rate-limits", "#6095", "#6090"]);
+      .toEqual(["orca/local-search-1a2b", "rate-limits", "#6361", "#6150", "#6101", "#42", "#6095", "#6090"]);
   });
 });
 
@@ -292,11 +293,18 @@ describe("agent mentions (pure)", () => {
   test("filterMentions: agents first on a match, then the PR/workstream order; none without the agents argument", () => {
     const agentsFirst = filterMentions(refs, wsRefs, "", 8, team);
     expect(agentsFirst.slice(0, 3).map((m) => m.kind)).toEqual(["agent", "agent", "agent"]);
-    expect(agentsFirst.slice(3).map((m) => m.kind === "pr" ? `#${m.ref.number}` : m.kind)).toEqual(["#6150", "#6101", "#42", "workstream", "workstream"]);
+    expect(agentsFirst.slice(3).map((m) => m.kind === "pr" ? `#${m.ref.number}` : m.kind)).toEqual(["workstream", "workstream", "#6150", "#6101", "#42", "#6095", "#6090"]);
     expect(filterMentions(refs, wsRefs, "auth").every((m) => m.kind !== "agent")).toBe(true);
     // An agent that also matches still comes first: `a` hits Assistant and the `api` PR.
     expect(filterMentions(refs, wsRefs, "a", 8, team).map((m) => m.kind === "agent" ? m.ref.name : m.kind)[0]).toBe("assistant");
     expect(mentionLabel({ kind: "agent", ref: team[1]! }, refs, 1)).toBe("@research");
+  });
+  test("mentionGroups: Agents, Workstreams, Pull requests; flat indexes kept; an empty group left out", () => {
+    const groups = mentionGroups(filterMentions(refs, wsRefs, "", 8, team));
+    expect(groups.map((g) => g.label)).toEqual(["Agents", "Workstreams", "Pull requests"]);
+    expect(groups.flatMap((g) => g.items.map((x) => x.index))).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]) // 3 agents, 2 workstreams, 5 PRs;
+    expect(mentionGroups(filterMentions(refs, wsRefs, "auth", 8, team)).map((g) => g.label)).toEqual(["Pull requests"]);
+    expect(mentionGroups([])).toEqual([]);
   });
   test("sentToLabel joins names in plain words", () => {
     expect(sentToLabel(["Research"])).toBe("Research");
@@ -307,6 +315,32 @@ describe("agent mentions (pure)", () => {
 
 describe("ChatComposer @ agent recipients", () => {
   const chips = () => [...container!.querySelectorAll<HTMLElement>('[data-attachment="agent"]')];
+
+  test("the list is grouped under muted headings; ↑/↓ cross the groups and never stop on a heading", async () => {
+    apiFake.agentsData = [{ branch: "orca/local-search", worktreePath: "/wt/local-search", agentStatus: "idle" }];
+    const box = await mountComposer(false, team);
+    await type(box, "@");
+    const headings = () => [...container!.querySelectorAll('[data-slot="mention-group-heading"]')].map((h) => h.textContent);
+    expect(headings()).toEqual(["Agents", "Workstreams", "Pull requests"]);
+    const groups = [...container!.querySelectorAll('[role="group"]')];
+    expect(groups.map((g) => document.getElementById(g.getAttribute("aria-labelledby")!)!.textContent)).toEqual(headings());
+    expect(groups.map((g) => g.querySelectorAll('[role="option"]').length)).toEqual([3, 1, 2]);
+    // ↑/↓ walk the options only: from the last agent to the workstream, then into the PRs, then wrap.
+    for (let i = 0; i < 2; i++) await key(box, "ArrowDown");
+    expect(selected()!.textContent).toBe("Assistant@assistant");
+    await key(box, "ArrowDown");
+    expect(selected()!.getAttribute("data-mention")).toBe("workstream");
+    await key(box, "ArrowDown");
+    expect(selected()!.textContent).toContain("#6150");
+    await key(box, "ArrowDown");
+    await key(box, "ArrowDown"); // wraps to the first agent
+    expect(selected()!.textContent).toBe("Chief of Staff@chief");
+    await key(box, "ArrowUp"); // and back to the last PR
+    expect(selected()!.textContent).toContain("#6101");
+    // An empty group has no heading.
+    await type(box, "@fix");
+    expect(headings()).toEqual(["Pull requests"]);
+  });
 
   test("a workstream chat (no agents) lists no agent", async () => {
     const box = await mountComposer();

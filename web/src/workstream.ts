@@ -2404,10 +2404,11 @@ export function filterWorkstreamRefs(refs: WorkstreamRef[], query: string, limit
   return refs.filter(hit).slice(0, limit);
 }
 
-/** The picker's options: named agents (only where `agents` is given), then open PRs, then
- *  workstreams with no PR among `prs`, then merged PRs. A PR pick also matches its own workstream's
- *  title and branch (same repo + PR number), so a query that names the workstream — not the PR
- *  title — still finds it. */
+/** The picker's options, in its groups: named agents (only where `agents` is given), then
+ *  workstreams with no PR among `prs`, then PRs (open before merged, `filterPrRefs`' order). Each
+ *  group keeps its own filter and ranking, and `limit` caps EACH group, so a long list of workstreams
+ *  never hides every PR. A PR pick also matches its own workstream's title and branch (same repo +
+ *  PR number), so a query that names the workstream — not the PR title — still finds it. */
 export function filterMentions(prs: PrRef[], workstreams: WorkstreamRef[], query: string, limit = 8, agents: AgentMention[] = []): MentionRef[] {
   const prKeys = new Set(prs.map((p) => `${p.repo}#${p.number}`));
   const own = workstreams.filter((w) => w.prNumber === undefined || !prKeys.has(`${w.repo}#${w.prNumber}`));
@@ -2417,11 +2418,24 @@ export function filterMentions(prs: PrRef[], workstreams: WorkstreamRef[], query
     return ws ? [ws.title, ws.branch] : [];
   });
   return [
-    ...filterAgentMentions(agents, query).map((ref): MentionRef => ({ kind: "agent", ref })),
-    ...prHits.filter((p) => p.state !== "merged").map((ref): MentionRef => ({ kind: "pr", ref })),
+    ...filterAgentMentions(agents, query).slice(0, limit).map((ref): MentionRef => ({ kind: "agent", ref })),
     ...filterWorkstreamRefs(own, query, limit).map((ref): MentionRef => ({ kind: "workstream", ref })),
-    ...prHits.filter((p) => p.state === "merged").map((ref): MentionRef => ({ kind: "pr", ref })),
-  ].slice(0, limit);
+    ...prHits.map((ref): MentionRef => ({ kind: "pr", ref })),
+  ];
+}
+
+/** The `@` picker's group headings, in the picker's order. */
+export const MENTION_GROUPS: { kind: MentionRef["kind"]; label: string }[] = [
+  { kind: "agent", label: "Agents" },
+  { kind: "workstream", label: "Workstreams" },
+  { kind: "pr", label: "Pull requests" },
+];
+/** `filterMentions`' options cut into their groups; `index` is the option's place in the flat list
+ *  (the one ↑/↓ walks, so a heading is never a stop). An empty group is left out. */
+export function mentionGroups(matches: MentionRef[]): { kind: MentionRef["kind"]; label: string; items: { m: MentionRef; index: number }[] }[] {
+  return MENTION_GROUPS
+    .map((g) => ({ ...g, items: matches.flatMap((m, index) => (m.kind === g.kind ? [{ m, index }] : [])) }))
+    .filter((g) => g.items.length > 0);
 }
 
 /** The text a workstream pick inserts: `` `branch` ``, qualified as `` `repo/branch` `` — the name the
