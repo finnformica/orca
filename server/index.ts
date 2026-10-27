@@ -61,6 +61,8 @@ import { providerOfModel } from "../shared/models";
 import * as prShots from "./prShots";
 import * as terminal from "./terminal";
 import { diskStore, parseShotRequest, shooter, type ShotRequest } from "./screenshot";
+import * as remotePreview from "./remotePreview";
+import { joinPreviewPath } from "../shared/remotePreview";
 import * as heavy from "./heavy";
 import * as heavyLeaks from "./heavyLeaks";
 import { checkCaller, forwardedHeaders, instanceHosts, listServers, selfServer, serverGate, withIdentity, withTailscaleUser } from "./servers";
@@ -762,14 +764,40 @@ async function api(req: Request, url: URL): Promise<Response> {
   // object per line — `{queued: N}` while N jobs are still ahead, then the result — so the CLI can
   // print progress instead of sitting silent past its Bash caller's own patience; `req.signal` lets
   // a CLI that gave up waiting pull its job back out of the queue before a browser ever launches it.
+  // `preview: true` (orca-shot --preview) first finds the repo's remote PR preview and waits for it
+  // (server/remotePreview.ts, `{waiting}` lines meanwhile), then signs in and shoots `path` under it.
   if (req.method === "POST" && p === "/api/screenshot") {
     let shot: ShotRequest;
-    try { shot = parseShotRequest(body); } catch (e) { return json({ error: (e as Error).message }, 400); }
+    const preview = body?.preview === true;
+    let previewRepo: RepoConfig | undefined;
+    try {
+      shot = parseShotRequest(preview ? { ...body, url: "http://preview.invalid/" } : body);
+      if (preview) {
+        previewRepo = remotePreview.repoFor(cfg, { repo: typeof body.repo === "string" ? body.repo : undefined, cwd: typeof body.cwd === "string" ? body.cwd : undefined });
+        if (!previewRepo) throw new Error("orca-shot --preview: no repo in Orca's config holds this directory (run it in a workstream's worktree)");
+        if (!previewRepo.remotePreview) throw new Error(`repo ${previewRepo.name} has no remotePreview in Orca's config: shoot a URL instead (orca-shot <url>)`);
+        if (body.pr !== undefined && !(Number.isInteger(body.pr) && body.pr > 0)) throw new Error("--pr must be a PR number");
+      }
+    } catch (e) { return json({ error: (e as Error).message }, 400); }
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
       async start(controller) {
         const write = (obj: unknown) => { try { controller.enqueue(encoder.encode(`${JSON.stringify(obj)}\n`)); } catch { /* client gone */ } };
         try {
+          if (previewRepo) {
+            const found = await remotePreview.resolvePreview(previewRepo, {
+              cwd: typeof body.cwd === "string" ? body.cwd : undefined,
+              branch: typeof body.branch === "string" && body.branch ? body.branch : undefined,
+              pr: body.pr, maxWaitMs: typeof body.maxWaitMs === "number" ? body.maxWaitMs : undefined,
+            }, { signal: req.signal, onWait: (why) => write({ waiting: why }) });
+            shot.url = joinPreviewPath(found.url, typeof body.path === "string" ? body.path : undefined);
+            write({ preview: found.url, from: found.from, pr: found.pr, sha: found.sha });
+            const login = await remotePreview.loadLogin(previewRepo.remotePreview!.login, found.url);
+            if (login) {
+              const key = remotePreview.sessionKey(typeof body.runId === "string" && body.runId ? body.runId : String(body.cwd ?? ""), login.origin);
+              shot.login = { ...login, session: login.form ? remotePreview.sessionCookies(key) : undefined, onCookies: (c) => remotePreview.keepSession(key, c) };
+            }
+          }
           write(await shooter().shoot(shot, { signal: req.signal, onQueue: (ahead) => write({ queued: ahead }) }));
         } catch (e) {
           write({ error: (e as Error).message });

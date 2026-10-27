@@ -22,7 +22,7 @@ import { agentSide, chatOwner, entryPill, entryTurn, inMainChat, mergePills, roo
 import { persistedKey, usePersisted } from "@/lib/persisted";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, previewsEnabled, refresh, setCardModel, type Row } from "../store";
-import { ORCHESTRATOR_REPO, RECENT_FULL, TAIL_WINDOW, reportShots, turnHandoffs, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, splitSecretRefs, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, firedLabel, longMessage, newestMessages, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, formatDuration, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, undeliveredQueued, composerHistory, integrationPreview, integrationState, anchorShift, eagerFrom, estimateItemHeight, withNotices, ORIGIN_MISSING, originAskedBy, originAt, originHead, originSkippedText, originTimeLabel } from "../workstream";
+import { ORCHESTRATOR_REPO, RECENT_FULL, TAIL_WINDOW, reportShots, turnHandoffs, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, splitSecretRefs, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, firedLabel, longMessage, newestMessages, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, formatDuration, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, undeliveredQueued, composerHistory, integrationPreview, integrationState, anchorShift, eagerFrom, estimateItemHeight, withNotices, ORIGIN_MISSING, originAskedBy, originAt, originHead, originSkippedText, originTimeLabel, type AgentMention } from "../workstream";
 import { HandoffWidget } from "./Handoffs";
 import { FormCard } from "@/components/FormCard";
 import { stickToTail } from "@/lib/stickToTail";
@@ -1100,8 +1100,12 @@ function RoomPillRow({ pill, unseen, onOpen }: { pill: RoomPill; unseen: boolean
   );
 }
 
-export function ChatPanel({ row, send, controls, prefill, outbox, author, size = "panel", autoFocus }: {
+export function ChatPanel({ row, send, controls, prefill, outbox, author, size = "panel", autoFocus, mention }: {
   row: Row; send?: (text: string, images: File[]) => Promise<void>; controls?: ChatControlsProps;
+  /** The orchestrator's panel only: named agents for the composer's `@` picker. A send with recipient
+   *  chips goes to `sendTo` (each chosen agent, only them), never to this chat; `onOpen` is the
+   *  receipt's Open. */
+  mention?: { agents: AgentMention[]; sendTo: (agents: string[], text: string, images: File[]) => Promise<unknown>; onOpen: (name: string) => void };
   /** The orchestrator's chat: its "sending…" messages are the shared outbox (lib/orchestratorOutbox) —
    *  every entry point's, not only this composer's — and `send` is expected to go through it. */
   outbox?: boolean;
@@ -1133,7 +1137,9 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
   const [insert, setInsert] = useState<{ text: string; seq: number; secrets?: string[]; files?: File[] } | null>(null);
   const insertSeq = useRef(0);
   const onQuote = useCallback((text: string) => setInsert({ text: quoteMarkdown(text), seq: ++insertSeq.current }), []);
-  const submit = async (text: string, images: File[]) => {
+  const submit = async (text: string, images: File[], recipients: string[] = []) => {
+    // Recipient chips: the message goes to those agents only, so it is not drawn in this chat.
+    if (mention && recipients.length) { await mention.sendTo(recipients, text, images); return; }
     const id = ++sendSeq.current;
     follow.current = true; // you just spoke: jump to it, wherever you had scrolled
     if (!outbox) setSending((s) => [...s, { id, text }]); // the outbox draws it otherwise
@@ -1667,6 +1673,8 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
         // included (it sends through the outbox, so `row.followUps` never had its messages).
         history={history}
         onSubmit={submit}
+        agents={mention?.agents}
+        onOpenAgent={mention?.onOpen}
         prefill={prefill}
         // The Chat tab's own panel only ever mounts while that tab is active (Radix unmounts the
         // others), so focusing on mount covers opening it by click, by route, or via a
@@ -1679,9 +1687,9 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
         alt={running && row.worktreePath ? {
           label: "■ stop & send",
           title: "Interrupt the run and send this instead. The worktree, its commits, and the session are kept.",
-          onSubmit: async (text, images) => {
+          onSubmit: async (text, images, recipients) => {
             await api.stopAgent(row.worktreePath!);
-            await submit(text, images);
+            await submit(text, images, recipients);
             await refresh();
           },
         } : undefined}
