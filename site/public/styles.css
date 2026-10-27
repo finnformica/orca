@@ -65,9 +65,9 @@ a:hover { text-decoration-thickness: 2px; }
   pointer-events: none;
   user-select: none;
   color: #fff;
-  opacity: 0.16;
+  opacity: 0.32;
 }
-.doc-page .sea { opacity: 0.08; }
+.doc-page .sea { opacity: 0.15; }
 .swim { position: absolute; left: 0; will-change: transform; }
 .swim.r { animation: swim-r var(--t, 60s) linear var(--d, 0s) infinite; }
 .swim.l { animation: swim-l var(--t, 60s) linear var(--d, 0s) infinite; }
