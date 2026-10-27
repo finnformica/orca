@@ -1090,8 +1090,8 @@ function AgentAsk({ text, to, time }: { text: string; to?: Side; time: string })
 const isPillSide = (s: Side) => s.kind === "agent" || s.kind === "worker";
 
 /** A room's side as the Agent pill (components/AgentPill): its id seeds the identicon. */
-function SidePill({ side, size }: { side: Side; size?: AgentPillSize }) {
-  return <AgentPill name={side.id} label={sideLabel(side)} size={size} />;
+function SidePill({ side, size, className }: { side: Side; size?: AgentPillSize; className?: string }) {
+  return <AgentPill name={side.id} label={sideLabel(side)} size={size} className={className} />;
 }
 
 const messagesLabel = (n: number) => `${n} message${n === 1 ? "" : "s"}`;
@@ -1111,7 +1111,8 @@ function RoomPillRow({ pill, unseen, onOpen }: { pill: RoomPill; unseen: boolean
       <button type="button" onClick={onOpen} data-slot="room-pill" data-room={pill.room} aria-label={`${messagesLabel(pill.count)} with ${peer}`}
         className="border-geist-blue/20 bg-geist-blue/5 text-muted-foreground hover:text-foreground flex w-full min-w-0 items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-left text-[12px]">
         <span className="shrink-0" data-slot="room-count">{messagesLabel(pill.count)} with</span>
-        <SidePill side={pill.peer} />
+        {/* The one part that gives way on a narrow screen: the name truncates. */}
+        <SidePill side={pill.peer} className="shrink" />
         <span className="flex-1" />
         {unseen && <span data-slot="room-unseen" className="bg-geist-blue size-1.5 shrink-0 rounded-full" aria-label="new" />}
         {time && <span className="shrink-0 text-[11px]">{time}</span>}
