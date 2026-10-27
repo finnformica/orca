@@ -1,7 +1,8 @@
-// Agent rooms in the chat (docs/design/agent-rooms.md): a turn of agent-to-agent traffic leaves your
-// chat for a room tab beside it, with an unread count; each room message names its sender and its
-// recipient; an agent's message mixed into your wake is a card, never your bubble; and a turn the
-// rooms read did not return stays in your chat.
+// Agent rooms in the chat (docs/design/agent-rooms.md): agent-to-agent turns leave your chat; a pill
+// "N messages with <agent>" sits where they happened and opens the room IN THE SAME PANE, drawn by the
+// same transcript (ChatTurn) with each side named, read only (no composer, no Quote), with a Back
+// button. No `[from …]` wrapper shows anywhere. A worker chat tags each turn with its source and
+// keeps the person's words (a brief's origin) in their own lane.
 import { afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -11,7 +12,7 @@ import { ChatPanel } from "@/views/Chat";
 import type { Row } from "@/store";
 import type { AgentTurn } from "../shared/agent";
 import { agentMessage } from "../shared/agents";
-import { chatOwner, turnRoomMessages } from "../shared/rooms";
+import { chatOwner, orcaSide, turnRoomEntry, workerSide } from "../shared/rooms";
 import { joinMessages, turnOrigin } from "../web/src/workstream";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -28,16 +29,16 @@ afterEach(async () => {
 });
 
 const NOW = Date.now();
-const t = (id: string, instruction: string, extra: Partial<AgentTurn> = {}): AgentTurn =>
-  ({ id, provider: "claude", instruction, prompt: "", response: `reply ${id}`, startedAt: NOW - 60_000, finishedAt: NOW - 50_000, ...extra });
+const t = (id: string, instruction: string, at: number, extra: Partial<AgentTurn> = {}): AgentTurn =>
+  ({ id, provider: "claude", instruction, prompt: "", response: `reply ${id}`, startedAt: NOW - at, finishedAt: NOW - at + 5_000, ...extra });
 
 /** The bridge's /api/rooms for a chat, built by the same rules from the fake's turns. */
 function serveRooms(repo: string, branch: string, others: { repo: string; branch: string; turns: AgentTurn[] }[] = []) {
   const viewer = chatOwner(repo, branch);
   const own = (apiFake.turnsData.get(`${repo}::${branch}`) ?? []) as AgentTurn[];
   apiFake.roomsData.set(`${repo}::${branch}`, [
-    ...own.flatMap((x) => turnRoomMessages(viewer, x, viewer)),
-    ...others.flatMap((o) => o.turns.flatMap((x) => turnRoomMessages(chatOwner(o.repo, o.branch), x, viewer))),
+    ...own.flatMap((x) => turnRoomEntry(viewer, x, viewer) ?? []),
+    ...others.flatMap((o) => o.turns.flatMap((x) => turnRoomEntry(chatOwner(o.repo, o.branch), x, viewer) ?? [])),
   ]);
 }
 
@@ -47,84 +48,93 @@ async function mount(row: Row) {
   await act(async () => { root = createRoot(container!); root.render(<ChatPanel row={row} author="Assistant" />); await flush(); await flush(); await flush(); });
   return container!;
 }
-const click = async (el: Element) => {
-  await act(async () => {
-    // Radix Tabs switch on mousedown (the default activation is on focus + mousedown).
-    el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
-    (el as HTMLElement).click();
-    await flush();
-  });
-};
+const click = async (el: Element) => { await act(async () => { (el as HTMLElement).click(); await flush(); }); };
+const runIds = (el: Element) => [...el.querySelectorAll('[data-slot="chat-turn"]')].map((e) => e.getAttribute("data-run-id"));
 const assistantRow: Row = { repo: "@orca", hasRemote: false, branch: "assistant", title: "Assistant", prompt: "", lane: "LOCAL", agentProvider: "claude" };
 
-test("the Assistant's chat: your messages stay, the Chief of Staff's asks go to its room with an unread count", async () => {
+test("the Assistant's chat: a pill where the agents talked opens the room on the same transcript", async () => {
   apiFake.turnsData.set("@orca::assistant", [
-    t("you-1", "What is new in #general?"),
-    t("ask-1", agentMessage("chief", "Summarise the inbox for Finn")),
-    t("mix-1", joinMessages(["Also check Slack", agentMessage("chief", "and the Discord thread")])),
+    t("you-1", "What is new in #general?", 90_000),
+    t("ask-1", agentMessage("chief", "Summarise the inbox for Finn"), 80_000),
+    t("mix-1", joinMessages(["Also check Slack", agentMessage("chief", "and the Discord thread")]), 40_000),
   ]);
-  // The Assistant escalated once: that turn is in the Chief of Staff's chat.
-  serveRooms("@orca", "assistant", [{ repo: "@orca", branch: "orchestrator", turns: [t("esc-1", agentMessage("assistant", "Please merge #12"), { startedAt: NOW - 30_000, finishedAt: NOW - 20_000 })] }]);
+  // The Assistant escalated once, right after: that turn is in the Chief of Staff's chat.
+  serveRooms("@orca", "assistant", [{ repo: "@orca", branch: "orchestrator", turns: [t("esc-1", agentMessage("assistant", "Please merge #12"), 70_000)] }]);
   const c = await mount(assistantRow);
 
-  // The main chat: your turn and the mixed one; the pure ask is gone from it.
   const log = c.querySelector('[data-slot="chat-log"]')!;
-  expect([...log.querySelectorAll('[data-slot="chat-turn"]')].map((e) => e.getAttribute("data-run-id"))).toEqual(["you-1", "mix-1"]);
-  // The mixed wake: your words in a bubble, the Chief of Staff's message as a card with both ends.
-  const bubbles = [...log.querySelectorAll('[data-slot="chat-user-text"]')].map((e) => e.textContent);
-  expect(bubbles).toContain("Also check Slack");
-  expect(bubbles.some((b) => b?.includes("Discord thread"))).toBe(false);
+  expect(runIds(log)).toEqual(["you-1", "mix-1"]);
+  // ONE pill between your two turns: the ask, its reply, the escalation and its reply.
+  const pills = [...log.querySelectorAll('[data-slot="room-pill"]')];
+  expect(pills.map((p) => p.textContent)).toEqual(["4 messages with Chief of Staff"]);
+  expect(pills[0]!.querySelector('[data-slot="room-unseen"]')).toBeTruthy();
+  const order = [...log.querySelectorAll('[data-slot="chat-turn"], [data-slot="room-pill"]')].map((e) => e.getAttribute("data-run-id") ?? "pill");
+  expect(order).toEqual(["you-1", "pill", "mix-1"]);
+  // The mixed wake: your words in a bubble; the Chief of Staff's as a card with both ends, no wrapper.
+  expect([...log.querySelectorAll('[data-slot="chat-user-text"]')].map((e) => e.textContent)).toContain("Also check Slack");
   expect(log.querySelector('[data-slot="agent-ask-route"]')!.textContent).toContain("Chief of Staff → Assistant");
+  expect(log.textContent).not.toContain("[from ");
 
-  // The room bar: Chat, then the Chief of Staff's room with 4 unread (ask, reply, escalation, reply).
-  const tabs = [...c.querySelectorAll('[data-slot="room-tab"]')];
-  expect(tabs.map((e) => e.textContent)).toEqual(["Chat", "Chief of Staff4"]);
-  await click(tabs[1]!);
-
-  const room = c.querySelector('[data-slot="room-log"]')!;
-  expect(room).toBeTruthy();
+  await click(pills[0]!);
+  // The same pane: the chat log and the composer are hidden, the room is drawn by ChatTurn.
   expect(c.querySelector<HTMLElement>('[data-slot="chat-log"]')!.hidden).toBe(true);
-  expect([...room.querySelectorAll('[data-slot="room-route"]')].map((e) => e.textContent)).toEqual([
-    "Chief of Staff → Assistant", "Assistant → Chief of Staff", "Assistant → Chief of Staff", "Chief of Staff → Assistant",
-  ]);
-  expect([...room.querySelectorAll('[data-slot="room-message"]')].map((e) => e.getAttribute("data-kind"))).toEqual(["ask", "reply", "ask", "reply"]);
-  expect(room.textContent).toContain("Summarise the inbox for Finn");
-  expect(room.textContent).not.toContain("[from chief]");
-  // Opened: read. Back on Chat, the badge is gone, and it stays gone on the next mount.
-  await click(c.querySelector('[data-room="chat"]')!);
-  expect(c.querySelector('[data-slot="room-unread"]')).toBeNull();
+  expect(c.querySelector<HTMLElement>('[data-slot="chat-composer-dock"]')!.hidden).toBe(true);
+  expect(c.querySelector('[data-slot="room-title"]')!.textContent).toBe("Messages with Chief of Staff");
+  const room = c.querySelector('[data-slot="room-log"]')!;
+  expect(runIds(room)).toEqual(["ask-1", "esc-1"]);
+  expect([...room.querySelectorAll('[data-slot="chat-speaker"]')].map((e) => e.textContent)).toEqual(["Chief of Staff", "Assistant"]);
+  expect([...room.querySelectorAll('[data-slot="chat-reply-head"] > span:first-child')].map((e) => e.textContent)).toEqual(["Assistant", "Chief of Staff"]);
+  expect(room.querySelector('[data-slot="chat-user-text"]')!.textContent).toBe("Summarise the inbox for Finn");
+  expect(room.textContent).not.toContain("[from ");
+  expect(room.querySelector('[aria-label="Quote message"]')).toBeNull(); // read only
+  // Back: the chat again, and the room is seen (no dot), also on the next mount.
+  await click(c.querySelector('[data-slot="room-back"]')!);
+  expect(c.querySelector('[data-slot="room-log"]')).toBeNull();
+  expect(c.querySelector<HTMLElement>('[data-slot="chat-log"]')!.hidden).toBe(false);
+  expect(c.querySelector('[data-slot="room-unseen"]')).toBeNull();
   await act(async () => { root?.unmount(); });
   container?.remove();
-  const again = await mount(assistantRow);
-  expect(again.querySelector('[data-slot="room-unread"]')).toBeNull();
+  expect((await mount(assistantRow)).querySelector('[data-slot="room-unseen"]')).toBeNull();
 });
 
-test("a workstream's chat: the orchestrator's brief and the report go to its room, your follow-up stays", async () => {
+test("a workstream's chat: the brief goes to the room, your words stay in your lane, and each turn has its source", async () => {
   const origin = turnOrigin({ runId: "wake-1", messages: ["add a cache"], ids: [3], agent: "chief" });
   apiFake.turnsData.set("r::feat", [
-    t("brief-1", "## Objective\nAdd a cache", { origin, originMessages: [{ id: 3, at: NOW - 70_000, text: "add a cache" }] }),
-    t("you-1", "Also fix the typo", { startedAt: NOW - 40_000, finishedAt: NOW - 30_000 }),
+    t("brief-1", "## Objective\nAdd a cache", 90_000, { origin, originMessages: [{ id: 3, at: NOW - 95_000, text: "add a cache" }] }),
+    t("up-1", "Address the PR: conflicts, CI, review", 50_000, { route: { sender: orcaSide("upkeep"), recipient: workerSide("r", "feat") } }),
+    t("you-1", "Also fix the typo", 40_000),
   ]);
   const report = ["[worker finished] r/feat \"Feat\" — done", "Response: Added the cache.", "Full turn: orca read --run brief-1"].join("\n");
-  serveRooms("r", "feat", [{ repo: "@orca", branch: "orchestrator", turns: [t("wake-2", report, { startedAt: NOW - 45_000, finishedAt: NOW - 44_000, response: "" })] }]);
+  serveRooms("r", "feat", [{ repo: "@orca", branch: "orchestrator", turns: [t("wake-2", report, 80_000, { response: "" })] }]);
   const c = await mount({ repo: "r", hasRemote: false, branch: "feat", title: "Feat", prompt: "", lane: "LOCAL", worktreePath: "/wt/feat", agentProvider: "claude" });
 
-  expect([...c.querySelectorAll('[data-slot="chat-log"] [data-slot="chat-turn"]')].map((e) => e.getAttribute("data-run-id"))).toEqual(["you-1"]);
-  await click(c.querySelectorAll('[data-slot="room-tab"]')[1]!);
+  const log = c.querySelector('[data-slot="chat-log"]')!;
+  expect(runIds(log)).toEqual(["up-1", "you-1"]);
+  expect([...log.querySelectorAll('[data-slot="chat-turn"]')].map((e) => e.getAttribute("data-source"))).toEqual(["orca", "person"]);
+  // Orca's own turn names its sender; your own words are the only unnamed lane.
+  expect(log.querySelector('[data-run-id="up-1"] [data-slot="chat-speaker"]')!.textContent).toBe("Orca · PR upkeep");
+  expect(log.querySelector('[data-run-id="you-1"] [data-slot="chat-speaker"]')).toBeNull();
+  // The words you said to the orchestrator, in your lane, above the pill to its room.
+  expect(log.querySelector('[data-slot="room-person-text"]')!.textContent).toBe("add a cache");
+  const pill = log.querySelector('[data-slot="room-pill"]')!;
+  expect(pill.textContent).toBe("3 messages with Chief of Staff");
+
+  await click(pill);
   const room = c.querySelector('[data-slot="room-log"]')!;
-  expect([...room.querySelectorAll('[data-slot="room-message"]')].map((e) => `${e.getAttribute("data-kind")}: ${e.querySelector('[data-slot="room-route"]')!.textContent}`)).toEqual([
-    "brief: Chief of Staff → Worker feat",
-    "reply: Worker feat → Chief of Staff",
-    "report: Worker feat → Chief of Staff",
-  ]);
-  // The brief keeps who asked the orchestrator for it.
-  expect(room.querySelector('[data-slot="turn-origin"]')).toBeTruthy();
+  expect(runIds(room)).toEqual(["brief-1", "wake-2"]);
+  expect([...room.querySelectorAll('[data-slot="chat-turn"]')].map((e) => e.getAttribute("data-source"))).toEqual(["agent", "worker"]);
+  // The brief keeps who asked the orchestrator for it; the report is the same folded block as anywhere.
+  expect(room.querySelector('[data-run-id="brief-1"] [data-slot="turn-origin"]')).toBeTruthy();
+  expect(room.querySelector('[data-run-id="wake-2"] [data-slot="turn-reports"]')).toBeTruthy();
+  // A report with no reply draws no reply.
+  expect(room.querySelector('[data-run-id="wake-2"] [data-slot="chat-reply"]')).toBeNull();
 });
 
-test("a room turn the rooms read did not return stays in your chat", async () => {
-  apiFake.turnsData.set("@orca::assistant", [t("ask-1", agentMessage("chief", "Summarise"))]);
-  // No rooms answered (an older bridge, or the turn is past the read's bound).
+test("a room turn the rooms read did not return stays in your chat, named, with no wrapper", async () => {
+  apiFake.turnsData.set("@orca::assistant", [t("ask-1", agentMessage("chief", "Summarise"), 10_000)]);
   const c = await mount(assistantRow);
-  expect(c.querySelector('[data-slot="room-bar"]')).toBeNull();
-  expect(c.querySelector('[data-slot="chat-turn"]')!.getAttribute("data-run-id")).toBe("ask-1");
+  expect(c.querySelector('[data-slot="room-pill"]')).toBeNull();
+  expect(runIds(c)).toEqual(["ask-1"]);
+  expect(c.querySelector('[data-slot="agent-ask-route"]')!.textContent).toContain("Chief of Staff → Assistant");
+  expect(c.textContent).not.toContain("[from ");
 });

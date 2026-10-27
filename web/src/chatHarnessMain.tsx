@@ -12,7 +12,7 @@
 // a sent message with an image and a secret chip, and a composer draft seeded with both (an image
 // drawn here, a secret NAME only), whose send is held open like "sending"; "assistant" — the
 // Assistant's chat with a Chief of Staff room; "worker" — a workstream chat with its orchestrator
-// room (docs/design/agent-rooms.md; `--click '[data-room^="room:"]'` opens the room).
+// room (docs/design/agent-rooms.md; `--click '[data-slot="room-pill"]'` opens the room).
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import "./lib/theme"; // applies the OS theme, so `orca-shot --dark` shows the dark card
@@ -22,7 +22,7 @@ import type { Row } from "@/store";
 import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO } from "@/workstream";
 import type { AgentTurn } from "../../shared/agent";
 import { agentMessage } from "../../shared/agents";
-import { chatOwner, turnRoomMessages } from "../../shared/rooms";
+import { chatOwner, turnRoomEntry } from "../../shared/rooms";
 import { joinMessages, turnOrigin } from "@/workstream";
 
 const view = new URLSearchParams(location.search).get("view") ?? "quote";
@@ -91,7 +91,7 @@ const own = view === "assistant" ? assistantTurns : workerTurns;
 api.rooms = async () => {
   const viewer = chatOwner(row.repo, row.branch);
   const other = view === "assistant" ? chiefForAssistant : chiefForWorker;
-  return { messages: [...own.flatMap((t) => turnRoomMessages(viewer, t, viewer)), ...other.flatMap((t) => turnRoomMessages(chatOwner(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH), t, viewer))] };
+  return { entries: [...own.flatMap((t) => turnRoomEntry(viewer, t, viewer) ?? []), ...other.flatMap((t) => turnRoomEntry(chatOwner(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH), t, viewer) ?? [])] };
 };
 
 api.turnPage = async () => ({ turns: roomView ? own : [view === "working" ? workingTurn : view === "chips" ? chipsTurn : quoteTurn], older: null });

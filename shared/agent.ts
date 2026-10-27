@@ -195,6 +195,9 @@ export type AgentTurn = {
   origin?: TurnOrigin;
   /** `origin.messageIds` joined to their rows — server-decorated (`originMessages` in server/db.ts). */
   originMessages?: OriginMessage[];
+  /** Who sent the turn and whose chat it is in (shared/rooms.ts TurnRoute), read off `structured`.
+   *  Absent on a row from before it was recorded: shared/rooms.ts `routeOf` derives it. */
+  route?: { sender: { kind: "person" | "agent" | "worker" | "orca"; id: string }; recipient: { kind: "person" | "agent" | "worker" | "orca"; id: string } };
 };
 
 const OUTCOME_HEADINGS = ["outcome", "verification", "decisions", "remaining", "commits"] as const;

@@ -1,160 +1,185 @@
-// Agent rooms (docs/design/agent-rooms.md, shared/rooms.ts): which turns leave your chat for a room
-// between two agents, who sent each message and to whom, and the unread count. Old turns carry no new
-// field: they classify off the text markers and `origin` alone.
-import { afterEach, beforeEach, expect, test } from "bun:test";
+// Agent rooms (docs/design/agent-rooms.md, shared/rooms.ts): who sent each turn and to whom (the
+// route, recorded at the start and read off old rows by the same rule), which turns leave your chat
+// for the room of an agent pair, the room's entries, the pills in your chat, and the read across the
+// agents' chats against a real database.
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as db from "../server/db";
-import { roomMessages } from "../server/rooms";
+import { roomEntries } from "../server/rooms";
 import { freshSchema, type TestDb } from "./pg";
+import { AUTOFIX_MARKER } from "../shared/agent";
 import { agentMessage } from "../shared/agents";
 import { scheduledWakeMessage } from "../shared/scheduledWake";
 import {
-  agentParty, chatOwner, inMainChat, messageSender, partyLabel, reportWorker, roomId, roomUnread, roomsOf, routeLabel,
-  turnPeer, turnRoomMessages, workerParty, type RoomTurn,
+  PERSON, agentSide, chatOwner, entryPill, inMainChat, mergePills, messageSender, orcaSide, reportWorker, roomId, roomUnseen, roomsOf,
+  routeLabel, routeOf, sideLabel, stripAgentWrapper, turnPeer, turnRoomEntry, turnRoute, workerSide, type RoomPill, type RoomTurn,
 } from "../shared/rooms";
 import { joinMessages, turnOrigin, workerEvent } from "../web/src/workstream";
 
-const CHIEF = agentParty("chief"), ASSISTANT = agentParty("assistant");
-const WORKER = workerParty("orca", "feat/cache");
+const CHIEF = agentSide("chief"), ASSISTANT = agentSide("assistant");
+const WORKER = workerSide("orca", "feat/cache");
 const report = workerEvent({ repo: "orca", branch: "feat/cache", title: "Cache", runId: "run-w1", status: "done", response: "Added the cache." });
 const turn = (id: string, instruction: string, extra: Partial<RoomTurn> = {}): RoomTurn =>
   ({ id, instruction, prompt: "", response: `reply to ${id}`, startedAt: 1000, finishedAt: 2000, ...extra });
 
-test("a chat's owner: an @orca branch is a named agent, any other branch a worker", () => {
-  expect(chatOwner("@orca", "orchestrator")).toBe(CHIEF);
-  expect(chatOwner("@orca", "assistant")).toBe(ASSISTANT);
-  expect(chatOwner("orca", "feat/cache")).toBe(WORKER);
-  expect(roomId(CHIEF, ASSISTANT)).toBe(roomId(ASSISTANT, CHIEF));
+describe("rules", () => {
+  test("sides: an @orca branch is a named agent, any other branch a worker; a room is the same from both ends", () => {
+    expect(chatOwner("@orca", "orchestrator")).toEqual(CHIEF);
+    expect(chatOwner("@orca", "assistant")).toEqual(ASSISTANT);
+    expect(chatOwner("orca", "feat/cache")).toEqual({ kind: "worker", id: "orca/feat/cache" });
+    expect(roomId(CHIEF, ASSISTANT)).toBe(roomId(ASSISTANT, CHIEF));
+  });
+
+  test("a message's sender comes from its marker; the person's words have none", () => {
+    expect(messageSender(agentMessage("chief", "Check the inbox"))).toEqual({ sender: CHIEF, kind: "ask" });
+    expect(messageSender(scheduledWakeMessage({ id: 4, note: "read its answer", on: "agent:assistant", event: "orca.agent.replied" })))
+      .toEqual({ sender: ASSISTANT, kind: "wake" });
+    expect(messageSender(scheduledWakeMessage({ id: 5, note: "standup", at: Date.UTC(2026, 9, 27, 9) }))!.sender).toEqual(orcaSide("wake"));
+    expect(reportWorker(report)).toEqual(WORKER);
+    expect(messageSender(report)).toEqual({ sender: WORKER, kind: "report" });
+    expect(messageSender("Please tidy the board")).toBeUndefined();
+  });
+
+  test("the route of an agent's wake: its one sender; any word of the person's makes it the person's", () => {
+    expect(turnRoute(ASSISTANT, turn("a", agentMessage("chief", "Summarise #general")))).toEqual({ sender: CHIEF, recipient: ASSISTANT });
+    expect(turnRoute(ASSISTANT, turn("b", joinMessages([agentMessage("chief", "one"), agentMessage("chief", "two")]))).sender).toEqual(CHIEF);
+    expect(turnRoute(CHIEF, turn("c", scheduledWakeMessage({ id: 4, note: "read it", on: "agent:assistant" }))).sender).toEqual(ASSISTANT);
+    expect(turnRoute(ASSISTANT, turn("d", joinMessages(["hi", agentMessage("chief", "one")]))).sender).toEqual(PERSON);
+    expect(turnRoute(CHIEF, turn("e", report)).sender).toEqual(WORKER);
+    expect(turnRoute(CHIEF, turn("f", joinMessages([report, workerEvent({ repo: "orca", branch: "x", runId: "r", status: "done" })]))).sender).toEqual(orcaSide("reports"));
+    expect(turnRoute(CHIEF, turn("g", "What runs today?")).sender).toEqual(PERSON);
+  });
+
+  test("the route of a worker's turn: the origin's agent (old origin = Chief of Staff), Orca's own runs, else the person", () => {
+    const old = turnOrigin({ runId: "wake-1", messages: ["do it"], ids: [7] });
+    expect(old.agent).toBeUndefined();
+    expect(turnRoute(WORKER, turn("w1", "## Objective\nAdd a cache", { origin: old })).sender).toEqual(CHIEF);
+    expect(turnRoute(WORKER, turn("w2", "brief", { origin: turnOrigin({ runId: "wake-2", messages: [], ids: [], agent: "assistant" }) })).sender).toEqual(ASSISTANT);
+    expect(turnRoute(WORKER, turn("w3", `${AUTOFIX_MARKER} Fix it.`)).sender).toEqual(orcaSide("autofix"));
+    // The upkeep tick records itself: its text is the same as the Address PR button's.
+    expect(turnRoute(WORKER, { instruction: "Address the PR: conflicts, CI, review", sender: orcaSide("upkeep") }).sender).toEqual(orcaSide("upkeep"));
+    expect(turnRoute(WORKER, turn("w4", "Address the PR: conflicts, CI, review")).sender).toEqual(PERSON);
+  });
+
+  test("a recorded route wins over the text; a room turn is one another agent sent", () => {
+    const t = turn("r", "plain text", { route: { sender: CHIEF, recipient: ASSISTANT } });
+    expect(routeOf(ASSISTANT, t).sender).toEqual(CHIEF);
+    expect(turnPeer(ASSISTANT, t)).toEqual(CHIEF);
+    expect(inMainChat(ASSISTANT, turn("p", "What is new?"))).toBe(true);
+    expect(inMainChat(CHIEF, turn("rep", report))).toBe(true); // reports keep their folded block there
+  });
+
+  test("an entry names both ends, with the wrapper stripped; the reply goes back", () => {
+    const e = turnRoomEntry(ASSISTANT, turn("a1", agentMessage("chief", "Summarise #general")), ASSISTANT)!;
+    expect([e.sender, e.recipient, e.kind, e.messages, e.reply]).toEqual([CHIEF, ASSISTANT, "ask", ["Summarise #general"], "reply to a1"]);
+    expect(e.room).toBe(roomId(CHIEF, ASSISTANT));
+    expect(stripAgentWrapper("[from assistant] hi")).toBe("hi");
+    const origin = turnOrigin({ runId: "wake-1", messages: ["do it"], ids: [7], agent: "chief" });
+    const brief = turnRoomEntry(WORKER, turn("w1", "## Objective\nAdd a cache", { origin }), WORKER)!;
+    expect([brief.sender, brief.recipient, brief.kind]).toEqual([CHIEF, WORKER, "brief"]);
+    expect(brief.origin).toEqual(origin);
+    expect(turnRoomEntry(ASSISTANT, turn("a2", agentMessage("chief", "x"), { finishedAt: undefined }), ASSISTANT)!.reply).toBeUndefined();
+    expect(turnRoomEntry(ASSISTANT, turn("a3", "What is new?"), ASSISTANT)).toBeUndefined();
+  });
+
+  test("another chat holds the viewer's side: its asks there, and reports about a worker", () => {
+    const esc = turnRoomEntry(CHIEF, turn("c1", agentMessage("assistant", "Please merge #12")), ASSISTANT)!;
+    expect([esc.sender, esc.recipient, esc.messages, esc.reply]).toEqual([ASSISTANT, CHIEF, ["Please merge #12"], "reply to c1"]);
+    // A wake that was also yours: the ask only, never the Chief of Staff's reply to you.
+    const mixed = turnRoomEntry(CHIEF, turn("c2", joinMessages(["hello", agentMessage("assistant", "FYI")])), ASSISTANT)!;
+    expect([mixed.messages, mixed.reply]).toEqual([["FYI"], undefined]);
+    const rep = turnRoomEntry(CHIEF, turn("c3", report), WORKER)!;
+    expect([rep.sender, rep.recipient, rep.kind, rep.reply]).toEqual([WORKER, CHIEF, "report", "reply to c3"]);
+    expect(turnRoomEntry(CHIEF, turn("c4", report), workerSide("orca", "feat/other"))).toBeUndefined();
+  });
+
+  test("rooms group by peer; pills count messages, merge when adjacent, and carry the person's words", () => {
+    const a = turnRoomEntry(ASSISTANT, turn("a1", agentMessage("chief", "one"), { startedAt: 10, finishedAt: 20 }), ASSISTANT)!;
+    const b = turnRoomEntry(CHIEF, turn("c1", agentMessage("assistant", "two"), { startedAt: 30, finishedAt: 40 }), ASSISTANT)!;
+    const rooms = roomsOf(ASSISTANT, [b, a, a]);
+    expect(rooms).toHaveLength(1);
+    expect(rooms[0]!.peer).toEqual(CHIEF);
+    expect(rooms[0]!.entries.map((e) => e.id)).toEqual(["a1", "c1"]);
+    expect(rooms[0]!.lastAt).toBe(40);
+    type It = { pill?: RoomPill; text?: string };
+    const items: It[] = [{ pill: entryPill(ASSISTANT, a) }, { pill: entryPill(ASSISTANT, b) }, { text: "yours" }, { pill: entryPill(ASSISTANT, a) }];
+    const merged = mergePills(items, (i) => i.pill, (pill) => ({ pill }));
+    expect(merged.map((i) => i.pill?.count ?? i.text)).toEqual([4, "yours", 2]);
+    const origin = turnOrigin({ runId: "w", messages: ["fix it"], ids: [3], agent: "chief" });
+    const brief = turnRoomEntry(WORKER, turn("w1", "brief", { origin, originMessages: [{ id: 3, text: "fix it" }, { id: 4, missing: true }] }), WORKER)!;
+    expect(entryPill(WORKER, brief).person).toEqual([{ id: 3, text: "fix it" }]);
+    expect(roomUnseen(40, 20)).toBe(true);
+    expect(roomUnseen(40, 40)).toBe(false);
+    expect(roomUnseen(40, undefined, 40 + 24 * 3600_000 + 1)).toBe(false); // never opened: the last day only
+  });
+
+  test("labels: agents by display name, a worker by its branch, Orca by what it did", () => {
+    expect(routeLabel(CHIEF, ASSISTANT)).toBe("Chief of Staff → Assistant");
+    expect(sideLabel(WORKER)).toBe("Worker feat/cache");
+    expect(sideLabel(agentSide("scout"), { scout: "Scout" })).toBe("Scout");
+    expect(sideLabel(orcaSide("upkeep"))).toBe("Orca · PR upkeep");
+    expect(sideLabel(PERSON)).toBe("You");
+  });
 });
 
-test("a message's sender comes from its marker; yours and Orca's have none", () => {
-  expect(messageSender(agentMessage("chief", "Check the inbox"))).toEqual({ from: CHIEF, kind: "ask" });
-  expect(messageSender(scheduledWakeMessage({ id: 4, note: "read its answer", on: "agent:assistant", event: "orca.agent.replied" })))
-    .toEqual({ from: ASSISTANT, kind: "wake" });
-  expect(messageSender(scheduledWakeMessage({ id: 5, note: "standup", at: Date.UTC(2026, 9, 27, 9) }))).toBeUndefined();
-  expect(reportWorker(report)).toBe(WORKER);
-  expect(messageSender(report)).toEqual({ from: WORKER, kind: "report" });
-  expect(messageSender("Please tidy the board")).toBeUndefined();
-});
+// ---- the record and /api/rooms against a real database (db.startTurn, server/rooms.ts) ----
+describe("database", () => {
+  let pg: TestDb | undefined;
+  let prev: Record<string, string | undefined> = {};
+  let state = "";
+  beforeEach(async () => {
+    prev = { ORCA_DATABASE_URL: process.env.ORCA_DATABASE_URL, ORCA_STATE_DIR: process.env.ORCA_STATE_DIR };
+    state = mkdtempSync(join(tmpdir(), "orca-rooms-"));
+    process.env.ORCA_STATE_DIR = state;
+    pg = await freshSchema("rooms");
+    process.env.ORCA_DATABASE_URL = pg.url;
+    await db.close();
+  });
+  afterEach(async () => {
+    await db.close();
+    await pg?.drop();
+    for (const [k, v] of Object.entries(prev)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    rmSync(state, { recursive: true, force: true });
+  });
 
-test("a named agent's turn goes to a room only when every message is from ONE other agent", () => {
-  expect(turnPeer(ASSISTANT, turn("a", agentMessage("chief", "Summarise #general")))).toBe(CHIEF);
-  expect(turnPeer(ASSISTANT, turn("b", joinMessages([agentMessage("chief", "one"), agentMessage("chief", "two")])))).toBe(CHIEF);
-  // A fired `orca wake --on agent:assistant` in the Chief of Staff's chat: the Assistant's reply arrived.
-  expect(turnPeer(CHIEF, turn("c", scheduledWakeMessage({ id: 4, note: "read it", on: "agent:assistant" })))).toBe(ASSISTANT);
-  // Your words in the same wake: it stays yours.
-  expect(turnPeer(ASSISTANT, turn("d", joinMessages(["hi", agentMessage("chief", "one")])))).toBeUndefined();
-  // Worker reports keep their folded block in the agent's chat.
-  expect(turnPeer(CHIEF, turn("e", report))).toBeUndefined();
-  // Unknown (an old row with plain text): the main chat.
-  expect(inMainChat(CHIEF, turn("f", "What runs today?"))).toBe(true);
-});
+  const record = async (repo: string, branch: string, runId: string, instruction: string, at: number, extra: Partial<Parameters<typeof db.startTurn>[0]> = {}) => {
+    await db.startTurn({ repo, branch, runId, provider: "claude", instruction, prompt: instruction, startedAt: at, ...extra });
+    await db.finishTurn(runId, { status: "done", response: `reply ${runId}`, structured: { outcome: "ok" } as never, finishedAt: at + 1 });
+  };
 
-test("a worker's turn goes to the briefing agent's room by its origin; an old origin is the Chief of Staff's", () => {
-  const old = turnOrigin({ runId: "wake-1", messages: ["do it"], ids: [7] });
-  expect(old.agent).toBeUndefined();
-  expect(turnPeer(WORKER, turn("w1", "## Objective\nAdd a cache", { origin: old }))).toBe(CHIEF);
-  expect(turnPeer(WORKER, turn("w2", "brief", { origin: turnOrigin({ runId: "wake-2", messages: [], ids: [], agent: "assistant" }) }))).toBe(ASSISTANT);
-  // Your own follow-up to the worker: no origin, your chat.
-  expect(turnPeer(WORKER, turn("w3", "also fix the typo"))).toBeUndefined();
-});
+  test("each turn records its route at the start, and the finish keeps it beside the outcome", async () => {
+    await record("@orca", "assistant", "a-ask", agentMessage("chief", "Summarise"), 100);
+    await record("orca", "feat/cache", "w-up", "Address the PR: conflicts, CI, review", 110, { sender: orcaSide("upkeep") });
+    await record("orca", "feat/cache", "w-you", "Fix the typo", 120);
+    const [ask] = await db.turns("@orca", "assistant");
+    expect(ask!.route).toEqual({ sender: CHIEF, recipient: ASSISTANT });
+    expect(ask!.structured).toEqual({ outcome: "ok" } as never); // the route is not part of the outcome
+    const [up, you] = await db.turns("orca", "feat/cache");
+    expect(up!.route!.sender).toEqual(orcaSide("upkeep"));
+    expect(you!.route!.sender).toEqual(PERSON);
+  });
 
-test("room messages name both ends: the ask, then the reply back", () => {
-  const msgs = turnRoomMessages(ASSISTANT, turn("a1", agentMessage("chief", "Summarise #general")), ASSISTANT);
-  expect(msgs.map((m) => [m.from, m.to, m.kind, m.text])).toEqual([
-    [CHIEF, ASSISTANT, "ask", "Summarise #general"],
-    [ASSISTANT, CHIEF, "reply", "reply to a1"],
-  ]);
-  expect(msgs[0]!.room).toBe(roomId(CHIEF, ASSISTANT));
-  // A brief carries its origin, so the room shows who asked for it.
-  const origin = turnOrigin({ runId: "wake-1", messages: ["do it"], ids: [7], agent: "chief" });
-  const brief = turnRoomMessages(WORKER, turn("w1", "## Objective\nAdd a cache", { origin }), WORKER);
-  expect(brief.map((m) => [m.from, m.to, m.kind])).toEqual([[CHIEF, WORKER, "brief"], [WORKER, CHIEF, "reply"]]);
-  expect(brief[0]!.origin).toEqual(origin);
-  // A turn still running has no reply yet.
-  expect(turnRoomMessages(ASSISTANT, turn("a2", agentMessage("chief", "x"), { finishedAt: undefined }), ASSISTANT)).toHaveLength(1);
-});
+  test("the rooms read finds both sides of a pair across chats, and a worker's briefs and reports", async () => {
+    await record("@orca", "assistant", "a-ask", agentMessage("chief", "Summarise the inbox"), 100);
+    await record("@orca", "assistant", "a-you", "What is new?", 110);
+    await record("@orca", "orchestrator", "c-esc", agentMessage("assistant", "Please merge #12"), 120);
+    await record("@orca", "orchestrator", "c-mix", joinMessages(["Hello", agentMessage("assistant", "FYI")]), 125);
+    await record("@orca", "orchestrator", "c-you", "Hello", 130);
+    await record("@orca", "orchestrator", "c-rep", report, 140);
+    await record("orca", "feat/cache", "w-brief", "## Objective\nAdd a cache", 90, { origin: turnOrigin({ runId: "c-you", messages: ["Hello"], ids: [], agent: "chief" }) });
+    await record("orca", "feat/cache", "w-you", "Fix the typo", 150);
 
-test("another chat holds the viewer's side: its asks there, and reports about a worker", () => {
-  // In the Chief of Staff's chat, the Assistant escalated: seen from the Assistant.
-  const esc = turnRoomMessages(CHIEF, turn("c1", agentMessage("assistant", "Please merge #12")), ASSISTANT);
-  expect(esc.map((m) => [m.from, m.to, m.kind])).toEqual([[ASSISTANT, CHIEF, "ask"], [CHIEF, ASSISTANT, "reply"]]);
-  // A mixed wake there: the ask only, not the Chief of Staff's reply to you.
-  const mixed = turnRoomMessages(CHIEF, turn("c2", joinMessages(["hello", agentMessage("assistant", "FYI")])), ASSISTANT);
-  expect(mixed.map((m) => m.kind)).toEqual(["ask"]);
-  // A report about the worker, seen from the worker's chat.
-  const rep = turnRoomMessages(CHIEF, turn("c3", report), WORKER);
-  expect(rep.map((m) => [m.from, m.to, m.kind])).toEqual([[WORKER, CHIEF, "report"], [CHIEF, WORKER, "reply"]]);
-  // Another worker's report is not this worker's.
-  expect(turnRoomMessages(CHIEF, turn("c4", report), workerParty("orca", "feat/other"))).toEqual([]);
-});
-
-test("rooms group by peer, newest room first; unread counts what came after the last visit", () => {
-  const a = turnRoomMessages(ASSISTANT, turn("a1", agentMessage("chief", "one"), { startedAt: 10, finishedAt: 20 }), ASSISTANT);
-  const b = turnRoomMessages(CHIEF, turn("c1", agentMessage("assistant", "two"), { startedAt: 30, finishedAt: 40 }), ASSISTANT);
-  const rooms = roomsOf(ASSISTANT, [...b, ...a, ...a]); // a message seen twice counts once
-  expect(rooms).toHaveLength(1);
-  expect(rooms[0]!.peer).toBe(CHIEF);
-  expect(rooms[0]!.messages.map((m) => m.at)).toEqual([10, 20, 30, 40]);
-  expect(roomUnread(rooms[0]!, 20)).toBe(2);
-  expect(roomUnread(rooms[0]!, 40)).toBe(0);
-  // Never opened: the last day only.
-  expect(roomUnread(rooms[0]!, undefined, 25 + 24 * 3600_000)).toBe(2);
-});
-
-test("labels name agents by their display name and a worker by its branch", () => {
-  expect(routeLabel(CHIEF, ASSISTANT)).toBe("Chief of Staff → Assistant");
-  expect(partyLabel(WORKER)).toBe("Worker feat/cache");
-  expect(partyLabel(agentParty("scout"), { scout: "Scout" })).toBe("Scout");
-  expect(partyLabel("user")).toBe("You");
-});
-
-// ---- /api/rooms against a real database (server/rooms.ts, db.roomTurns) ----
-let pg: TestDb | undefined;
-let prev: Record<string, string | undefined> = {};
-let state = "";
-beforeEach(async () => {
-  prev = { ORCA_DATABASE_URL: process.env.ORCA_DATABASE_URL, ORCA_STATE_DIR: process.env.ORCA_STATE_DIR };
-  state = mkdtempSync(join(tmpdir(), "orca-rooms-"));
-  process.env.ORCA_STATE_DIR = state;
-  pg = await freshSchema("rooms");
-  process.env.ORCA_DATABASE_URL = pg.url;
-  await db.close();
-});
-afterEach(async () => {
-  await db.close();
-  await pg?.drop();
-  for (const [k, v] of Object.entries(prev)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
-  rmSync(state, { recursive: true, force: true });
-});
-
-const record = async (repo: string, branch: string, runId: string, instruction: string, at: number, extra: { origin?: ReturnType<typeof turnOrigin> } = {}) => {
-  await db.startTurn({ repo, branch, runId, provider: "claude", instruction, prompt: instruction, startedAt: at, ...extra });
-  await db.finishTurn(runId, { status: "done", response: `reply ${runId}`, finishedAt: at + 1 });
-};
-
-test("the rooms read finds both sides of a pair across chats, and a worker's briefs and reports", async () => {
-  await record("@orca", "assistant", "a-ask", agentMessage("chief", "Summarise the inbox"), 100);
-  await record("@orca", "assistant", "a-you", "What is new?", 110);
-  await record("@orca", "orchestrator", "c-esc", agentMessage("assistant", "Please merge #12"), 120);
-  await record("@orca", "orchestrator", "c-you", "Hello", 130);
-  await record("@orca", "orchestrator", "c-rep", report, 140);
-  await record("orca", "feat/cache", "w-brief", "## Objective\nAdd a cache", 90, { origin: turnOrigin({ runId: "c-you", messages: ["Hello"], ids: [], agent: "chief" }) });
-  await record("orca", "feat/cache", "w-you", "Fix the typo", 150);
-
-  const assistant = await roomMessages("@orca", "assistant");
-  expect(assistant.map((m) => `${m.runId} ${m.kind} ${m.from}>${m.to}`)).toEqual([
-    "a-ask ask agent:chief>agent:assistant", "a-ask reply agent:assistant>agent:chief",
-    "c-esc ask agent:assistant>agent:chief", "c-esc reply agent:chief>agent:assistant",
-  ]);
-  const chief = await roomMessages("@orca", "orchestrator");
-  expect(chief.map((m) => `${m.runId} ${m.kind}`)).toEqual(["a-ask ask", "a-ask reply", "c-esc ask", "c-esc reply"]);
-  const worker = await roomMessages("orca", "feat/cache");
-  expect(worker.map((m) => `${m.runId} ${m.kind} ${m.from}>${m.to}`)).toEqual([
-    "w-brief brief agent:chief>worker:orca/feat/cache", "w-brief reply worker:orca/feat/cache>agent:chief",
-    "c-rep report worker:orca/feat/cache>agent:chief", "c-rep reply agent:chief>worker:orca/feat/cache",
-  ]);
-  expect(worker[0]!.origin?.agent).toBe("chief");
+    const show = (es: Awaited<ReturnType<typeof roomEntries>>) => es.map((e) => `${e.id} ${e.kind} ${e.sender.id}>${e.recipient.id}${e.reply ? " +reply" : ""}`);
+    expect(show(await roomEntries("@orca", "assistant"))).toEqual([
+      "a-ask ask chief>assistant +reply", "c-esc ask assistant>chief +reply", "c-mix ask assistant>chief",
+    ]);
+    expect(show(await roomEntries("@orca", "orchestrator"))).toEqual(["a-ask ask chief>assistant +reply", "c-esc ask assistant>chief +reply"]);
+    const worker = await roomEntries("orca", "feat/cache");
+    expect(show(worker)).toEqual(["w-brief brief chief>orca/feat/cache +reply", "c-rep report orca/feat/cache>chief +reply"]);
+    expect(worker[0]!.origin?.agent).toBe("chief");
+    // No wrapper text reaches the view.
+    expect(JSON.stringify(await roomEntries("@orca", "assistant"))).not.toContain("[from ");
+  });
 });

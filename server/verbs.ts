@@ -22,6 +22,7 @@ import { featuresOf, modelFor, providerAllowed, runLimits, type OrcaConfig, type
 import { addressNeedsAgent, addressPrPrompt, chatPrompt, cleanupDecision, continuation, followUpPrompt, launchPrompt, mergeSettled, mergedPrIsHistory, slugifyBranch, titleFromPrompt, withAttachments, workerPrBody, type MechanicalMerge, type SweepReport } from "../web/src/workstream";
 import { providerOfModel } from "../shared/models";
 import { isAgentProvider, type AgentOutcome, type AgentProvider, type TurnOrigin } from "../shared/agent";
+import type { Side } from "../shared/rooms";
 
 /** The --model for a run: the card's pinned model, else the config's default — a Claude id, so it
  *  applies to Claude only (an unpinned Codex/Cursor run takes that CLI's own default). */
@@ -174,7 +175,7 @@ export async function createWorkstream(
  *  scaffolding for an action that builds its own (Address PR). */
 export async function followUp(
   cfg: OrcaConfig, repo: RepoConfig, branch: string,
-  input: { instruction: string; prompt?: string; action?: string; evidenceChars?: number; origin?: TurnOrigin },
+  input: { instruction: string; prompt?: string; action?: string; evidenceChars?: number; origin?: TurnOrigin; sender?: Side },
 ): Promise<{ status: "running" | "queued"; worktreePath: string }> {
   const worktreePath = await ensureWorktree(repo, branch);
   const e = (await db.enrichment(repo.name))[branch] ?? {};
@@ -196,6 +197,7 @@ export async function followUp(
   const receipt = await agent.runAgent(worktreePath, input.prompt ?? chatPrompt(input.instruction, { mergeWhenGreen: Boolean(e.mergeWhenGreen) }), {
     ...launchOptions(cfg, repo, provider, e.preferredModel as string | undefined, e), ...next,
     branch, action: input.action ?? "followup", instruction: input.instruction, evidenceChars: input.evidenceChars, origin: input.origin,
+    ...(input.sender ? { sender: input.sender } : {}),
   });
   await db.patchEnrichment(repo.name, branch, { agentProvider: provider, sessionId: receipt.sessionId });
   return { status: "running", worktreePath };
@@ -302,7 +304,7 @@ export async function settleConflict(repo: RepoConfig, branch: string): Promise<
 /** THE agent action for a PR — one run for conflicts, failing CI and the review, whichever apply —
  *  with the evidence fetched immediately before launch. The manual form of the store's `addressPr`:
  *  every unresolved thread is sent, and the hand-over is recorded once the launch is accepted. */
-export async function addressPr(cfg: OrcaConfig, repo: RepoConfig, branch: string, opts: { origin?: TurnOrigin } = {}): Promise<{ status: "running" | "queued" | "resolved"; pr: number }> {
+export async function addressPr(cfg: OrcaConfig, repo: RepoConfig, branch: string, opts: { origin?: TurnOrigin; sender?: Side } = {}): Promise<{ status: "running" | "queued" | "resolved"; pr: number }> {
   const pr = (await gh.listPrs(repo.repoPath)).find((p) => p.branch === branch);
   if (!pr) throw new Error(`${repo.name}/${branch} has no open PR to address`);
   const e = (await db.enrichment(repo.name))[branch] ?? {};
@@ -321,7 +323,7 @@ export async function addressPr(cfg: OrcaConfig, repo: RepoConfig, branch: strin
   const ci = ciFailing ? { failingChecks: pr.failingChecks, details } : undefined;
   if (settled && !addressNeedsAgent({ conflicting, ci, feedback: pr.feedback, threads: marked, comments })) return { status: "resolved", pr: pr.number };
   const { status } = await followUp(cfg, repo, branch, {
-    instruction: "Address the PR: conflicts, CI, review", action: "address", origin: opts.origin,
+    instruction: "Address the PR: conflicts, CI, review", action: "address", origin: opts.origin, ...(opts.sender ? { sender: opts.sender } : {}),
     evidenceChars: JSON.stringify(details).length + JSON.stringify(marked).length + JSON.stringify(comments).length,
     prompt: addressPrPrompt({ prNumber: pr.number, branch }, {
       base: repo.baseBranch, conflicting, ci,

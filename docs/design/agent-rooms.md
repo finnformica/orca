@@ -1,6 +1,7 @@
 # Agent rooms: agent-to-agent traffic out of your chat
 
-Requested by Finn, 2026-10-27.
+Requested by Finn, 2026-10-27. Revised the same day after the handover from the work Orca, which
+built rooms in Flow (`theengineeringco/branch-demo`, PRs #6662, #6697, #6658).
 
 ## Problem
 
@@ -10,123 +11,135 @@ A chat mixes two conversations:
 - Messages between agents: `orca ask` (`[from chief] …`), the replies, fired `orca wake --on agent:<name>`
   wakes, orchestrator briefs to a worker (`spawn`, `send`, `address`) and worker reports.
 
-The second kind hides the first. In a named agent's chat, a `[from chief]` message also shows as
-your bubble, so the sender is wrong.
+The second kind hides the first. In a named agent's chat, a `[from chief]` message also showed as
+your bubble, so the sender was wrong.
 
 ## Goal
 
 - Your own messages stay in the main chat.
 - Each agent pair has a **room**. The room shows only the traffic between those two agents.
-- Every message in a room shows its sender and its recipient.
+- Every message shows its sender and its recipient. No view shows the `[from …]` wrapper.
 - Routing and delivery do not change. Only the record and the view change.
+
+## Learnings applied (from the Flow handover)
+
+1. The room is drawn by the SAME chat transcript (`ChatTurn`), with speaker names. It has no copied
+   markup, no composer and no Quote. A pill opens it, and a Back button closes it. Flow's first room
+   view had its own markup, and Finn rejected it.
+2. A room is a read view over data that exists. There is no migration, and old traffic shows at once.
+3. Each turn records its sender and recipient as `{ kind, id }`, so the room query is simple.
+4. The wrapper text is stripped in every view. The raw text stays in the turn, for the model only.
+5. A room follows the read access of the chats it reads from.
+6. A worker chat tags each turn with its source, and keeps the person's words in their own lane.
+   It reuses the request origin of #456 (`server/origin.ts`).
 
 ## Data model
 
 All rules are pure, in `shared/rooms.ts`. Change them there.
 
-### Party
+### Side
 
-A party is one end of a message. It is a string:
+A side is one end of a message: `{ kind, id }`.
 
-| Party | Meaning |
-| --- | --- |
-| `user` | You. |
-| `agent:<name>` | A named agent (`chief`, `assistant`, …). |
-| `worker:<repo>/<branch>` | A workstream's agent. |
+| kind | id | Meaning |
+| --- | --- | --- |
+| `person` | `user` | You. |
+| `agent` | `chief`, `assistant`, … | A named agent. |
+| `worker` | `<repo>/<branch>` | A workstream's agent. |
+| `orca` | `autofix`, `upkeep`, `background`, `reports`, `event`, `wake`, `reflection` | Orca, on its own. |
 
-A chat has one owner party: `agent:<name>` for an `@orca` branch, else `worker:<repo>/<branch>`.
+A chat has one owner side: `agent` for an `@orca` branch, else `worker`.
+
+### Route (recorded)
+
+Each turn records `structured.route = { sender, recipient }`. `db.startTurn` writes it for every write
+path, through ONE rule (`turnRoute`). `finishTurn` keeps it beside the outcome, as it keeps `origin`.
+It is JSONB in an existing column, so there is no migration.
+
+`turnRoute(recipient, turn)`:
+
+- An explicit `sender` from the caller wins. The upkeep tick passes `orca/upkeep`, because its text
+  is the same as the Address PR button's.
+- A worker's turn: the origin's agent (`turn.origin.agent`). An origin from before this change has no
+  agent, and reads as the Chief of Staff, the only agent that may brief a worker. Then `orca/autofix`
+  and `orca/background` by their markers. Else the person.
+- An agent's wake: the one sender of all its messages (`[from X]` → agent X, a wake `on agent:X` →
+  agent X, `[worker finished] r/b` → worker r/b). Several workers' reports → `orca/reports`. Any word
+  of the person's → the person.
+
+A row from before the route (old traffic) has no record. `routeOf` then runs the same rule on its text
+and origin, so old turns classify the same way as new ones.
 
 ### Room
 
-A room is an unordered pair of parties. Its id is `room:<a>+<b>`, with the two parties sorted.
-A room has no table and no row. It exists when one message belongs to it.
+A room is an unordered pair of sides. Its id is `room:<kind:id>+<kind:id>`, sorted. A room has no
+table and no row. It exists when one entry belongs to it.
 
-### Room message
+A turn is in a room when its sender is ANOTHER agent (`turnPeer`). Worker reports in an agent's chat
+keep their folded `⚙` block there. The same reports show in each worker's room.
+
+### Room entry
+
+One entry for each source turn. The view gets nothing else.
 
 ```ts
-type RoomMessage = {
-  id: string;        // `<runId>:<n>`, stable
-  room: string;      // room id
-  from: Party;
-  to: Party;
-  kind: "ask" | "reply" | "brief" | "report" | "wake";
-  text: string;
-  at?: number;
-  runId: string;     // the turn that holds it
-  chat: Party;       // the chat that recorded it
+type RoomEntry = {
+  id: string;          // the turn's run id
+  room: string;
+  sender: Side; recipient: Side;
+  kind: "ask" | "brief" | "report" | "wake";
+  messages: string[];  // the sender's messages, wrapper stripped
+  reply?: string;      // the recipient's reply
+  startedAt?: number; finishedAt?: number; failed?: boolean; stopped?: boolean;
+  chat: Side;          // the chat that recorded it
+  origin?: TurnOrigin; originMessages?: OriginMessage[];  // a brief's origin (#456)
 };
 ```
 
-### Where sender and recipient come from
-
-Orca already records enough. No new column and no migration.
-
-1. **Recipient** = the owner of the chat that holds the turn. A wake runs in the recipient's chat.
-2. **Sender of a message in a wake** = read off its text:
-   - `[from <agent>] …` → `agent:<agent>` (`orca ask`, `shared/agents.ts agentMessage`).
-   - `[scheduled wake] … on agent:<x> …` → the reply that `orca wake --on agent:<x>` waited for. The
-     sender is `agent:<x>`.
-   - `[worker finished] <repo>/<branch> …` → `worker:<repo>/<branch>`.
-   - Anything else is yours or Orca's. It stays in the main chat.
-3. **Sender of a worker turn** = `turn.origin` (#456). A turn with an origin is an orchestrator brief,
-   `send` or `address`. `turn.origin.agent` names the agent. It is new in this change. An older origin
-   has no `agent`, and reads as `agent:chief`, the only agent that may brief a worker.
-4. **The reply** to a room turn is the turn's response, from the owner back to the sender.
-
-### Classification of a turn (`turnRoom`)
-
-A turn goes to a room only when **every** message in it belongs to the SAME peer:
-
-- A named agent's turn whose messages are all `[from X]` or wakes `on agent:X` → room with `agent:X`.
-- A worker's turn with `origin` → room with the briefing agent.
-- Any other turn (yours, a mix, a worker report wake, an Orca event, unknown) stays in the main chat.
-
-A mixed turn stays in the main chat. Its agent messages show with a sender line ("Chief of Staff →
-Assistant"), never as your bubble.
-
-Worker report wakes in an agent's own chat keep their folded `⚙` block in the main chat. The same
-reports also show in each worker's room (below). A room for each worker in the Chief of Staff's chat
-gives too many tabs.
-
-### Old messages
-
-Nothing is rewritten. The rules above read the stored text and `structured.origin`, so old turns
-classify the same way as new turns. A turn that matches no rule stays in the main chat.
-
 ### One room, two chats
 
-A room's messages are recorded in two chats. Example, Chief of Staff and Assistant:
+A room's turns are in two chats. Example, Chief of Staff and Assistant:
 
 - `[from chief]` asks are turns in the Assistant's chat.
 - `[from assistant]` asks are turns in the Chief of Staff's chat.
 
-`GET /api/rooms?repo=&branch=` returns every room message for the chat's owner, from its own chat
-and from the `@orca` chats (database-only, newest 200 turns that match). For a worker, the other
-chat is the agent chat that got its `[worker finished]` reports. Each report links to one run
-(`Full turn: orca read --run <id>`).
+`GET /api/rooms?repo=&branch=` returns every entry for the chat's owner (`server/rooms.ts`,
+`db.roomTurns`, newest 200 of each kind):
+
+- The chat's own turns with `route.sender.kind = 'agent'`. A row with no route matches by its markers.
+- The other `@orca` chats' turns with `route.sender` = the owner, or the owner's needle in the text.
+  The needle is `[from <name>] `, or `[worker finished] <repo>/<branch>`. It also finds an ask inside
+  a wake that was also yours.
+
+### Visibility
+
+A room is a view of chats you can read. `/api/rooms` reads with the same `user_id` scope as
+`/api/turns`, and only the `@orca` chats of that user. It is a database-only route, like `/api/turns`.
+Orca has one user today. When it gets more, a person's chats are private to that person, and their
+rooms follow (Flow's #6658 rule).
 
 ## UI
 
-- A room bar above the chat log: **Chat**, then one tab for each room ("Chief of Staff", "Orchestrator").
-  It shows only when the chat has a room. It uses the shadcn `Tabs`.
-- Each room tab has an unread count: the room messages newer than the last time you opened that
-  tab. The last-open time is per browser (`orca.ui.v1.roomSeen:<repo>::<branch>`, `usePersisted`). A room
-  you never opened counts the messages of the last day.
-- A room view lists its messages oldest first. Each has a head line: sender → recipient, kind and time.
-  The body is markdown. A report and a long reply fold behind Show more.
-- A room is read only. The composer stays, and a send goes to the main chat and switches back to it.
-- The main chat leaves out a room turn only when the `/api/rooms` answer holds it, or while that
-  answer loads. When the read fails, or the turn is older than the read's bound, the turn stays in
-  the main chat. So a turn is never lost.
-- A brief in a worker's room keeps its origin quote ("Asked by Finn").
+- **Pill:** in the main chat, at the time the agents talked, "N messages with <agent>", with a blue dot
+  when it has news. N counts the sender's messages and the replies. Adjacent pills of one room merge.
+  The pills are placed by time between the turns, by the same pass as notices (`withNotices`).
+- **The person's lane:** in a worker chat, a brief's origin (the words you said to the orchestrator)
+  shows above its pill as your bubble, "You · via Chief of Staff".
+- **Room:** the pill opens the room in the same pane. A header has Back, "Messages with <agent>" and
+  "read only". The log is the same `ChatTurn` as the chat, with `saidBy` / `replyBy` speaker names. No
+  composer, no Quote. A report keeps its folded block, and a brief keeps its origin quote.
+- **Source tags:** every turn carries `data-source` (person, agent, worker, orca). A turn that is not
+  the person's names its sender over its messages (`Orca · PR upkeep`). Your own words are the only
+  unnamed lane.
+- **Seen:** the last-open time per room is per browser (`orca.ui.v1.roomSeen:<repo>::<branch>`,
+  `usePersisted`). A room you never opened counts its last day.
+- **No turn is lost:** the main chat leaves out a room turn only when the `/api/rooms` answer holds it,
+  or while that answer loads. When the read fails, or the turn is past its bound, the turn stays.
 
 ## Limits
 
-- The main chat classifies the loaded page only. `/api/rooms` reads the newest 200 matching turns.
-- The rules read text markers. A message that copies a marker by hand goes to a room. Only agents
-  write these markers.
-
-## To adjust
-
-The other Orca's handover may differ. Change these in `shared/rooms.ts` only: the party names,
-the room id and the rules. The UI reads `RoomMessage` and the room list, nothing else.
+- The main chat classifies the loaded page only. `/api/rooms` reads the newest 200 matching turns of
+  each kind.
+- Old rows classify by text markers. A message that copies a marker by hand goes to a room. Only
+  agents write these markers.
+- `failTurn` clears `structured`, so a failed wake's route falls back to the rule.

@@ -1787,8 +1787,8 @@ async function api(req: Request, url: URL): Promise<Response> {
     // named agents' chats. Read only: nothing about routing or delivery changes.
     const branch = url.searchParams.get("branch");
     if (!branch) return json({ error: "branch required" }, 400);
-    try { return json({ messages: await rooms.roomMessages(repo.name, branch) }); }
-    catch (e) { if (db.isDbError(e)) return json({ messages: [], dbUnavailable: true }); throw e; }
+    try { return json({ entries: await rooms.roomEntries(repo.name, branch) }); }
+    catch (e) { if (db.isDbError(e)) return json({ entries: [], dbUnavailable: true }); throw e; }
   }
   if (req.method === "GET" && p === "/api/turns/steps") {
     // Catch-up after a dropped stream: the steps recorded since the cursor the client holds. The

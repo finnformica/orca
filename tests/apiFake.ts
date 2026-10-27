@@ -151,7 +151,7 @@ export const apiFake = {
   queuedData: new Map<string, unknown[]>(),
   turnFinished: new Set<string>(),
   turnsData: new Map<string, unknown[]>(),
-  /** `/api/rooms` by `repo::branch` (shared/rooms.ts RoomMessage[]); none = no rooms. */
+  /** `/api/rooms` by `repo::branch` (shared/rooms.ts RoomEntry[]); none = no rooms. */
   roomsData: new Map<string, unknown[]>(),
   turnPageCalls: [] as { branch: string; limit: number; before?: string }[],
   /** The bridge answered without its database (the turns are its local journal). */
@@ -502,7 +502,7 @@ mock.module("@/api", () => ({
       return { imported };
     },
     turns: async (repo: string, branch: string) => apiFake.turnsData.get(`${repo}::${branch}`) ?? [],
-    rooms: async (repo: string, branch: string) => ({ messages: structuredClone(apiFake.roomsData.get(`${repo}::${branch}`) ?? []) }),
+    rooms: async (repo: string, branch: string) => ({ entries: structuredClone(apiFake.roomsData.get(`${repo}::${branch}`) ?? []) }),
     // The bridge's /api/shots: workstreamShots over the same turns.
     shots: async (repo: string, branch: string) => workstreamShots((apiFake.turnsData.get(`${repo}::${branch}`) ?? []) as AgentTurn[]),
     // Pages over turnsData in its stored order (oldest first); the cursor is the index of a page's
