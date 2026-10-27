@@ -7,6 +7,7 @@
 import { FileText, Lock, Paperclip, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ExpandableImage } from "@/components/ExpandableImage";
+import { Tip } from "@/components/ui/tip";
 import { cn } from "@/lib/utils";
 
 export type AttachmentItem =
@@ -18,6 +19,9 @@ export type AttachmentItem =
 
 /** The label a secret chip shows: the stored name, without its scope. */
 export const secretLabel = (ref: string) => ref.slice(ref.lastIndexOf("/") + 1);
+
+/** A secret chip's tooltip. It names the reference, never a value. */
+const secretTip = (ref: string) => `Stored secret ${ref}. The message holds only its name.`;
 
 export function ComposerAttachment({ item, onRemove, look = "tile" }: { item: AttachmentItem; onRemove?: () => void; look?: "tile" | "chip" }) {
   const label = item.kind === "secret" ? `Secret ${item.name}` : item.name;
@@ -34,9 +38,11 @@ export function ComposerAttachment({ item, onRemove, look = "tile" }: { item: At
     const pill = "bg-muted text-foreground inline-flex max-w-56 self-start items-center gap-1 rounded-md border px-2 py-1 text-[11px]";
     if (item.kind === "secret") {
       return (
-        <span {...slot} title={`Stored secret ${item.name}. The message holds only its name.`} aria-label={label} className={pill}>
-          <Lock className="size-3 shrink-0" aria-hidden /><span className="truncate font-mono">{secretLabel(item.name)}</span>
-        </span>
+        <Tip label={secretTip(item.name)}>
+          <span {...slot} aria-label={label} className={pill}>
+            <Lock className="size-3 shrink-0" aria-hidden /><span className="truncate font-mono">{secretLabel(item.name)}</span>
+          </span>
+        </Tip>
       );
     }
     return item.href ? (
@@ -49,17 +55,22 @@ export function ComposerAttachment({ item, onRemove, look = "tile" }: { item: At
   }
   return (
     <div data-slot="composer-attachment" data-attachment={item.kind} aria-label={label}
-      title={item.kind === "secret" ? `Stored secret ${item.name}. The message holds only its name.` : undefined}
       // An image is a square; a file or a secret grows to show its name, up to a cap.
       className={cn("group relative h-14 overflow-hidden rounded-md border", item.kind === "image" ? "w-14" : "max-w-36 min-w-14")}>
       {item.kind === "image"
         // The blob: URL is not made yet on the very first render, so the lightbox waits for it.
         ? (item.src && <ExpandableImage src={item.src} alt={item.name} downloadName={item.name} className="size-full" imgClassName="size-full object-cover" cornerClassName="bottom-1 right-1" />)
-        : (
-          <div data-slot={item.kind === "secret" ? "chat-composer-secret" : "chat-composer-file"}
-            className={cn("text-muted-foreground flex size-full flex-col items-center justify-center gap-0.5 px-2 py-1", item.kind === "secret" && "bg-muted/40")}>
-            {item.kind === "secret" ? <Lock className="size-4 shrink-0" aria-hidden /> : <FileText className="size-4 shrink-0" aria-hidden />}
-            <span className={cn("max-w-full truncate text-center text-[10px]", item.kind === "secret" && "font-mono")}>{item.kind === "secret" ? secretLabel(item.name) : item.name}</span>
+        : item.kind === "secret" ? (
+          <Tip label={secretTip(item.name)}>
+            <div data-slot="chat-composer-secret" className="text-muted-foreground bg-muted/40 flex size-full flex-col items-center justify-center gap-0.5 px-2 py-1">
+              <Lock className="size-4 shrink-0" aria-hidden />
+              <span className="max-w-full truncate text-center font-mono text-[10px]">{secretLabel(item.name)}</span>
+            </div>
+          </Tip>
+        ) : (
+          <div data-slot="chat-composer-file" className="text-muted-foreground flex size-full flex-col items-center justify-center gap-0.5 px-2 py-1">
+            <FileText className="size-4 shrink-0" aria-hidden />
+            <span className="max-w-full truncate text-center text-[10px]">{item.name}</span>
           </div>
         )}
       {onRemove && (
