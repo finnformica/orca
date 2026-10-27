@@ -31,6 +31,10 @@ const type = async (input: HTMLInputElement, text: string) => act(async () => {
   await flush();
 });
 const dialog = () => document.querySelector<HTMLElement>('[role="dialog"]');
+const trigger = (card: HTMLElement) => card.querySelector<HTMLElement>('[data-slot="accordion-trigger"]')!;
+/** Open every integration card: each is an accordion item, collapsed at first. */
+const expand = async () => { for (const c of all("integration-card")) if (trigger(c).getAttribute("aria-expanded") !== "true") await click(trigger(c)); };
+const key = async (el: HTMLElement, k: string) => act(async () => { el.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true })); await flush(); await flush(); });
 
 const kinds = [
   { kind: "discord", label: "Discord", caps: {}, place: "channel" },
@@ -96,6 +100,7 @@ describe("the Integrations page", () => {
   test("the Discord card leads with the catch-all link: its level and repos, and posts with --channel", async () => {
     apiFake.integrationsData = overview();
     await open("/integrations");
+    await expand();
     const [first, second] = all("integration-link");
     expect(first!.textContent).toContain("All channels and DMs");
     expect(all("link-level", first)[0]!.textContent).toBe("Admin");
@@ -110,6 +115,7 @@ describe("the Integrations page", () => {
     const data = overview();
     apiFake.integrationsData = data;
     await open("/integrations");
+    await expand();
     const card = all("integration-card")[0]!;
     expect(card.querySelector('[aria-label="Discord access"]')!.textContent).toBe("Read and write");
     expect(card.querySelector('[aria-label="Discord events"]')!.textContent).toBe("Wake an agent");
@@ -121,6 +127,7 @@ describe("the Integrations page", () => {
 
     apiFake.integrationsData = { ...data, integrations: [{ ...data.integrations[0]!, access: "read", events: "record" }] };
     await open("/integrations");
+    await expand();
     const ro = all("integration-card")[0]!;
     expect(ro.querySelector('[aria-label="Discord access"]')!.textContent).toBe("Read");
     expect(ro.querySelector('[aria-label="Discord events"]')!.textContent).toBe("Inbox only");
@@ -134,6 +141,7 @@ describe("the Integrations page", () => {
     data.links = [{ ...data.links[0]!, notifyAgent: false } as typeof data.links[0], data.links[1]!];
     apiFake.integrationsData = data;
     await open("/integrations");
+    await expand();
     const byLabel = (l: string) => all("integration-link").find((e) => e.textContent!.includes(l))!;
     const sw = (l: string, slot: string) => byLabel(l).querySelector<HTMLElement>(`[data-slot="${slot}"] [role="switch"]`)!;
     expect(sw("#chan", "link-notify-me").getAttribute("aria-checked")).toBe("true");
@@ -225,6 +233,7 @@ describe("the Integrations page", () => {
     const assign = spyOn(window.location, "assign").mockImplementation(() => {});
     try {
       await open("/integrations");
+      await expand();
       const row = all("integration-oauth")[0]!;
       expect(row.textContent).toContain("Not connected");
       const button = all("oauth-connect", row)[0]!;
@@ -238,6 +247,7 @@ describe("the Integrations page", () => {
   test("from a plain-http page with no https redirect origin, the card's sign-in is off and says to open the https address", async () => {
     apiFake.integrationsData = { ...overview(), kinds: [...kinds, gmailKind], integrations: [gmailCard()], links: [], pairings: [] };
     await open("/integrations");
+    await expand();
     const row = all("integration-oauth")[0]!;
     expect(all("oauth-origin", row)[0]!.textContent).toContain("works only from Orca's https address");
     expect(all("oauth-origin", row)[0]!.textContent).toContain("(plain http)");
@@ -247,15 +257,67 @@ describe("the Integrations page", () => {
     expect(apiFake.integrationPosts).toEqual([]);
   });
 
-  test("Rename on the card: the account keeps everything but its name", async () => {
+  test("a card is an accordion, collapsed at first: the header has the icon, the name, the health and the switch, no kind or server badge", async () => {
+    apiFake.integrationsData = { ...overview(), instanceOptions: [{ id: "box", label: "Personal" }] };
+    await open("/integrations");
+    const card = all("integration-card")[0]!;
+    expect(trigger(card).getAttribute("aria-expanded")).toBe("false");
+    expect(all("integration-link")).toHaveLength(0); // the body is closed
+    expect(all("integration-policy")).toHaveLength(0);
+    const header = all("card-header", card)[0]!;
+    expect(header.querySelector('[data-slot="brand-icon"][data-kind="discord"]')).not.toBeNull();
+    expect(all("integration-rename", header)[0]!.getAttribute("aria-label")).toBe("Rename Discord");
+    expect(all("integration-health-summary", header)[0]!.textContent).toContain("Connected");
+    expect(header.querySelector('[aria-label="Discord connected"]')).not.toBeNull();
+    expect(header.querySelector('[aria-label="Discord actions"]')).not.toBeNull();
+    expect(all("integration-where")).toHaveLength(0); // the server is in the top left already
+    expect(header.querySelectorAll('[data-slot="pill"], .lucide-pencil')).toHaveLength(0);
+    expect(header.textContent).not.toContain("on ");
+
+    // A click on the header opens it; a poll keeps it open; a second click closes it.
+    await click(trigger(card));
+    expect(trigger(card).getAttribute("aria-expanded")).toBe("true");
+    expect(all("integration-link")).toHaveLength(2);
+    expect(all("integration-policy")).toHaveLength(1);
+    await act(async () => { await store.refresh(); await new Promise((r) => setTimeout(r, 20)); });
+    expect(trigger(all("integration-card")[0]!).getAttribute("aria-expanded")).toBe("true");
+    await click(all("card-header", card)[0]!); // the row's empty space toggles too
+    expect(trigger(card).getAttribute("aria-expanded")).toBe("false");
+  });
+
+  test("the name is an inline field: a click edits and does not toggle; Enter or blur saves only the name, Escape cancels", async () => {
     apiFake.integrationsData = { ...overview(), kinds: [fixedKind], integrations: [{ ...gmailCard({ account: "finn@example.com", scopes: [] }), name: "finn@example.com" }], links: [], pairings: [] };
     await open("/integrations");
-    await click(container!.querySelector<HTMLElement>('[aria-label="Rename finn@example.com"]')!);
-    const input = dialog()!.querySelector<HTMLInputElement>('[data-slot="integration-rename"]')!;
+    const card = all("integration-card")[0]!;
+    const input = all("integration-rename", card)[0]! as HTMLInputElement;
     expect(input.value).toBe("finn@example.com");
-    await type(input, "Personal");
-    await act(async () => { dialog()!.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); await flush(); await flush(); });
-    expect(apiFake.integrationPosts).toEqual([{ path: "save", body: { id: "gm", kind: "gmail", name: "Personal", instance: "*", secretRef: "", config: {}, enabled: true } }]);
+    await click(input);
+    expect(trigger(card).getAttribute("aria-expanded")).toBe("false");
+
+    // Escape: the old name comes back, nothing is saved.
+    await act(async () => { input.focus(); await flush(); });
+    await type(input, "Typo");
+    await key(input, "Escape");
+    expect(input.value).toBe("finn@example.com");
+    expect(apiFake.integrationPosts).toEqual([]);
+
+    // Enter: the same save the old dialog made, with the row's other fields as they are.
+    await act(async () => { input.focus(); await flush(); });
+    await type(input, " Personal ");
+    await key(input, "Enter");
+    const saved = { path: "save", body: { id: "gm", kind: "gmail", name: "Personal", instance: "*", secretRef: "", config: {}, enabled: true } };
+    expect(apiFake.integrationPosts).toEqual([saved]);
+
+    // A blur saves too; an empty name puts the old one back and saves nothing.
+    await act(async () => { input.focus(); await flush(); });
+    await type(input, "Home");
+    await act(async () => { input.blur(); await flush(); await flush(); });
+    expect(apiFake.integrationPosts[1]).toEqual({ path: "save", body: expect.objectContaining({ id: "gm", name: "Home" }) });
+    await act(async () => { input.focus(); await flush(); });
+    await type(input, "  ");
+    await act(async () => { input.blur(); await flush(); await flush(); });
+    expect(apiFake.integrationPosts).toHaveLength(2);
+    expect(input.value).toBe("finn@example.com");
   });
 
   test("the Gmail logo is Google's multicolour M", async () => {
@@ -294,6 +356,7 @@ describe("the Integrations page", () => {
       account: "finn@example.com", scopes: ["https://www.googleapis.com/auth/gmail.readonly"], reconnect: "reconnect needed: Google refused the grant",
     })] };
     await open("/integrations");
+    await expand();
     const row = all("integration-oauth")[0]!;
     expect(row.textContent).toContain("Signed in as finn@example.com · read only");
     expect(all("oauth-reconnect", row)[0]!.textContent).toBe("reconnect needed: Google refused the grant");
@@ -307,6 +370,7 @@ describe("the Integrations page", () => {
       account: "finn@example.com", scopes: read, missing: ["https://www.googleapis.com/auth/gmail.send"], reconnect: null,
     })] };
     await open("/integrations");
+    await expand();
     const row = all("integration-oauth")[0]!;
     expect(row.textContent).toContain("· read only");
     expect(all("oauth-connect", row)[0]!.textContent).toBe("Reconnect to allow sending");
@@ -315,6 +379,7 @@ describe("the Integrations page", () => {
   test("a Gmail card carries the core policy row (Access, Events) beside Sign in with Google", async () => {
     apiFake.integrationsData = { ...overview(), kinds: [gmailKind], integrations: [gmailCard()], links: [], pairings: [] };
     await open("/integrations");
+    await expand();
     const card = all("integration-card")[0]!;
     expect(all("integration-policy", card)).toHaveLength(1);
     expect(card.querySelector('[aria-label="My Gmail access"]')!.textContent).toBe("Read");

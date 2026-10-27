@@ -1,17 +1,19 @@
 // Settings > Integrations (docs/research/integrations.md §6.1): first the people — each a global
 // person with identities on any adapter, their level and the pending pairing codes — then a card per
-// integration row — health, last event, a Test, the enabled switch (connect / disconnect), its links
+// integration row, an accordion item: its header has the name (edited in place), the health, the
+// enabled switch (connect / disconnect) and the menu; open, a Test, the policy and its links
 // with their level and repos — the subscriptions, and the dead deliveries with Retry. Generic over adapter kinds: the kinds, their
 // labels and their Connect fields come from the registry (`overview.kinds`), so a new adapter's
 // card and form appear with no change here. The decisions are pure in shared/integrationSettings.ts.
-import { useEffect, useState, type ReactNode } from "react";
-import { Bell, MoreHorizontal, Pencil, Plug, Plus, RotateCw, Trash2, X } from "lucide-react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Bell, MoreHorizontal, Plug, Plus, RotateCw, Trash2, X } from "lucide-react";
 import { api } from "../api";
 import { BrandIcon } from "@/components/BrandIcon";
 import { poll } from "@/lib/poll";
 import { notifyLocal } from "@/lib/notificationStore";
 import { instanceChoices, thisInstance, useRepos } from "../store";
 import { ago } from "../workstream";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -84,6 +86,8 @@ export function IntegrationsPage() {
   useEffect(() => poll(load, 15_000), []);
   useEffect(() => oauthReturn(), []);
   const reload = () => void load();
+  // Which integration cards are open: collapsed at first, kept while the page is open (a poll keeps it).
+  const [expanded, setExpanded] = useState<string[]>([]);
   return (
     <div className="max-w-4xl space-y-6" data-slot="integrations-page">
       <div className="flex items-center justify-between gap-3">
@@ -95,11 +99,11 @@ export function IntegrationsPage() {
       {data && (
         <>
           <PeopleCard data={data} onChange={reload} />
-          <div className="space-y-6" data-slot="integrations-list">
-            {data.integrations.length === 0
-              ? <VCard slot="integrations-empty"><Empty icon={<Plug className="size-5" />}>No integrations yet. Connect one of: {data.kinds.map((k) => k.label).join(", ")}.</Empty></VCard>
-              : data.integrations.map((c) => <IntegrationCardView key={c.id} card={c} data={data} onChange={reload} />)}
-          </div>
+          {data.integrations.length === 0
+            ? <div data-slot="integrations-list"><VCard slot="integrations-empty"><Empty icon={<Plug className="size-5" />}>No integrations yet. Connect one of: {data.kinds.map((k) => k.label).join(", ")}.</Empty></VCard></div>
+            : <Accordion type="multiple" value={expanded} onValueChange={setExpanded} className="space-y-3" data-slot="integrations-list">
+                {data.integrations.map((c) => <IntegrationCardView key={c.id} card={c} data={data} onChange={reload} />)}
+              </Accordion>}
           <SubscriptionsCard data={data} onChange={reload} />
           <DeadCard data={data} onChange={reload} />
         </>
@@ -197,7 +201,6 @@ function IntegrationCardView({ card: c, data, onChange }: { card: IntegrationCar
   const [test, setTest] = useState<{ busy?: boolean; ok?: boolean; detail?: string }>({});
   const [linkOpen, setLinkOpen] = useState<LinkRow | "new" | null>(null);
   const [editOpen, setEditOpen] = useState(false);
-  const [renameOpen, setRenameOpen] = useState(false);
   const runTest = async () => {
     setTest({ busy: true });
     const r = await act(`Test ${c.name}`, "test", { id: c.id }, onChange);
@@ -206,19 +209,24 @@ function IntegrationCardView({ card: c, data, onChange }: { card: IntegrationCar
   const tone = healthTone(c);
   const [ask, confirmNode] = useConfirm();
   const options = data.instanceOptions ?? [];
-  // Where it runs, in words: "Flow / orca-flow-box", or "Automatic · Flow / orca-flow-box" (its holder now).
-  const where = isAutomatic(c.instance) ? `Automatic${c.runsOn ? ` · ${instanceText(c.runsOn, options)}` : ""}` : instanceText(c.instance, options);
+  const health = healthLine(c, Date.now(), options);
   return (
-    <VCard slot="integration-card" title={
-      <span className="flex min-w-0 items-center gap-2">
+    // The header is the accordion's trigger: a click on it opens the config, links and settings.
+    // The name, the switch and the menu sit beside the trigger (an input can't be inside a button),
+    // and a click on the row's empty space toggles too.
+    <AccordionItem value={c.id} data-slot="integration-card" className="bg-card overflow-hidden rounded-lg border last:border-b">
+      <div data-slot="card-header" className="hover:bg-accent/40 flex min-h-12 cursor-pointer items-center gap-2 px-4 py-2"
+        onClick={(e) => { if (e.target === e.currentTarget || !(e.target as HTMLElement).closest("button, input, a, [role=switch], [role=menuitem]")) (e.currentTarget.querySelector<HTMLElement>('[data-slot="accordion-trigger"]'))?.click(); }}>
         <BrandIcon kind={c.kind} />
-        <span className="truncate">{c.name}</span>
-        <Tip label="Rename"><Button variant="ghost" size="icon" className="size-6" aria-label={`Rename ${c.name}`} data-slot="integration-rename-open" onClick={() => setRenameOpen(true)}><Pencil /></Button></Tip>
-        <Pill>{meta?.label ?? c.kind}</Pill>
-        <span className="max-sm:hidden" data-slot="integration-where"><Pill>{isAutomatic(c.instance) ? where : `on ${where}`}</Pill></span>
-      </span>
-    } aside={
-      <>
+        <InlineName card={c} onSaved={onChange} />
+        <div className="min-w-0 flex-1">
+          <AccordionTrigger className="min-h-8 min-w-0 gap-2 py-0 font-normal hover:no-underline" aria-label={`${c.name} details`}>
+            <span className="flex min-w-0 flex-1 items-center gap-2">
+              <StatusDot tone={tone} />
+              <span data-slot="integration-health-summary" className="text-muted-foreground truncate text-xs max-sm:hidden">{health}</span>
+            </span>
+          </AccordionTrigger>
+        </div>
         <Switch aria-label={`${c.name} connected`} checked={c.enabled} onCheckedChange={(on) => void act(on ? `Connect ${c.name}` : `Disconnect ${c.name}`, "enabled", { id: c.id, on }, onChange)} />
         <DropdownMenu>
           <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="size-8" aria-label={`${c.name} actions`}><MoreHorizontal /></Button></DropdownMenuTrigger>
@@ -228,38 +236,62 @@ function IntegrationCardView({ card: c, data, onChange }: { card: IntegrationCar
             <DropdownMenuItem className="text-geist-red" onSelect={() => ask(`Remove ${c.name}?`, "Its links and the subscriptions that post to them go too. Past events stay.", () => void act(`Remove ${c.name}`, "remove", { id: c.id }, onChange))}>Remove</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-      </>
-    } bodyClass="divide-y">
-      <div className="flex flex-col gap-2 px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex min-w-0 items-start gap-2.5">
-          <StatusDot tone={tone} className="mt-1.5" />
+      </div>
+      <AccordionContent className="divide-y border-t p-0">
+        <div className="flex flex-col gap-2 px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0">
-            <div data-slot="integration-health" className="break-words">{healthLine(c, Date.now(), options)}</div>
+            <div data-slot="integration-health" className="break-words">{health}</div>
             <div className="text-muted-foreground mt-0.5 flex flex-wrap items-center gap-x-2 text-xs">
               {c.secretRef
                 ? <span data-slot="secret-status"><span className="font-mono">{c.secretRef}</span> · {c.secretSet === undefined ? "not checked yet" : c.secretSet ? "set" : "not set"}</span>
                 : !meta?.oauth && <span>no secret</span>}
-              <span className="sm:hidden">· {isAutomatic(c.instance) ? where : `on ${where}`}</span>
               {c.running && <span>· running on this bridge</span>}
             </div>
           </div>
+          <div className="flex items-center gap-2 sm:shrink-0">
+            {test.ok !== undefined && <span data-slot="integration-test-result" className={test.ok ? "text-geist-green text-xs" : "text-geist-red text-xs"}>{test.ok ? "OK" : "Failed"}{test.detail ? ` · ${test.detail}` : ""}</span>}
+            <Button variant="secondary" size="sm" disabled={test.busy} onClick={() => void runTest()} className="max-sm:h-10 max-sm:flex-1">Test</Button>
+          </div>
         </div>
-        <div className="flex items-center gap-2 sm:shrink-0">
-          {test.ok !== undefined && <span data-slot="integration-test-result" className={test.ok ? "text-geist-green text-xs" : "text-geist-red text-xs"}>{test.ok ? "OK" : "Failed"}{test.detail ? ` · ${test.detail}` : ""}</span>}
-          <Button variant="secondary" size="sm" disabled={test.busy} onClick={() => void runTest()} className="max-sm:h-10 max-sm:flex-1">Test</Button>
-        </div>
-      </div>
-      <PolicyRow card={c} onChange={onChange} />
-      {meta?.oauth && <OAuthRow card={c} meta={meta.oauth} onChange={onChange} />}
-      {links.length === 0
-        ? <div className="text-muted-foreground flex items-center justify-between gap-2 px-4 py-3 text-xs">No {meta?.place ?? "link"}s linked. Orca listens only where a link says so.
-            <Button variant="ghost" size="sm" onClick={() => setLinkOpen("new")}><Plus />Add</Button></div>
-        : <ul data-slot="integration-links" className="divide-y">{links.map((l) => <LinkRowView key={l.id} link={l} events={c.events} onEdit={() => setLinkOpen(l)} onChange={onChange} />)}</ul>}
+        <PolicyRow card={c} onChange={onChange} />
+        {meta?.oauth && <OAuthRow card={c} meta={meta.oauth} onChange={onChange} />}
+        {links.length === 0
+          ? <div className="text-muted-foreground flex items-center justify-between gap-2 px-4 py-3 text-xs">No {meta?.place ?? "link"}s linked. Orca listens only where a link says so.
+              <Button variant="ghost" size="sm" onClick={() => setLinkOpen("new")}><Plus />Add</Button></div>
+          : <ul data-slot="integration-links" className="divide-y">{links.map((l) => <LinkRowView key={l.id} link={l} events={c.events} onEdit={() => setLinkOpen(l)} onChange={onChange} />)}</ul>}
+      </AccordionContent>
       {linkOpen && <LinkDialog integration={c} meta={meta} link={linkOpen === "new" ? undefined : linkOpen} onClose={() => setLinkOpen(null)} onSaved={onChange} />}
       {editOpen && <IntegrationDialog kinds={data.kinds} options={options} existing={c} onClose={() => setEditOpen(false)} onSaved={onChange} />}
-      {renameOpen && <RenameDialog card={c} onClose={() => setRenameOpen(false)} onSaved={onChange} />}
       {confirmNode}
-    </VCard>
+    </AccordionItem>
+  );
+}
+
+/** The card's name, edited in place (a Gmail account is named by its address at sign-in): a click
+ *  edits, Enter or a blur saves, Escape cancels. Only the name changes: the save carries the row's
+ *  other fields as they are. An empty name puts the old one back. */
+function InlineName({ card: c, onSaved }: { card: IntegrationCard; onSaved: () => void }) {
+  const [name, setName] = useState(c.name);
+  const [editing, setEditing] = useState(false);
+  const cancelled = useRef(false);
+  // A poll brings a new name (another tab renamed it): show it unless you are typing.
+  useEffect(() => { if (!editing) setName(c.name); }, [c.name, editing]);
+  const save = async () => {
+    setEditing(false);
+    if (cancelled.current) { cancelled.current = false; setName(c.name); return; }
+    const next = name.trim();
+    if (!next || next === c.name) { setName(c.name); return; }
+    const r = await act(`Rename ${c.name}`, "save", { id: c.id, kind: c.kind, name: next, instance: c.instance, secretRef: c.secretRef ?? "", config: c.config, enabled: c.enabled }, onSaved);
+    if (!r) setName(c.name);
+  };
+  return (
+    <Input data-slot="integration-rename" aria-label={`Rename ${c.name}`} value={name} spellCheck={false}
+      onFocus={() => setEditing(true)} onChange={(e) => setName(e.target.value)} onBlur={() => void save()}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); }
+        else if (e.key === "Escape") { e.preventDefault(); cancelled.current = true; e.currentTarget.blur(); }
+      }}
+      className="hover:border-input field-sizing-content h-7 w-auto max-w-[min(20rem,45vw)] min-w-12 shrink-0 truncate border-transparent bg-transparent px-1.5 text-sm font-medium shadow-none md:text-sm dark:bg-transparent" />
   );
 }
 
@@ -387,24 +419,6 @@ function ConnectButton({ kinds, options, onSaved }: { kinds: AdapterMeta[]; opti
       <Button size="sm" onClick={() => setOpen(true)} data-slot="integration-connect"><Plus />Connect</Button>
       {open && <IntegrationDialog kinds={kinds} options={options} onClose={() => setOpen(false)} onSaved={onSaved} />}
     </>
-  );
-}
-
-/** Rename an account on its card (a Gmail account is named by its address at sign-in). Only the name
- *  changes: the save carries the row's other fields as they are. */
-function RenameDialog({ card: c, onClose, onSaved }: { card: IntegrationCard; onClose: () => void; onSaved: () => void }) {
-  const [name, setName] = useState(c.name);
-  const [busy, setBusy] = useState(false);
-  const save = async () => {
-    setBusy(true);
-    const r = await act(`Rename ${c.name}`, "save", { id: c.id, kind: c.kind, name: name.trim(), instance: c.instance, secretRef: c.secretRef ?? "", config: c.config, enabled: c.enabled }, onSaved);
-    setBusy(false);
-    if (r) onClose();
-  };
-  return (
-    <FormDialog title={`Rename ${c.name}`} problem={name.trim() ? undefined : "name is required"} busy={busy} onSubmit={() => void save()} onClose={onClose}>
-      <Field label="Name" htmlFor="int-rename"><Input id="int-rename" data-slot="integration-rename" value={name} onChange={(e) => setName(e.target.value)} autoFocus /></Field>
-    </FormDialog>
   );
 }
 
