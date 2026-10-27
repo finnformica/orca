@@ -150,7 +150,7 @@ test("the rooms read finds both sides of a pair across chats, and a worker's bri
     "c-esc ask agent:assistant>agent:chief", "c-esc reply agent:chief>agent:assistant",
   ]);
   const chief = await roomMessages("@orca", "orchestrator");
-  expect(chief.map((m) => `${m.runId} ${m.kind}`)).toEqual(["c-esc ask", "c-esc reply", "a-ask ask", "a-ask reply"]);
+  expect(chief.map((m) => `${m.runId} ${m.kind}`)).toEqual(["a-ask ask", "a-ask reply", "c-esc ask", "c-esc reply"]);
   const worker = await roomMessages("orca", "feat/cache");
   expect(worker.map((m) => `${m.runId} ${m.kind} ${m.from}>${m.to}`)).toEqual([
     "w-brief brief agent:chief>worker:orca/feat/cache", "w-brief reply worker:orca/feat/cache>agent:chief",
