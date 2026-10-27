@@ -339,6 +339,14 @@ test("Q8: the box carries every composer's toolbar — the orchestrator's model 
   expect($('[data-slot="quick-ask-box"] [aria-label="Model"]')!.textContent).toContain("Sonnet");
 });
 
+/** Wait (in act) until `find` answers null: the send's reply, then the panel's re-read of its page and
+ *  queue. A fixed sleep raced the full suite's load (the bridge's answer is delayed on purpose). */
+async function untilGone(find: () => Element | null, ms = 3_000): Promise<void> {
+  const end = Date.now() + ms;
+  while (find() && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+  expect(find()).toBeNull();
+}
+
 test("Q10: an Ask shows in the orchestrator's panel AT ONCE — as sending, then queued behind a busy wake — and once only", async () => {
   // The bug: the panel (mounted once, kept mounted while closed) knew nothing of a quick-ask send,
   // and a message queued behind a busy wake publishes no event — so it appeared only when the wake ended.
@@ -361,8 +369,7 @@ test("Q10: an Ask shows in the orchestrator's panel AT ONCE — as sending, then
   expect(occurrences()).toBe(1);
   // The bridge queues it (the orchestrator is mid-wake) — no event is published for that.
   apiFake.queuedData.set("orchestrator", [{ id: 7, repo: "@orca", branch: "orchestrator", instruction: text, attachments: [], createdAt: 3 }]);
-  await act(async () => { await new Promise((r) => setTimeout(r, 150)); });
-  expect(panel().querySelector('[data-slot="chat-sending"]')).toBeNull();
+  await untilGone(() => panel().querySelector('[data-slot="chat-sending"]'));
   expect(panel().textContent).toContain("queued — sends when the current run finishes");
   expect(occurrences()).toBe(1); // reconciled, not duplicated
 });
@@ -379,8 +386,7 @@ test("Q11: the panel's own sends go through the same outbox — sending at once,
   expect(panel.querySelector('[data-slot="chat-sending"]')!.textContent).toContain("check the board");
   // The wake launched: its turn is recorded, running.
   apiFake.turnsData.set("@orca::orchestrator", [{ id: "run-2", provider: "claude", instruction: "check the board", prompt: "p", response: "" }]);
-  await act(async () => { await new Promise((r) => setTimeout(r, 120)); });
-  expect(panel.querySelector('[data-slot="chat-sending"]')).toBeNull();
+  await untilGone(() => panel.querySelector('[data-slot="chat-sending"]'));
   expect(panel.textContent!.split("check the board").length - 1).toBe(1);
   expect(apiFake.orchestratorMessages.map((m) => m.text)).toEqual(["check the board"]);
 });
