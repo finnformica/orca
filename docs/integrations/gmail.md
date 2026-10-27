@@ -191,6 +191,16 @@ The values are `googleOAuth` in the app config (`clientId`, `secretRef`, `redire
 `redirectOrigin` is a fixed `https://` origin for the redirect URI. Leave it empty to use the page's
 own origin.
 
+To publish the app, Google needs a public redirect domain. Use the public page in `site/` (see
+`site/README.md`). Its Worker sends the callback on to your Orca server with the same query.
+
+1. Deploy `site/` on your own domain. Set the Worker variable `ORCA_ORIGIN` to your Orca server's origin.
+2. Set `redirectOrigin` to the public origin, for example `https://orca.example.com`.
+3. Add `https://orca.example.com/api/integrations/oauth/google/callback` to the client's redirect URIs.
+
+Orca sends the public redirect URI to Google at sign-in and at the token exchange. The state check on
+your Orca server does not change.
+
 When the client is not set up on the server that answers the page, **Connect > Gmail** shows one line
 that says so, with a link to this guide. It shows no form.
 
