@@ -240,8 +240,9 @@ function IntegrationCardView({ card: c, data, onChange }: { card: IntegrationCar
       <AccordionContent className="divide-y border-t p-0">
         <div className="flex flex-col gap-2 px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0">
-            <div data-slot="integration-health" className="break-words">{health}</div>
-            <div className="text-muted-foreground mt-0.5 flex flex-wrap items-center gap-x-2 text-xs">
+            {/* The header shows the health from sm up; on a phone it shows here, in full. */}
+            <div data-slot="integration-health" className="break-words sm:hidden">{health}</div>
+            <div className="text-muted-foreground flex flex-wrap items-center gap-x-2 text-xs max-sm:mt-0.5">
               {c.secretRef
                 ? <span data-slot="secret-status"><span className="font-mono">{c.secretRef}</span> · {c.secretSet === undefined ? "not checked yet" : c.secretSet ? "set" : "not set"}</span>
                 : !meta?.oauth && <span>no secret</span>}
