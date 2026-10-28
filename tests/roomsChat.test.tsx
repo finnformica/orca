@@ -1,8 +1,8 @@
 // Agent rooms in the chat (docs/design/agent-rooms.md): agent-to-agent turns leave your chat; a pill
 // "N messages with <agent>" sits where they happened and opens the room IN THE SAME PANE, drawn by the
 // same transcript (ChatTurn) with each side named, read only (no composer, no Quote), with a Back
-// button. No `[from …]` wrapper shows anywhere. A worker chat tags each turn with its source and
-// keeps the person's words (a brief's origin) in their own lane.
+// button. No `[from …]` wrapper shows anywhere. A worker chat keeps every turn, a brief included,
+// and tags each with its source.
 import { afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -118,7 +118,7 @@ test("the Assistant's chat: a pill where the agents talked opens the room on the
   expect((await mount(assistantRow)).querySelector('[data-slot="room-unseen"]')).toBeNull();
 });
 
-test("a workstream's chat: the brief goes to the room, your words stay in your lane, and each turn has its source", async () => {
+test("a workstream's chat: the brief, Orca's runs and your words all stay in it, each named by its source", async () => {
   const origin = turnOrigin({ runId: "wake-1", messages: ["add a cache"], ids: [3], agent: "chief" });
   apiFake.turnsData.set("r::feat", [
     t("brief-1", "## Objective\nAdd a cache", 90_000, { origin, originMessages: [{ id: 3, at: NOW - 95_000, text: "add a cache" }] }),
@@ -130,24 +130,25 @@ test("a workstream's chat: the brief goes to the room, your words stay in your l
   const c = await mount({ repo: "r", hasRemote: false, branch: "feat", title: "Feat", prompt: "", lane: "LOCAL", worktreePath: "/wt/feat", agentProvider: "claude" });
 
   const log = c.querySelector('[data-slot="chat-log"]')!;
-  expect(runIds(log)).toEqual(["up-1", "you-1"]);
-  expect([...log.querySelectorAll('[data-slot="chat-turn"]')].map((e) => e.getAttribute("data-source"))).toEqual(["orca", "person"]);
-  // Orca's own turn names its sender; your own words are the only unnamed lane.
+  // The brief and the worker's reply to it are in the main chat again (#472 sent them to a room).
+  expect(runIds(log)).toEqual(["brief-1", "up-1", "you-1"]);
+  expect([...log.querySelectorAll('[data-slot="chat-turn"]')].map((e) => e.getAttribute("data-source"))).toEqual(["agent", "orca", "person"]);
+  // Each turn that is not yours names its sender; your own words are the only unnamed lane.
+  expect(log.querySelector('[data-run-id="brief-1"] [data-slot="chat-speaker"]')!.textContent).toContain("Chief of Staff");
+  expect(log.querySelector('[data-run-id="brief-1"] [data-slot="chat-reply"]')!.textContent).toContain("reply brief-1");
   expect(log.querySelector('[data-run-id="up-1"] [data-slot="chat-speaker"]')!.textContent).toBe("Orca · PR upkeep");
   expect(log.querySelector('[data-run-id="you-1"] [data-slot="chat-speaker"]')).toBeNull();
+  // The brief keeps who asked the orchestrator for it.
+  expect(log.querySelector('[data-run-id="brief-1"] [data-slot="turn-origin"]')).toBeTruthy();
   // A worker is not a named agent: its reply keeps the provider's name, no Agent pill.
   expect(log.querySelector('[data-run-id="you-1"] [data-slot="chat-reply-head"] [data-slot="agent-pill"]')).toBeNull();
-  // The words you said to the orchestrator, in your lane, above the pill to its room.
-  expect(log.querySelector('[data-slot="room-person-text"]')!.textContent).toBe("add a cache");
+  // The Chief of Staff's side of the report is still its room, behind a pill.
   const pill = log.querySelector('[data-slot="room-pill"]')!;
-  expect(pill.getAttribute("aria-label")).toBe("3 messages with Chief of Staff");
+  expect(pill.getAttribute("aria-label")).toBe("1 message with Chief of Staff");
 
   await click(pill);
   const room = c.querySelector('[data-slot="room-log"]')!;
-  expect(runIds(room)).toEqual(["brief-1", "wake-2"]);
-  expect([...room.querySelectorAll('[data-slot="chat-turn"]')].map((e) => e.getAttribute("data-source"))).toEqual(["agent", "worker"]);
-  // The brief keeps who asked the orchestrator for it; the report is the same folded block as anywhere.
-  expect(room.querySelector('[data-run-id="brief-1"] [data-slot="turn-origin"]')).toBeTruthy();
+  expect(runIds(room)).toEqual(["wake-2"]);
   expect(room.querySelector('[data-run-id="wake-2"] [data-slot="turn-reports"]')).toBeTruthy();
   // A report with no reply draws no reply.
   expect(room.querySelector('[data-run-id="wake-2"] [data-slot="chat-reply"]')).toBeNull();
