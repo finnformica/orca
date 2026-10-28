@@ -1841,6 +1841,8 @@ export type BoardRow = {
   instance?: string;
   /** Its `orca status` record. */
   status?: OrchStatus;
+  /** `workstream.hidden_until`: the card is out of the user's view, the agent still owns it. */
+  hiddenUntil?: number;
 };
 export function boardText(rows: BoardRow[]): string {
   if (!rows.length) return "(no workstreams)";
@@ -1856,9 +1858,72 @@ export function boardText(rows: BoardRow[]): string {
       ...(r.orchestrated ? ["yours"] : []),
       ...(r.worktreePath ? [r.worktreePath] : []),
       ...(r.status && orchStatusText(r.status) ? [`status: ${orchStatusText(r.status)}`] : []),
+      ...(hiddenNote(r.hiddenUntil) ? [hiddenNote(r.hiddenUntil)] : []),
       ...(r.last ? [`last: ${clip(r.last.replace(/\s+/g, " "), 160)}`] : []),
     ].join(" | ");
   }).join("\n");
+}
+
+// ---- hide and archive (a card out of the user's view; the work does not change) ----
+// ONE nullable column, `workstream.hidden_until` (ms). NULL or a past time = shown. A future time =
+// hidden until then (the timer: nothing has to fire, a read past the time sees it shown). The
+// sentinel HIDDEN_FOREVER = archived: hidden with no end, until Unarchive. A problem (a run report,
+// red CI, conflicts, new review feedback) clears a timed hide only, never an archive.
+
+/** 9999-12-31T00:00:00Z: `hidden_until` for an archived card. */
+export const HIDDEN_FOREVER = Date.UTC(9999, 11, 31);
+export type HiddenState = "shown" | "hidden" | "archived";
+export function hiddenState(until: number | null | undefined, now = Date.now()): HiddenState {
+  if (until === null || until === undefined || !Number.isFinite(until) || until <= now) return "shown";
+  return until >= HIDDEN_FOREVER ? "archived" : "hidden";
+}
+export const isHidden = (row: { hiddenUntil?: number | null }, now = Date.now()): boolean => hiddenState(row.hiddenUntil, now) !== "shown";
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** `orca hide --for`: `1d`, `1w` (any whole number of h, d or w), `forever`, or an ISO date or time
+ *  in the future. Returns the `hidden_until` value. Throws a message the model can act on. */
+export function parseHideFor(value: string, now = Date.now()): number {
+  const v = value.trim().toLowerCase();
+  if (v === "forever" || v === "archive") return HIDDEN_FOREVER;
+  const m = /^(\d+)\s*([hdw])$/.exec(v);
+  if (m) {
+    const n = Number(m[1]);
+    if (n < 1) throw new Error("--for needs at least 1 (1h, 1d, 1w)");
+    return now + n * (m[2] === "h" ? DAY_MS / 24 : m[2] === "d" ? DAY_MS : 7 * DAY_MS);
+  }
+  const t = /^\d{4}-\d{2}-\d{2}/.test(value.trim()) ? Date.parse(value.trim()) : NaN;
+  if (!Number.isFinite(t)) throw new Error(`--for must be 1d, 1w, <n>h|d|w, an ISO date (2026-11-03) or forever (got "${value}")`);
+  if (t <= now) throw new Error(`--for ${value} is in the past`);
+  return Math.min(t, HIDDEN_FOREVER);
+}
+
+/** How long is left, short: "3h", "2d". */
+function timeLeft(ms: number): string {
+  const h = Math.max(1, Math.ceil(ms / (DAY_MS / 24)));
+  return h < 48 ? `${h}h` : `${Math.round(h / 24)}d`;
+}
+/** The card's pill: "Archived", "Hidden · 2d left", or "" when shown. */
+export function hiddenLabel(until: number | null | undefined, now = Date.now()): string {
+  const s = hiddenState(until, now);
+  return s === "archived" ? "Archived" : s === "hidden" ? `Hidden · ${timeLeft(until! - now)} left` : "";
+}
+/** The `orca board` note: "hidden until 2026-10-29 14:00 UTC", "archived (hidden, no end)", or "". */
+export function hiddenNote(until: number | null | undefined, now = Date.now()): string {
+  const s = hiddenState(until, now);
+  if (s === "archived") return "archived (hidden from the user, no end)";
+  if (s === "hidden") return `hidden until ${new Date(until!).toISOString().slice(0, 16).replace("T", " ")} UTC`;
+  return "";
+}
+
+/** The notification kinds that bring a hidden card back early: a worker report and the PR problems. */
+export const HIDE_REVIVE_KINDS: readonly string[] = ["finished", "failed", "needs_input", "check_failed", "pr_ci_failed", "pr_conflicts"];
+
+/** New review feedback on a hidden PR (gh's `externalFeedback`, the human comment + review count)
+ *  against the count when it was hidden. `baseline` is absent until the first look: record it then.
+ *  "revive" when the count went up, "baseline" to record it, undefined for no change. */
+export function hideFeedbackStep(baseline: number | undefined, feedback: number): "revive" | "baseline" | undefined {
+  if (baseline === undefined) return "baseline";
+  return feedback > baseline ? "revive" : undefined;
 }
 
 // The `orca` command reference. In EVERY wake (not just the role text a session sees once): a
@@ -1888,7 +1953,12 @@ const ORCA_COMMANDS = [
   "                                  for PRs it opens and on later runs; call it after you open one with gh pr create",
   "  orca move --repo <repo> --branch <branch> --to <instance>  move its worktree to another instance (not while it runs)",
   "  orca archive --repo <repo> --branch <branch>              cancel a workstream you spawned or sent to: stop its agent,",
-  "                                  drop anything queued for it, archive the card. Refuses one you don't own.",
+  "                                  drop anything queued for it, close the card (the UI calls this Close). Refuses one you don't own.",
+  "  orca hide --repo <repo> --branch <branch> --for 1d|1w|<ISO date>|forever   take the card out of the user's view",
+  "                                  until then (forever = archive). Nothing else changes: agent, branch, PR, queue.",
+  "                                  A run report, red CI, conflicts or new review feedback brings a timed hide back.",
+  "                                  The board still lists it, marked hidden; keep up its PR as usual",
+  "  orca unhide --repo <repo> --branch <branch>              show a hidden or archived card again",
   "  orca stop --repo <repo> --branch <branch> [--drop-queue]  stop the running agent and keep everything — the",
   "                                  worktree, commits, queued messages and session — so a later `orca send` resumes",
   "                                  the same conversation. Use when the user says stop or a run goes the wrong way.",
@@ -2582,6 +2652,7 @@ export type OverviewRow = {
   prHead?: string; failingChecks?: string[];
   cleanupBlocked?: { why?: string; at?: string };
   browserKilled?: BrowserKillRecord;
+  hiddenUntil?: number;
 };
 
 export type Attention = "check failed" | "agent error" | "run stopped" | "CI failing" | "conflicts" | "changes requested" | "message held";
@@ -3717,11 +3788,12 @@ export type QuickFilter = {
   on: string[];
   repo: string[];
   notMerged: boolean; // default ON: hide merged workstreams unless the "merged" pr chip asks for them
+  hidden: boolean; // "Hidden / Archived": default OFF, hidden cards are left out; ON lists only them
 };
-export type QuickGroup = Exclude<keyof QuickFilter, "notMerged">;
+export type QuickGroup = Exclude<keyof QuickFilter, "notMerged" | "hidden">;
 // The identity element for the URL round-trip: a plain `/agents` has no query, so parsing "" must
 // produce exactly this — which is why notMerged defaults true here, not false.
-export const NO_QUICK_FILTER: QuickFilter = { status: [], pr: [], by: [], on: [], repo: [], notMerged: true };
+export const NO_QUICK_FILTER: QuickFilter = { status: [], pr: [], by: [], on: [], repo: [], notMerged: true, hidden: false };
 export const QUICK_GROUPS: QuickGroup[] = ["status", "pr", "by", "on", "repo"];
 const QUICK_VALUES: Partial<Record<QuickGroup, readonly string[]>> = {
   status: ["attention", "running"], pr: ["open", "verified", "mergeable", "merged", "week"], by: ["mine", "orchestrated"],
@@ -3752,13 +3824,14 @@ export function mergedThisWeek(row: { lane: string; mergedAt?: string }, now = D
  *  default (true), so a bare URL still means "not merged" is on. */
 export function parseQuickFilter(search: string): QuickFilter {
   const params = new URLSearchParams(search);
-  const out: QuickFilter = { status: [], pr: [], by: [], on: [], repo: [], notMerged: true };
+  const out: QuickFilter = { status: [], pr: [], by: [], on: [], repo: [], notMerged: true, hidden: false };
   for (const g of QUICK_GROUPS) {
     const values = [...new Set((params.get(g) ?? "").split(",").map((v) => v.trim()).filter(Boolean))];
     const allowed = QUICK_VALUES[g];
     (out[g] as string[]) = allowed ? values.filter((v) => allowed.includes(v)) : values;
   }
   if (params.has("notMerged")) out.notMerged = params.get("notMerged") !== "0";
+  out.hidden = params.get("hidden") === "1";
   return out;
 }
 
@@ -3766,6 +3839,7 @@ export function parseQuickFilter(search: string): QuickFilter {
 export function quickFilterQuery(f: QuickFilter): string {
   const parts = QUICK_GROUPS.filter((g) => f[g].length).map((g) => `${g}=${f[g].map(encodeURIComponent).join(",")}`);
   if (!f.notMerged) parts.push("notMerged=0"); // only carried when it differs from the default (on)
+  if (f.hidden) parts.push("hidden=1");
   return parts.length ? `?${parts.join("&")}` : "";
 }
 
@@ -3783,6 +3857,11 @@ export function dropStaleRepos(f: QuickFilter, repoNames: readonly string[]): Qu
 export function toggleQuick(f: QuickFilter, group: QuickGroup, value: string): QuickFilter {
   const has = (f[group] as string[]).includes(value);
   return { ...f, [group]: has ? (f[group] as string[]).filter((v) => v !== value) : [...(f[group] as string[]), value] };
+}
+
+/** Flip the "Hidden / Archived" toggle. */
+export function toggleHidden(f: QuickFilter): QuickFilter {
+  return { ...f, hidden: !f.hidden };
 }
 
 /** Flip the "Not merged" toggle. */
@@ -3807,9 +3886,10 @@ function matchesChip(row: OverviewRow, group: QuickGroup, value: string, here: s
 // other pr values and exactly what's needed for "merged"'s own count. `skip === "notMerged"` (from
 // notMergedCount) suspends it too, for the same reason `quickCount` skips a chip's OWN group: the
 // count must not depend on whether the toggle it's labelling happens to be on or off right now.
-type PassesSkip = QuickGroup | "notMerged";
+type PassesSkip = QuickGroup | "notMerged" | "hidden";
 const asksForMerged = (f: QuickFilter) => f.pr.includes("merged") || f.pr.includes("week");
 const passes = (row: OverviewRow, f: QuickFilter, here: string | undefined, now: number, skip?: PassesSkip) => {
+  if (skip !== "hidden" && f.hidden !== isHidden(row, now)) return false; // off: leave hidden out; on: only hidden
   if (skip !== "pr" && skip !== "notMerged" && f.notMerged && !asksForMerged(f) && row.lane === "DONE") return false;
   return QUICK_GROUPS.every((g) => g === skip || !f[g].length || (f[g] as string[]).some((v) => matchesChip(row, g, v, here, now)));
 };
@@ -3833,18 +3913,23 @@ export function notMergedCount(rows: OverviewRow[], f: QuickFilter, here?: strin
   return rows.filter((r) => passes(r, f, here, now, "notMerged") && r.lane !== "DONE").length;
 }
 
-export const quickActive = (f: QuickFilter): boolean => QUICK_GROUPS.some((g) => f[g].length > 0) || !f.notMerged;
+/** The "Hidden / Archived" chip's count: hidden or archived rows that pass every other choice. */
+export function hiddenCount(rows: OverviewRow[], f: QuickFilter, here?: string, now = Date.now()): number {
+  return rows.filter((r) => passes(r, f, here, now, "hidden") && isHidden(r, now)).length;
+}
+
+export const quickActive = (f: QuickFilter): boolean => QUICK_GROUPS.some((g) => f[g].length > 0) || !f.notMerged || f.hidden;
 
 /** How many choices a filter dropdown has on — its trigger's count. The State dropdown also counts
  *  "Not merged" when it is OFF, since on is the default; the same rule as the phone's Filters badge. */
 export function quickGroupActive(f: QuickFilter, group: QuickGroup): number {
-  return f[group].length + (group === "pr" && !f.notMerged ? 1 : 0);
+  return f[group].length + (group === "pr" && !f.notMerged ? 1 : 0) + (group === "pr" && f.hidden ? 1 : 0);
 }
 
 /** A filter dropdown's Clear: that group's choices off ("Not merged" back to its default, on, for the
  *  State dropdown); the other groups keep theirs. */
 export function clearQuickGroup(f: QuickFilter, group: QuickGroup): QuickFilter {
-  return { ...f, [group]: [], ...(group === "pr" ? { notMerged: true } : {}) };
+  return { ...f, [group]: [], ...(group === "pr" ? { notMerged: true, hidden: false } : {}) };
 }
 
 // ---- the Agents list's columns ----

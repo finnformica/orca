@@ -11,7 +11,7 @@ import * as store from "@/store";
 import * as centre from "@/lib/notificationStore";
 import { orchestratorOpenAtom, orchestratorPrefillAtom } from "@/lib/atoms";
 import { WorkstreamActions } from "@/views/WorkstreamActions";
-import { failingCiUrl, orchestratorAbout, prMarkdownLink, workstreamMenu, type MenuRow } from "@/workstream";
+import { HIDDEN_FOREVER, failingCiUrl, orchestratorAbout, prMarkdownLink, workstreamMenu, type MenuRow } from "@/workstream";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -147,14 +147,14 @@ const prRow: store.Row = {
 describe("WorkstreamActions: the redesigned menu", () => {
   test("top level in Finn's order; Follow up…, Follow PR and Hand off… are gone", async () => {
     await mount(prRow);
-    expect(labels()).toEqual(["Open", "Copy", "Merge", "PR", "Agent", "Slack", "Mark verified", "Rename…", "Close PR"]);
+    expect(labels()).toEqual(["Open", "Copy", "Merge", "PR", "Agent", "Slack", "Mark verified", "Rename…", "Hide", "Archive", "Close PR"]);
     for (const gone of ["Follow up…", "Follow PR (auto-fix)", "Hand off…", "Merge when green"]) expect(labels()).not.toContain(gone);
     expect(menuitem("Close PR")!.className).toContain("text-destructive");
   });
 
   test("a local branch: no Merge, auto-merge or Slack; PR ▸ Create PR / Create draft PR; Discard last", async () => {
     await mount({ ...prRow, lane: "LOCAL", prNumber: undefined, prUrl: undefined, mergeable: undefined, ciStatus: undefined });
-    expect(labels()).toEqual(["Open", "Copy", "PR", "Agent", "Rename…", "Discard"]); // Verified needs a PR
+    expect(labels()).toEqual(["Open", "Copy", "PR", "Agent", "Rename…", "Hide", "Archive", "Discard"]); // Verified needs a PR
     await openSub("PR");
     expect(menuitem("Create PR")).not.toBeUndefined();
     expect(menuitem("Create draft PR")).not.toBeUndefined();
@@ -262,6 +262,30 @@ describe("WorkstreamActions: the redesigned menu", () => {
     expect(labels()).toEqual(expect.arrayContaining(["Stop agent", "Move to cloud"]));
     await click(menuitem("Stop agent")!);
     expect(apiFake.stopped).toEqual(["/wt/feat"]);
+  });
+
+  test("Hide ▸ 1 day / 1 week / Until a date…, Archive; a hidden card offers Unhide / Unarchive instead", async () => {
+    await mount(prRow);
+    await openSub("Hide");
+    expect(labels()).toEqual(expect.arrayContaining(["For 1 day", "For 1 week", "Until a date…"]));
+    const before = Date.now();
+    await click(menuitem("For 1 day")!);
+    const day = apiFake.hideCalls[0]!;
+    expect(day).toMatchObject({ repo: "r", branch: "feat" });
+    expect(day.until! - before).toBeGreaterThanOrEqual(24 * 3_600_000 - 1000);
+    expect(day.until! - before).toBeLessThan(24 * 3_600_000 + 5000);
+    await reopen();
+    await click(menuitem("Archive")!);
+    expect(apiFake.hideCalls[1]).toEqual({ repo: "r", branch: "feat", until: HIDDEN_FOREVER });
+
+    act(() => root!.render(<WorkstreamActions row={{ ...prRow, hiddenUntil: HIDDEN_FOREVER }} />));
+    await reopen();
+    expect(labels()).not.toContain("Hide");
+    await click(menuitem("Unarchive")!);
+    expect(apiFake.hideCalls[2]).toEqual({ repo: "r", branch: "feat", until: null });
+    act(() => root!.render(<WorkstreamActions row={{ ...prRow, hiddenUntil: Date.now() + 3_600_000 }} />));
+    await reopen();
+    expect(menuitem("Unhide")).not.toBeUndefined();
   });
 
   test("PR ▸ and Slack ▸ keep their verbs", async () => {

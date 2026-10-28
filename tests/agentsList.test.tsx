@@ -331,7 +331,7 @@ describe("agents list view", () => {
     // Finn's order: the submenus, then Verified, Rename… and Close PR last (no Agent ▸: nothing
     // applies). feat-ci's CI is failing, so Merge now is hidden and the Merge submenu does not show;
     // Enable auto-merge is in PR ▸, not at the top level.
-    expect(dots).toEqual(["Open", "Copy", "PR", "Slack", "Mark verified", "Rename…", "Close PR"]);
+    expect(dots).toEqual(["Open", "Copy", "PR", "Slack", "Mark verified", "Rename…", "Hide", "Archive", "Close PR"]);
     await key(document.body.querySelector('[role="menu"]')!, "Escape");
     expect(document.body.querySelector('[role="menu"]')).toBeNull();
 

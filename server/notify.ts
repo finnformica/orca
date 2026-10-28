@@ -8,7 +8,7 @@ import * as db from "./db";
 import * as bus from "./bus";
 import * as preview from "./preview";
 import type { RunFinished } from "./agent";
-import { ORCHESTRATOR_REPO } from "../web/src/workstream";
+import { HIDE_REVIVE_KINDS, hideFeedbackStep, hiddenState, ORCHESTRATOR_REPO } from "../web/src/workstream";
 import * as router from "./integrations/router";
 import { notificationEnvelope } from "../shared/integrations";
 import { checkNotification, prNotifications, previewNotification, runNotification, seenMergedNotifications, type Notification, type NotificationInput } from "../shared/notifications";
@@ -26,6 +26,8 @@ export async function emit(input: NotificationInput): Promise<Notification | und
   // The same event as a durable, keyed envelope (server/integrations/, phase 0), with the same key, so
   // subscriptions decide who else hears it. Only for a NEW row: a repeat (the PR list re-answering)
   // costs no queries. Never breaks the notification.
+  // A problem brings a hidden card back early (an archive stays). A NEW row only: a repeat is old news.
+  if (n && input.branch && HIDE_REVIVE_KINDS.includes(input.kind)) await db.reviveHidden(input.repo, input.branch).catch(db.logUnlessDown("orca: unhide on a problem failed"));
   const envelope = n && notificationEnvelope(input, n.createdAt);
   if (envelope) await router.publish(envelope).catch((e) => console.error("orca: integration event write failed", e));
   return n;
@@ -69,6 +71,20 @@ export async function stopped(runId: string): Promise<void> {
  *  answer to /api/prs by the instance that answered it; keyed, so two answering is still one row. */
 export async function prs(repo: string, list: Parameters<typeof prNotifications>[1]): Promise<void> {
   for (const n of prNotifications(repo, list)) await emit(n);
+}
+
+/** New review feedback on a hidden PR brings its card back: gh's `externalFeedback` (human comments
+ *  and reviews) against the count at the first look after the hide (`hiddenFeedback` in its blob).
+ *  Called with the answer to /api/prs, like `prs`. */
+export async function hiddenFeedback(repo: string, list: { branch: string; externalFeedback?: number }[], now = Date.now()): Promise<void> {
+  const ench = await db.enrichment(repo);
+  for (const pr of list) {
+    const e = ench[pr.branch];
+    if (!e || typeof pr.externalFeedback !== "number" || hiddenState(e.hiddenUntil as number | undefined, now) !== "hidden") continue;
+    const step = hideFeedbackStep(e.hiddenFeedback as number | undefined, pr.externalFeedback);
+    if (step === "baseline") await db.patchEnrichment(repo, pr.branch, { hiddenFeedback: pr.externalFeedback });
+    else if (step === "revive") await db.reviveHidden(repo, pr.branch, now);
+  }
 }
 
 /** Keys this process already wrote from the poller, so a pass every few seconds costs no query for a

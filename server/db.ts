@@ -34,6 +34,7 @@ import * as bus from "./bus";
 import { seedAgentsSql } from "./agentSeed";
 import { chatOwner, turnRoute, type Side, type TurnRoute } from "../shared/rooms";
 import type { Notification, NotificationInput } from "../shared/notifications";
+import { HIDDEN_FOREVER } from "../web/src/workstream";
 
 export type TurnStatus = "running" | "done" | "error" | "stopped";
 
@@ -1243,6 +1244,13 @@ export const MIGRATIONS: MigrationStep[] = [
     // Assistant; it names it now, because no agent now means the default agent.
     sql: seedAgentsSql(),
   },
+  {
+    name: "20261028-workstream-hidden-until",
+    idempotent: true,
+    // Hide and archive a card (web/src/workstream.ts `hiddenState`): ms until it shows again, NULL =
+    // shown, HIDDEN_FOREVER = archived. Not `archived_at`, which ends the workstream (Close).
+    sql: `ALTER TABLE workstream ADD COLUMN IF NOT EXISTS hidden_until BIGINT;`,
+  },
 ];
 
 export type MigrationMismatch = { id: number; recorded: string; expected: string; idempotent: boolean };
@@ -1452,10 +1460,13 @@ export type Fields = Record<string, unknown>;
 export async function enrichment(repo: string): Promise<Record<string, Fields>> {
   return withRetry(async (sql) => {
     const rows = await sql`
-      SELECT branch, data FROM workstream
+      SELECT branch, data, hidden_until FROM workstream
       WHERE user_id = ${currentUser()} AND repo = ${repo} AND archived_at IS NULL AND branch IS NOT NULL`;
     const out: Record<string, Fields> = {};
-    for (const r of rows as { branch: string; data: Fields }[]) out[r.branch] = r.data ?? {};
+    // `hiddenUntil` is the column, read in like a field so the board's one enrichment read carries it.
+    for (const r of rows as { branch: string; data: Fields; hidden_until: unknown }[]) {
+      out[r.branch] = r.hidden_until === null || r.hidden_until === undefined ? (r.data ?? {}) : { ...r.data, hiddenUntil: Number(r.hidden_until) };
+    }
     return out;
   });
 }
@@ -1469,9 +1480,33 @@ export async function patchEnrichment(repo: string, branch: string, fields: Fiel
     const rows = await sql`SELECT data FROM workstream WHERE id = ${id}`;
     const current: Fields = (rows[0]?.data as Fields) ?? {};
     for (const [k, v] of Object.entries(fields)) {
+      if (k === "hiddenUntil") continue; // the column's, written only by setHidden
       if (v === undefined || v === null) delete current[k]; else current[k] = v;
     }
     await sql`UPDATE workstream SET data = ${current} WHERE id = ${id}`;
+  });
+}
+
+/** Hide a card until `until` (ms; HIDDEN_FOREVER = archive), or show it again (null). Creates the
+ *  workstream row when absent, so a PR Orca never touched can be hidden too. Drops the review
+ *  feedback baseline (`hiddenFeedback`), so the next look at the PR records a new one. */
+export async function setHidden(repo: string, branch: string, until: number | null): Promise<void> {
+  return withRetry(async (sql) => {
+    const id = await workstreamId(repo, branch);
+    await sql`UPDATE workstream SET hidden_until = ${until}, data = COALESCE(data, '{}'::jsonb) - 'hiddenFeedback' WHERE id = ${id}`;
+  });
+}
+
+/** A problem on a hidden card: show it again. Only a TIMED hide that has not run out; an archive
+ *  stays (it ends only by Unarchive). True when it cleared one. */
+export async function reviveHidden(repo: string, branch: string, now = Date.now()): Promise<boolean> {
+  return withRetry(async (sql) => {
+    const rows = await sql`
+      UPDATE workstream SET hidden_until = NULL, data = COALESCE(data, '{}'::jsonb) - 'hiddenFeedback'
+      WHERE user_id = ${currentUser()} AND repo = ${repo} AND branch = ${branch} AND archived_at IS NULL
+        AND hidden_until > ${now} AND hidden_until < ${HIDDEN_FOREVER}
+      RETURNING id`;
+    return rows.length > 0;
   });
 }
 

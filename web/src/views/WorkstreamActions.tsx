@@ -1,15 +1,15 @@
 import { createPortal } from "react-dom";
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import {
-  ArrowRightLeft, BellRing, Bot, Check, CheckCheck, ChevronDown, CircleX, ExternalLink, FolderOpen, GitBranch, GitMerge, GitPullRequestArrow, GitPullRequestDraft, Globe,
+  Archive, ArchiveRestore, ArrowRightLeft, BellRing, CalendarClock, Eye, EyeOff, Bot, Check, CheckCheck, ChevronDown, CircleX, ExternalLink, FolderOpen, GitBranch, GitMerge, GitPullRequestArrow, GitPullRequestDraft, Globe,
   Link, Loader2, MessageSquare, MessageSquarePlus, MoreVertical, Pencil, Send, ShieldCheck, ShieldOff, Sparkles, Square, SquareTerminal, Tag, Trash2, Wrench, X, XCircle, Zap, type LucideIcon,
 } from "lucide-react";
 import {
   addPreviewLabel, addressPr, autoMerge, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, followUp, instanceChoices, markReady, moveWorkstream, previewConfigured, thisInstance,
-  cliCommand, disableAutoMerge, merge, modelFor, promote, rename, resolveConflicts, sendSlack, setCardModel, setVerified, slackChannel, staleHours, stopAgent, suggestTitle, useCachedReviewDigest, useRepos, useReviewDigest, writeSlackClipboard, type Row,
+  cliCommand, disableAutoMerge, merge, modelFor, promote, rename, resolveConflicts, sendSlack, setCardModel, setHidden, setVerified, slackChannel, staleHours, stopAgent, suggestTitle, useCachedReviewDigest, useRepos, useReviewDigest, writeSlackClipboard, type Row,
 } from "../store";
 import {
-  detailPath, failingCiUrl, firstLine, mergeSafe, orchestratorAbout, prMarkdownLink, quickActions, reviewProblems, shouldBump, slackClipboard, verifiedState, workstreamMenu, type MenuItemId, type QuickActionId,
+  HIDDEN_FOREVER, detailPath, failingCiUrl, firstLine, hiddenState, mergeSafe, orchestratorAbout, prMarkdownLink, quickActions, reviewProblems, shouldBump, slackClipboard, verifiedState, workstreamMenu, type MenuItemId, type QuickActionId,
 } from "../workstream";
 import { canVerify } from "./VerifiedButton";
 import { reviewSig } from "./Review";
@@ -27,6 +27,7 @@ import { useNarrow } from "@/lib/viewport";
 import { navigate } from "@/lib/route";
 import { openOrchestrator } from "@/lib/orchestratorOpen";
 import { Input } from "@/components/ui/input";
+import { Calendar } from "@/components/ui/calendar";
 import {
   DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
   DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger,
@@ -138,6 +139,7 @@ export function WorkstreamActions({ row, hasWork = true, compact = false, leadin
   // Reopen the follow-up box on reload if a draft was left in progress, so nothing typed is lost.
   const [composing, setComposing] = useState(() => showFollowUp && hasDraft(followUpDraftKey(row)));
   const [renaming, setRenaming] = useState(false);
+  const [hidingUntil, setHidingUntil] = useState(false);
   // The follow-up submit is optimistic — the box closes instantly while the launch (ensureWorktree +
   // upload + claude) runs for a few seconds. Show a spinner on the Follow up button meanwhile, so the
   // work isn't invisible.
@@ -197,6 +199,7 @@ export function WorkstreamActions({ row, hasWork = true, compact = false, leadin
       {compact ? (!err && <MoreVertical className="size-4" />) : <>Actions <ChevronDown className="size-3.5" /></>}
     </Button>
   );
+  const hidden = hiddenState(row.hiddenUntil);
   const menu = workstreamMenu(row, { previewConfigured: previewConfigured(row.repo), moveTargets: moveTargets.length });
   const has = (id: MenuItemId) => Object.values(menu).some((ids) => ids.includes(id));
   const chatPath = detailPath(row);
@@ -281,6 +284,24 @@ export function WorkstreamActions({ row, hasWork = true, compact = false, leadin
       {/* Rename — fix a broken/auto title. AI suggests a name (editable); a PR renames on GitHub. */}
       <Item icon={Pencil} onSelect={() => setRenaming(true)}>Rename…</Item>
 
+      {/* Hide ▸ and Archive: the card leaves the main view, the work does not change (workstream.ts
+          hiddenState). A hidden or archived card offers Unhide / Unarchive instead. */}
+      <Sep />
+      {hidden === "shown" ? (
+        <>
+          <Sub label="Hide">
+            <Item icon={EyeOff} busy={isBusy("Hide")} onSelect={run("Hide", () => setHidden(row, Date.now() + DAY_MS))}>For 1 day</Item>
+            <Item icon={EyeOff} busy={isBusy("Hide")} onSelect={run("Hide", () => setHidden(row, Date.now() + 7 * DAY_MS))}>For 1 week</Item>
+            <Item icon={CalendarClock} onSelect={() => setHidingUntil(true)}>Until a date…</Item>
+          </Sub>
+          <Item icon={Archive} busy={isBusy("Archive")} onSelect={run("Archive", () => setHidden(row, HIDDEN_FOREVER))}>Archive</Item>
+        </>
+      ) : (
+        <Item icon={hidden === "archived" ? ArchiveRestore : Eye} busy={isBusy("Unhide")} onSelect={run("Unhide", () => setHidden(row, null))}>
+          {hidden === "archived" ? "Unarchive" : "Unhide"}
+        </Item>
+      )}
+
       {/* Close/Discard — Close PR abandons an open PR (+cleanup); Discard only for pre-PR locals */}
       <Sep />
       {isPr ? (
@@ -356,6 +377,7 @@ export function WorkstreamActions({ row, hasWork = true, compact = false, leadin
         )}
       </div>
       <RenameDialog row={row} open={renaming} onClose={() => setRenaming(false)} />
+      <HideUntilDialog row={row} open={hidingUntil} onClose={() => setHidingUntil(false)} onFail={(e) => fail("Hide", e)} />
       {composing && (
         <FollowUpComposer
           row={row}
@@ -429,6 +451,42 @@ export function RenameDialog({ row, open, onClose }: { row: Row; open: boolean; 
               {busy === "save" && <Loader2 className="size-4 animate-spin" />} Save
             </Button>
           </div>
+        </div>
+      </form>
+    </dialog>
+  );
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Hide ▸ Until a date…: shadcn's Calendar inline (a popover would portal outside the modal dialog).
+// The card comes back at the start of the picked day, local time.
+function HideUntilDialog({ row, open, onClose, onFail }: { row: Row; open: boolean; onClose: () => void; onFail: (e: unknown) => void }) {
+  const ref = useRef<HTMLDialogElement>(null);
+  const [day, setDay] = useState<Date | undefined>();
+  useEffect(() => {
+    const d = ref.current;
+    if (!d) return;
+    if (open && !d.open) { setDay(undefined); d.showModal(); }
+    else if (!open && d.open) d.close();
+  }, [open]);
+  const tomorrow = new Date(); tomorrow.setHours(0, 0, 0, 0); tomorrow.setDate(tomorrow.getDate() + 1);
+  const save = () => {
+    if (!day) return;
+    onClose();
+    setHidden(row, day.getTime()).catch(onFail);
+  };
+  return (
+    <dialog ref={ref} onClose={onClose} onCancel={onClose} data-slot="hide-until-dialog"
+      onClick={(e) => { if (e.target === ref.current) onClose(); }}
+      className="bg-card text-foreground m-auto w-fit max-w-[90vw] rounded-lg border p-0 shadow-modal backdrop:bg-black/50">
+      <form className="flex flex-col gap-3 p-4" onSubmit={(e) => { e.preventDefault(); save(); }}>
+        <div className="text-sm font-medium">Hide until</div>
+        <p className="text-muted-foreground max-w-64 text-xs">The card comes back on this day, or sooner when its agent reports or its PR has a problem.</p>
+        <Calendar mode="single" selected={day} onSelect={setDay} disabled={{ before: tomorrow }} />
+        <div className="flex justify-end gap-2">
+          <Button type="button" size="sm" variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button type="submit" size="sm" disabled={!day}>Hide</Button>
         </div>
       </form>
     </dialog>

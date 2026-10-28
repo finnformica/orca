@@ -238,6 +238,9 @@ export const api = {
   enrichment: (repo: string): Promise<Record<string, Record<string, unknown>>> => get(`/api/enrichment${q(repo)}`).then(res),
   patchEnrichment: (repo: string, branch: string, fields: Record<string, unknown>): Promise<{ ok: true }> =>
     post("/api/enrichment", { repo, branch, fields }),
+  // Hide a card until `until` (ms; HIDDEN_FOREVER = archive), or show it again (null).
+  hideWorkstream: (repo: string, branch: string, until: number | null): Promise<{ ok: true }> =>
+    post("/api/workstreams/hide", { repo, branch, until }),
   importEnrichment: (entries: { repo: string; branch: string; fields: Record<string, unknown> }[]): Promise<{ imported: number }> =>
     post("/api/enrichment/import", { entries }),
   turns: (repo: string, branch: string): Promise<AgentTurn[]> =>
