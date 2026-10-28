@@ -84,7 +84,7 @@ describe("the API", () => {
     await memory.write({ owner: "shared", title: "Sam's merge day", body: "Merges on Friday." }, outside);
     const all = await call("GET", "/api/memory");
     expect((all.data.memories as Memory[]).map((m) => m.title)).toEqual(["Sam's merge day", "Deploy window"]);
-    expect(all.data.owners).toEqual(["chief", "assistant", "shared"]); // every agent, then shared
+    expect(all.data.owners).toEqual(["chief", "assistant", "research", "shared"]); // every agent (the seed's three), then shared
     expect(all.data.today).toEqual({ chief: 2 });
     expect(((await call("GET", "/api/memory?q=deploy")).data.memories as Memory[]).map((m) => m.title)).toEqual(["Deploy window"]);
     expect(((await call("GET", "/api/memory?trust=untrusted")).data.memories as Memory[]).map((m) => m.title)).toEqual(["Sam's merge day"]);

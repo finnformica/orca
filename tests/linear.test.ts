@@ -178,12 +178,12 @@ describe("with Postgres", () => {
     expect(await store.event("linear:linear:comment:c2")).toBeUndefined(); // my own (and Orca's) comment
     expect(await store.event("linear:linear:comment:c3")).toBeUndefined(); // OPS has no link: rejected
     expect(await store.cursor("linear")).toBe("2026-10-17T12:00:00.000Z");
-    // Every Linear event is a message: the inbound default takes it to the link's agent (the Assistant), no subscription,
+    // Every Linear event is a message: the inbound default takes it to the default agent (the link names none), no subscription,
     // and the link's Notify me shows it to you (web).
     const targets = (await store.deliveries()).map((d) => `${d.envelope.key}>${d.target.kind}`).sort();
     expect(targets).toEqual([
-      "linear:linear:comment:c1>agent", "linear:linear:comment:c1>web", "linear:linear:issue:1:assigned>agent",
-      "linear:linear:issue:1:assigned>web", "linear:linear:issue:2:mention>agent", "linear:linear:issue:2:mention>web",
+      "linear:linear:comment:c1>orchestrator", "linear:linear:comment:c1>web", "linear:linear:issue:1:assigned>orchestrator",
+      "linear:linear:issue:1:assigned>web", "linear:linear:issue:2:mention>orchestrator", "linear:linear:issue:2:mention>web",
     ]);
     const next = calls.filter((c) => c.op === "OrcaIssues").at(-1)!;
     expect(next.variables.filter.updatedAt).toEqual({ gt: "2026-10-17T12:00:00.000Z" });

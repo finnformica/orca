@@ -52,7 +52,7 @@ describe("link switches: Notify me and Notify agent", () => {
     const ev = (await store.event("slack:e1"))!;
     expect(ev.grant).toEqual({ level: "notify", repos: [], linkId: "all" });
     expect(ev.notify).toEqual({ me: true, agent: true });
-    expect(await targets("slack:e1")).toEqual(["agent", "web"]); // the link's agent: the Assistant by default
+    expect(await targets("slack:e1")).toEqual(["orchestrator", "web"]); // no link agent: the default agent (an `orchestrator` target)
     expect(inboxRows([ev], [], [], new Map())[0]).toMatchObject({ readOnly: true, place: "DM", sender: { name: "Mira", externalId: "U-stranger" } });
     // The agent took it: its wake is the chat's row, so no notice beside it.
     expect(await store.noticeEvents({ since: 0, limit: 10 })).toEqual([]);
@@ -69,7 +69,7 @@ describe("link switches: Notify me and Notify agent", () => {
     // A known person keeps their grant, and may be answered.
     expect(await router.ingest("slack", msg("e2", "U1"))).toBe("new");
     expect((await store.event("slack:e2"))!.grant).toMatchObject({ level: "ask", linkId: "all", principalId: "saajan" });
-    expect(await targets("slack:e2")).toEqual(["agent", "web"]);
+    expect(await targets("slack:e2")).toEqual(["orchestrator", "web"]); // the default agent
     expect(fenceExternal((await store.event("slack:e2"))!)).toContain("orca post --reply");
   });
 
@@ -97,7 +97,7 @@ describe("link switches: Notify me and Notify agent", () => {
   test("Notify me off: no bell, no Inbox row, no notice; the agent still wakes. Both off: nothing is recorded", async () => {
     await link({ notifyMe: false });
     expect(await router.ingest("slack", msg("e1", "U-stranger"))).toBe("noted");
-    expect(await targets("slack:e1")).toEqual(["agent"]);
+    expect(await targets("slack:e1")).toEqual(["orchestrator"]);
     expect(await store.inboxEvents({ limit: 10 })).toEqual([]);
     expect(await store.unreadWithoutCopy(10)).toBe(0);
     expect(await store.noticeEvents({ since: 0, limit: 10 })).toEqual([]);
