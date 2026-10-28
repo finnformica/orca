@@ -375,6 +375,10 @@ export function promptFor(ws: Pick<Workstream, "title" | "branch" | "prompt">): 
 // the agent will sometimes open a ready-for-review PR on its own, which yanks the card into In
 // Review — so every launch/follow-up prompt explicitly forbids it.
 const NO_PR = "Do NOT open a pull request or run `gh pr create` — stop after committing. Promoting the branch to a PR is handled separately in Orca.";
+// A run on a branch that already has a PR changes the code, but the PR's title and body still
+// describe only the run that opened it. Told once, shared by every builder that can run on such a
+// branch, so the PR text stays a true summary of the whole PR instead of drifting behind it.
+export const KEEP_PR_TEXT_IN_SYNC = "After your changes, read the PR's current title and body (`gh pr view --json title,body`). Update them with `gh pr edit` so they describe the whole PR as it is now, not only this run. Keep the '## Screenshots' section and the 'Requested by <person>' line as they are. Keep exactly one Claude Code footer. Write the title and body in Simplified Technical English.";
 // The box can't afford a browser per worker (an OOM took it down), so the bridge runs ONE capped,
 // queued browser (server/screenshot.ts) and this is how a worker reaches it. Shot paths in the reply
 // ride into the orchestrator's report (`workerEvent`).
@@ -486,10 +490,13 @@ export function slackPrompt(
   return `Post a new Slack message${where} with exactly this content and nothing else — no emojis, no extra text, and do not reply in a thread:\n\n${content}`;
 }
 
-/** Follow-up instruction for an agent already working a branch (resumes its session). */
-export function followUpPrompt(instruction: string, opts: { mergeWhenGreen?: boolean } = {}): string {
+/** Follow-up instruction for an agent already working a branch (resumes its session). `prNumber` is
+ *  the branch's open PR, when it has one — omitted, never add the PR-sync instruction, since Orca
+ *  opens the PR itself once there is one. */
+export function followUpPrompt(instruction: string, opts: { mergeWhenGreen?: boolean; prNumber?: number } = {}): string {
   const mergeNote = opts.mergeWhenGreen ? "\n\n(This PR is marked merge-when-green: Orca's merge queue holds the mark and waits for this run — and anything queued behind it — to finish, then merges once CI is green on your latest push. Commit and push as usual; no separate merge step needed.)" : "";
-  return withOutcomeContract(`${instruction}${mergeNote}\n\nThis is an incremental follow-up. Preserve completed work; files and git are authoritative. Change only what is related to this follow-up.\n${SESSION_START}\nWork autonomously. Verify in proportion to risk, then commit and push your changes.\n${NO_PR}\n${SCREENSHOTS}\n${HEAVY_COMMANDS}`);
+  const prSync = opts.prNumber ? `\n${KEEP_PR_TEXT_IN_SYNC}` : "";
+  return withOutcomeContract(`${instruction}${mergeNote}\n\nThis is an incremental follow-up. Preserve completed work; files and git are authoritative. Change only what is related to this follow-up.\n${SESSION_START}\nWork autonomously. Verify in proportion to risk, then commit and push your changes.\n${NO_PR}${prSync}\n${SCREENSHOTS}\n${HEAVY_COMMANDS}`);
 }
 
 // Every session starts with no memory of the last one, so it starts by looking: the same three-line
@@ -509,7 +516,7 @@ const SESSION_START = "Before acting: run `git log --oneline -15` and `git statu
  *  judgement is deliberately left to the model rather than pattern-matched here: "also handle the
  *  empty case" is an instruction and "should we handle the empty case?" is not, and no keyword list
  *  survives contact with that. */
-export function chatPrompt(instruction: string, opts: { mergeWhenGreen?: boolean } = {}): string {
+export function chatPrompt(instruction: string, opts: { mergeWhenGreen?: boolean; prNumber?: number } = {}): string {
   return [
     instruction,
     ...(opts.mergeWhenGreen ? ["", "(This PR is marked merge-when-green: Orca's merge queue holds the mark and waits for this run — and anything queued behind it — to finish, then merges once CI is green on your latest push. Commit and push as usual; no separate merge step needed.)"] : []),
@@ -528,6 +535,7 @@ export function chatPrompt(instruction: string, opts: { mergeWhenGreen?: boolean
     "what has actually happened, whatever the conversation above says.",
     SESSION_START,
     NO_PR,
+    ...(opts.prNumber ? [KEEP_PR_TEXT_IN_SYNC] : []),
     SCREENSHOTS,
     HEAVY_COMMANDS,
     "",
@@ -962,6 +970,7 @@ export function addressPrPrompt(ws: Pick<Workstream, "prNumber" | "branch">, par
     "## Review",
     ...reviewLines(ws, parts.feedback, parts.threads, parts.followed, parts.comments),
     NO_PR,
+    ...(ws.prNumber ? [KEEP_PR_TEXT_IN_SYNC] : []),
     SCREENSHOTS,
     HEAVY_COMMANDS,
   ].join(" "));

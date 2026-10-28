@@ -1377,7 +1377,9 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   if (req.method === "POST" && p === "/api/workstreams/followup") {
     if (typeof body.model === "string") await db.patchEnrichment(repo.name, String(body.branch), { preferredModel: body.model, preferredProvider: providerOfModel(body.model) });
-    const r = await verbs.followUp(cfg, repo, String(body.branch), { instruction: String(body.instruction ?? ""), origin: body.origin });
+    // The orchestrator's own GitHub-free lookup (server/orchestrator.ts's `send`), carried across
+    // the instance hop so a cross-instance send still gets the PR-sync instruction.
+    const r = await verbs.followUp(cfg, repo, String(body.branch), { instruction: String(body.instruction ?? ""), origin: body.origin, prNumber: typeof body.prNumber === "number" ? body.prNumber : undefined });
     await db.patchEnrichment(repo.name, String(body.branch), { orchestrated: true });
     return json({ ...r, instance: db.instanceName() });
   }

@@ -24,7 +24,7 @@ import { parseConfigDocument, type OrcaConfig } from "../server/config";
 import type { AgentTurn } from "../shared/agent";
 import { ORCA_EVENT_MARKER, orcaEventText } from "../shared/integrations";
 import {
-  MESSAGE_BREAK, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, WORKER_EVENT_MARKER, boardText, continuation, isUserMessage, isWorkerProblem, wakeFromUser, ladderStep, nextFailStreak, onlyCleanReports, orchestratorStatus, sessionHint, splitMessages, wakeExitReason,
+  KEEP_PR_TEXT_IN_SYNC, MESSAGE_BREAK, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, WORKER_EVENT_MARKER, boardText, continuation, isUserMessage, isWorkerProblem, wakeFromUser, ladderStep, nextFailStreak, onlyCleanReports, orchestratorStatus, sessionHint, splitMessages, wakeExitReason,
   wakeProgress, wakeStoppedLine, workerEvent,
 } from "../web/src/workstream";
 import { installFakeGh, makeScratchRepo, setPrListFixture } from "./helpers";
@@ -557,6 +557,25 @@ test("O7: send continues a workstream on its native session, queues behind a liv
   expect((await launches())[1]).toContain(`--resume ${first!.sessionId}`);
   await expect(orchestrator.tool(cfg(), "send", { repo: "r", branch })).rejects.toThrow("the message is required");
   await expect(orchestrator.tool(cfg(), "address", { repo: "r", branch })).rejects.toThrow(`r/${branch} has no open PR to address`);
+});
+
+test("O7b: send carries KEEP_PR_TEXT_IN_SYNC only when it can find the branch's open PR; a failed lookup never blocks the send", async () => {
+  await orchestrator.tool(cfg(), "spawn", brief);
+  const branch = Object.keys(await db.enrichment("r"))[0]!;
+  await settled(() => db.turns("r", branch), 1);
+
+  // The lookup finds an open PR on this branch (board()'s own call, stubbed by the fake GitHub).
+  await setPrListFixture([{ number: 42, title: "Add cache", headRefName: branch, url: "u", state: "OPEN", isDraft: false, mergeable: "MERGEABLE", reviewDecision: "", statusCheckRollup: [] }]);
+  expect(await orchestrator.tool(cfg(), "send", { repo: "r", branch, _: ["Also", "handle", "the", "empty", "case"] })).toContain(`Sent to r/${branch}`);
+  await settled(() => db.turns("r", branch), 2);
+  expect((await launches())[1]).toContain(KEEP_PR_TEXT_IN_SYNC);
+
+  // The lookup fails (no PR-list fixture: the fake GitHub answers an error) — the send still
+  // succeeds, just with no PR-sync instruction.
+  delete process.env.ORCA_PRLIST_FIXTURE;
+  expect(await orchestrator.tool(cfg(), "send", { repo: "r", branch, _: ["And one more thing"] })).toContain(`Sent to r/${branch}`);
+  await settled(() => db.turns("r", branch), 3);
+  expect((await launches())[2]).not.toContain(KEEP_PR_TEXT_IN_SYNC);
 });
 
 test("O11: preview starts a workstream's preview on the board's path, and --status reports state + the log tail", async () => {

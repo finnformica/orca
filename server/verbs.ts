@@ -175,7 +175,7 @@ export async function createWorkstream(
  *  scaffolding for an action that builds its own (Address PR). */
 export async function followUp(
   cfg: OrcaConfig, repo: RepoConfig, branch: string,
-  input: { instruction: string; prompt?: string; action?: string; evidenceChars?: number; origin?: TurnOrigin; sender?: Side },
+  input: { instruction: string; prompt?: string; action?: string; evidenceChars?: number; origin?: TurnOrigin; sender?: Side; prNumber?: number },
 ): Promise<{ status: "running" | "queued"; worktreePath: string }> {
   const worktreePath = await ensureWorktree(repo, branch);
   const e = (await db.enrichment(repo.name))[branch] ?? {};
@@ -194,7 +194,10 @@ export async function followUp(
     contextPct: agent.status(worktreePath).meta?.contextPct,
     transcript: await db.turns(repo.name, branch),
   });
-  const receipt = await agent.runAgent(worktreePath, input.prompt ?? chatPrompt(input.instruction, { mergeWhenGreen: Boolean(e.mergeWhenGreen) }), {
+  // The send path never calls GitHub itself (a worker's own send must not depend on this host
+  // having GitHub auth): `prNumber` is only what the caller already knows (the board's own
+  // `row.prNumber`, e.g. the browser's typed follow-up) — missing here, no PR-sync instruction.
+  const receipt = await agent.runAgent(worktreePath, input.prompt ?? chatPrompt(input.instruction, { mergeWhenGreen: Boolean(e.mergeWhenGreen), prNumber: input.prNumber }), {
     ...launchOptions(cfg, repo, provider, e.preferredModel as string | undefined, e), ...next,
     branch, action: input.action ?? "followup", instruction: input.instruction, evidenceChars: input.evidenceChars, origin: input.origin,
     ...(input.sender ? { sender: input.sender } : {}),
@@ -221,6 +224,8 @@ export async function launchQueued(cfg: OrcaConfig, repo: RepoConfig, message: d
     contextPct: agent.status(message.worktreePath).meta?.contextPct,
     transcript: await db.turns(repo.name, message.branch),
   });
+  // No GitHub call here either (see followUp): a queued message carries no PR number of its own,
+  // so a dispatched queue entry never gets the PR-sync instruction.
   const receipt = await agent.runAgent(message.worktreePath, withAttachments(followUpPrompt(message.instruction, { mergeWhenGreen: Boolean(e.mergeWhenGreen) }), message.attachments), {
     ...launchOptions(cfg, repo, provider, typeof pinned === "string" ? pinned : undefined, e), ...next,
     branch: message.branch, action: "followup", instruction: message.instruction, origin: message.origin,
