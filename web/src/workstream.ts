@@ -516,7 +516,7 @@ const SESSION_START = "Before acting: run `git log --oneline -15` and `git statu
  *  judgement is deliberately left to the model rather than pattern-matched here: "also handle the
  *  empty case" is an instruction and "should we handle the empty case?" is not, and no keyword list
  *  survives contact with that. */
-export function chatPrompt(instruction: string, opts: { mergeWhenGreen?: boolean } = {}): string {
+export function chatPrompt(instruction: string, opts: { mergeWhenGreen?: boolean; prNumber?: number } = {}): string {
   return [
     instruction,
     ...(opts.mergeWhenGreen ? ["", "(This PR is marked merge-when-green: Orca's merge queue holds the mark and waits for this run — and anything queued behind it — to finish, then merges once CI is green on your latest push. Commit and push as usual; no separate merge step needed.)"] : []),
@@ -535,6 +535,7 @@ export function chatPrompt(instruction: string, opts: { mergeWhenGreen?: boolean
     "what has actually happened, whatever the conversation above says.",
     SESSION_START,
     NO_PR,
+    ...(opts.prNumber ? [KEEP_PR_TEXT_IN_SYNC] : []),
     SCREENSHOTS,
     HEAVY_COMMANDS,
     "",

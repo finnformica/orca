@@ -194,7 +194,10 @@ export async function followUp(
     contextPct: agent.status(worktreePath).meta?.contextPct,
     transcript: await db.turns(repo.name, branch),
   });
-  const receipt = await agent.runAgent(worktreePath, input.prompt ?? chatPrompt(input.instruction, { mergeWhenGreen: Boolean(e.mergeWhenGreen) }), {
+  // Looked up the same way addressPr finds its PR: an open PR already on this branch, so the
+  // agent is told to keep its title and body in sync, not just its code.
+  const pr = input.prompt ? undefined : (await gh.listPrs(repo.repoPath)).find((p) => p.branch === branch);
+  const receipt = await agent.runAgent(worktreePath, input.prompt ?? chatPrompt(input.instruction, { mergeWhenGreen: Boolean(e.mergeWhenGreen), prNumber: pr?.number }), {
     ...launchOptions(cfg, repo, provider, e.preferredModel as string | undefined, e), ...next,
     branch, action: input.action ?? "followup", instruction: input.instruction, evidenceChars: input.evidenceChars, origin: input.origin,
     ...(input.sender ? { sender: input.sender } : {}),
@@ -221,7 +224,10 @@ export async function launchQueued(cfg: OrcaConfig, repo: RepoConfig, message: d
     contextPct: agent.status(message.worktreePath).meta?.contextPct,
     transcript: await db.turns(repo.name, message.branch),
   });
-  const receipt = await agent.runAgent(message.worktreePath, withAttachments(followUpPrompt(message.instruction, { mergeWhenGreen: Boolean(e.mergeWhenGreen) }), message.attachments), {
+  // Same lookup as followUp/addressPr: an open PR on this branch means the dispatched message
+  // should also leave the PR's title and body describing the whole PR, not only this run.
+  const pr = (await gh.listPrs(repo.repoPath)).find((p) => p.branch === message.branch);
+  const receipt = await agent.runAgent(message.worktreePath, withAttachments(followUpPrompt(message.instruction, { mergeWhenGreen: Boolean(e.mergeWhenGreen), prNumber: pr?.number }), message.attachments), {
     ...launchOptions(cfg, repo, provider, typeof pinned === "string" ? pinned : undefined, e), ...next,
     branch: message.branch, action: "followup", instruction: message.instruction, origin: message.origin,
   });
