@@ -1467,6 +1467,14 @@ export function reportShots(body: string): { text: string; shots: ShotRef[] } {
 
 /** How many of a workstream's newest shots its PR shows. */
 export const PR_SHOTS_MAX = 6;
+/** Every screenshot the workstream reported, across every run, newest capture first — regardless of
+ *  which run reported it. `workstreamShots` groups shots by the run that reported them: right for
+ *  the agent page's per-run Screenshots card, but a PR wants the newest captures, full stop. A run
+ *  after the one that took them (a conflict fix, a CI retry) often reports none at all, and must not
+ *  hide them from the PR. Pure. */
+export function newestShots(turns: Pick<AgentTurn, "id" | "response" | "structured" | "startedAt" | "finishedAt">[]): ShotRef[] {
+  return workstreamShots(turns).flatMap((t) => t.shots).sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
+}
 const SHOTS_HEADING = /^## Screenshots[ \t]*\r?$/m;
 const SHOTS_MARKER = /<!-- orca:screenshots ([\w,-]*) -->/;
 /** The ref the images are pushed to, in the PR's own repo: `pr-assets/<pr>-<slug of the branch>`. */
