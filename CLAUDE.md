@@ -1216,6 +1216,10 @@ test greps), `memory_link`, `scheduled_wake` (not `wake`: that word is one run).
   runs the notes stay in the prompt and `notes set` works; after it they are read-only.
 - **`orca wake --at|--on`** fires once (claimed by UPDATE … WHERE state = 'pending'): a time from the
   primary's minute tick, an event from `router.onNewEvent` (`pr:`, `worker:` = `orca.run.*`, `topic:`).
+  A `pr:` event is ONE keyed row from any path (`mergedNotification`, key `merged:<repo>#<n>`): the
+  merge queue, the cleanup pass's done list (`notify.mergedSeen`, merges of the last day) and the
+  minute tick's read of each pending `pr:` wake's own PR (`scheduledWake.watchPrs`: any author, any age;
+  CI and conflicts too). Before this, only the queue's own merge fired `:merged`.
   A fired wake is `[scheduled wake] …`, delivered as a report (MAX_WAKES and a pause apply), never the
   user's word (`isUserMessage`), a system line in the chat.
 - **Reflection = "dreaming"** (`orchestrator.maybeReflect`, minute tick; writes memory only, no

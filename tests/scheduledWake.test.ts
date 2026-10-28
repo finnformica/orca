@@ -134,24 +134,29 @@ describe("the store", () => {
   });
 
   test("an event wake fires on a matching published event only, once; it expires unfired", async () => {
-    router.onNewEvent((e) => { void wakes.onEvent(e, deliver).catch(() => {}); }); // stays for the process: never an unhandled rejection
-    await wakes.wakeTool("chief", [], { on: "pr:r#12:merged", note: "Tell Finn #12 landed" }, undefined, Date.now());
-    await wakes.wakeTool("chief", [], { on: "worker:r/orca/x", note: "Read the run", expires: "1d" }, undefined, Date.now());
-    const publish = async (kind: string, key: string, extra: Record<string, unknown>) => {
-      await router.publish(notificationEnvelope({ key, kind, repo: "r", title: "t", body: "b", ...extra })!);
-      for (let i = 0; i < 40 && delivered.length < 1; i++) await new Promise((r) => setTimeout(r, 25));
-    };
-    await publish("pr_ci_failed", "pr-ci:r#12@abc", { branch: "b", link: { pr: 12 } });
-    await new Promise((r) => setTimeout(r, 100));
-    expect(delivered).toEqual([]); // CI failing is not "merged"
-    await publish("merged", "merged:r#12", { branch: "b", link: { pr: 12 } });
-    expect(delivered).toEqual([`${SCHEDULED_WAKE_MARKER} w1 · on pr:r#12:merged (orca.pr.merged)\nTell Finn #12 landed`]);
-    await publish("merged", "merged:r#12:again", { branch: "b", link: { pr: 12 } });
-    await new Promise((r) => setTimeout(r, 100));
-    expect(delivered).toHaveLength(1); // fired once
-    // The worker wake was never matched: two days later it is expired.
-    expect(await wakes.expire(Date.now() + 2 * 24 * H)).toBe(1);
-    expect((await wakes.list({ all: true })).map((w) => [w.id, w.state]).sort()).toEqual([[1, "fired"], [2, "expired"]]);
+    // A listener stays for the process (bun runs every file in one): it listens only during this test,
+    // or it claims the wakes of another file's tests (prMergedWake.test.ts).
+    let listening = true;
+    router.onNewEvent((e) => { if (listening) void wakes.onEvent(e, deliver).catch(() => {}); });
+    try {
+      await wakes.wakeTool("chief", [], { on: "pr:r#12:merged", note: "Tell Finn #12 landed" }, undefined, Date.now());
+      await wakes.wakeTool("chief", [], { on: "worker:r/orca/x", note: "Read the run", expires: "1d" }, undefined, Date.now());
+      const publish = async (kind: string, key: string, extra: Record<string, unknown>) => {
+        await router.publish(notificationEnvelope({ key, kind, repo: "r", title: "t", body: "b", ...extra })!);
+        for (let i = 0; i < 40 && delivered.length < 1; i++) await new Promise((r) => setTimeout(r, 25));
+      };
+      await publish("pr_ci_failed", "pr-ci:r#12@abc", { branch: "b", link: { pr: 12 } });
+      await new Promise((r) => setTimeout(r, 100));
+      expect(delivered).toEqual([]); // CI failing is not "merged"
+      await publish("merged", "merged:r#12", { branch: "b", link: { pr: 12 } });
+      expect(delivered).toEqual([`${SCHEDULED_WAKE_MARKER} w1 · on pr:r#12:merged (orca.pr.merged)\nTell Finn #12 landed`]);
+      await publish("merged", "merged:r#12:again", { branch: "b", link: { pr: 12 } });
+      await new Promise((r) => setTimeout(r, 100));
+      expect(delivered).toHaveLength(1); // fired once
+      // The worker wake was never matched: two days later it is expired.
+      expect(await wakes.expire(Date.now() + 2 * 24 * H)).toBe(1);
+      expect((await wakes.list({ all: true })).map((w) => [w.id, w.state]).sort()).toEqual([[1, "fired"], [2, "expired"]]);
+    } finally { listening = false; }
   });
 
   test("a fired wake reaches the orchestrator's queue; a paused orchestrator holds it", async () => {

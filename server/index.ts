@@ -232,6 +232,8 @@ const deliverWake = async (text: string, agent: string) => orchestrator.report(a
 setInterval(() => {
   if (!primary.held()) return;
   void scheduledWake.tick(deliverWake).catch(db.logUnlessDown("orca: scheduled wake pass failed"));
+  // A `pr:` wake reads its own PR, so a merge outside the merge queue (the GitHub UI, another person) fires it.
+  void loadConfig().then((cfg) => scheduledWake.watchPrs(cfg)).catch(db.logUnlessDown("orca: scheduled wake PR read failed"));
   // A reflection on each agent's memory when one is due (shared/memory.ts reflectionDue).
   void loadConfig().then(async (cfg) => {
     for (const a of await orchestrator.agentRefs()) await orchestrator.maybeReflect(cfg, Date.now(), a.name);

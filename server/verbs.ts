@@ -481,6 +481,9 @@ export function cleanupRepo(repo: RepoConfig, opts: { now?: number; graceMs?: nu
   const pass = (async () => {
     const done = await gh.donePrs(repo.repoPath).catch(() => new Map<string, gh.DonePr>()); // empty for local-only repos
     if (!done.size) return [];
+    // A merge done outside the merge queue (the GitHub UI, another person) is the same `merged`
+    // event the queue emits, so a `pr:<repo>#<n>:merged` wake fires for it too.
+    await notify.mergedSeen(repo.name, done, opts.now);
     const out: CleanupResult[] = [];
     let ench: Record<string, db.Fields> | undefined;
     let live: { open: Set<string>; queued: Map<string, number> } | undefined; // read once, only when a worktree has a done PR
