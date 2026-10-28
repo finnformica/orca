@@ -11,6 +11,8 @@ import {
   MEMORY_STATES, SOURCE_KINDS, lineDiff, memoryQueryString, parseMemoryQuery, sourceKind, type Memory, type MemoryQuery, type MemoryRevision, type MemorySort, type ReflectionPass,
 } from "../../../shared/memory";
 import { Empty, Pill, RowSkeleton, VCard } from "@/components/console";
+import { AgentPill } from "@/components/AgentPill";
+import { agentSide, sideLabel } from "../../../shared/rooms";
 import { Markdown } from "@/components/Markdown";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -164,6 +166,11 @@ function Meta({ m }: { m: Memory }) {
   );
 }
 
+/** A memory's owner: an agent as the Agent pill; `shared` (every agent's) as a plain pill. */
+function OwnerPill({ owner }: { owner: string }) {
+  return owner === "shared" ? <Pill>shared</Pill> : <AgentPill name={owner} label={sideLabel(agentSide(owner))} />;
+}
+
 function MemoryRow({ m, onOpen, onTag }: { m: Memory; onOpen: () => void; onTag: (tag: string) => void }) {
   return (
     <div role="button" tabIndex={0} data-slot="memory-row" data-id={m.id} onClick={onOpen}
@@ -172,7 +179,7 @@ function MemoryRow({ m, onOpen, onTag }: { m: Memory; onOpen: () => void; onTag:
       <div className="flex min-w-0 items-center gap-2">
         {m.pinned && <Pin className="size-3.5 shrink-0" aria-label="pinned" />}
         <span className="truncate text-[13px] font-medium">{m.title}</span>
-        <Pill>{m.owner}</Pill>
+        <OwnerPill owner={m.owner} />
         {m.trust === "untrusted" && <Pill tone="red" slot="memory-untrusted">untrusted</Pill>}
         {m.state !== "active" && <Pill tone="amber">{m.state}</Pill>}
         <span className="text-muted-foreground ml-auto shrink-0 text-xs tabular-nums">importance {m.importance}</span>
@@ -263,8 +270,8 @@ function Core({ reload, agents, onOpen }: { reload: number; agents: string[]; on
       aside={<span className="flex items-center gap-2">
         {agents.length > 1 && (
           <Select value={agent} onValueChange={setAgent}>
-            <SelectTrigger size="sm" aria-label="Agent" data-slot="memory-core-agent" className="w-32"><SelectValue /></SelectTrigger>
-            <SelectContent>{agents.map((a) => <SelectItem key={a} value={a}>{a}</SelectItem>)}</SelectContent>
+            <SelectTrigger size="sm" aria-label="Agent" data-slot="memory-core-agent" className="w-44"><SelectValue /></SelectTrigger>
+            <SelectContent>{agents.map((a) => <SelectItem key={a} value={a}><OwnerPill owner={a} /></SelectItem>)}</SelectContent>
           </Select>
         )}
         {core && <span className="text-muted-foreground text-xs tabular-nums" data-slot="memory-core-tokens">{core.tokens} of {core.budget} tokens</span>}
@@ -279,7 +286,7 @@ function Core({ reload, agents, onOpen }: { reload: number; agents: string[]; on
           className="hover:bg-accent/50 flex cursor-pointer items-center gap-2 px-4 py-2 text-[13px]" data-slot="memory-core-row">
           {m.pinned && <Pin className="size-3.5 shrink-0" aria-label="pinned" />}
           <span className="truncate font-medium">{m.title}</span>
-          <Pill>{m.owner}</Pill>
+          <OwnerPill owner={m.owner} />
           {cut && <Pill tone="amber">cut</Pill>}
           {m.trust === "untrusted" && <Pill tone="red">untrusted</Pill>}
         </div>
@@ -300,7 +307,7 @@ function DraftFields({ draft, set, owner }: { draft: Draft; set: (d: Draft) => v
       {owner && (
         <Select value={owner.value} onValueChange={owner.set}>
           <SelectTrigger aria-label="Owner" className="w-full"><SelectValue /></SelectTrigger>
-          <SelectContent>{owner.options.map((o) => <SelectItem key={o} value={o}>{o}</SelectItem>)}</SelectContent>
+          <SelectContent>{owner.options.map((o) => <SelectItem key={o} value={o}><OwnerPill owner={o} /></SelectItem>)}</SelectContent>
         </Select>
       )}
       <Input aria-label="Title" placeholder="Title" value={draft.title} onChange={(e) => set({ ...draft, title: e.target.value })} />
@@ -358,7 +365,7 @@ function MemoryDialog({ id, onClose, onOpen, onChanged }: { id: number; onClose:
       <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl" data-slot="memory-dialog">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">{m?.pinned && <Pin className="size-4" aria-label="pinned" />}{m ? `m${m.id} · ${m.title}` : "Memory"}</DialogTitle>
-          {m && <DialogDescription asChild><div className="flex flex-wrap items-center gap-1.5"><Pill>{m.owner}</Pill>{m.trust === "untrusted" && <Pill tone="red">untrusted</Pill>}{m.state !== "active" && <Pill tone="amber">{m.state}</Pill>}<Meta m={m} /></div></DialogDescription>}
+          {m && <DialogDescription asChild><div className="flex flex-wrap items-center gap-1.5"><OwnerPill owner={m.owner} />{m.trust === "untrusted" && <Pill tone="red">untrusted</Pill>}{m.state !== "active" && <Pill tone="amber">{m.state}</Pill>}<Meta m={m} /></div></DialogDescription>}
         </DialogHeader>
         {!m ? <RowSkeleton /> : editing ? <DraftFields draft={editing} set={setEditing} /> : (
           <div className="space-y-4 text-[13px]">

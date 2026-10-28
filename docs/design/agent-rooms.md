@@ -120,17 +120,20 @@ rooms follow (Flow's #6658 rule).
 
 ## UI
 
-- **Pill:** in the main chat, at the time the agents talked, "N messages with <agent>", with a blue dot
-  when it has news. N counts the sender's messages and the replies. Adjacent pills of one room merge.
+- **Pill:** in the main chat, at the time the agents talked, "N messages with <Agent pill>", one row in
+  the tint of the other activity rows, with the time and a blue dot when it has news. A click opens
+  the room at once. N counts the sender's messages and the replies. Adjacent pills of one room merge.
   The pills are placed by time between the turns, by the same pass as notices (`withNotices`).
 - **The person's lane:** in a worker chat, a brief's origin (the words you said to the orchestrator)
   shows above its pill as your bubble, "You · via Chief of Staff".
-- **Room:** the pill opens the room in the same pane. A header has Back, "Messages with <agent>" and
-  "read only". The log is the same `ChatTurn` as the chat, with `saidBy` / `replyBy` speaker names. No
+- **Room:** the pill opens the room in the same pane. One short header row has a Back arrow, this
+  chat's agent ⇄ the peer (two Agent pills and a swap arrow) and "read only". The log is the same `ChatTurn` as the chat, with `saidBy` / `replyBy` speaker names. No
   composer, no Quote. A report keeps its folded block, and a brief keeps its origin quote.
 - **Source tags:** every turn carries `data-source` (person, agent, worker, orca). A turn that is not
   the person's names its sender over its messages (`Orca · PR upkeep`). Your own words are the only
   unnamed lane.
+- **Agent replies:** in a named agent's chat, the agent's Agent pill heads each of its replies. This
+  includes the answer to an outside message and to a fired wake. A worker's reply keeps its provider name.
 - **Seen:** the last-open time per room is per browser (`orca.ui.v1.roomSeen:<repo>::<branch>`,
   `usePersisted`). A room you never opened counts its last day.
 - **No turn is lost:** the main chat leaves out a room turn only when the `/api/rooms` answer holds it,

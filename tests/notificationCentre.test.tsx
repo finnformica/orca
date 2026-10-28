@@ -297,9 +297,11 @@ describe("the notification centre", () => {
 
   test("the panel: one compact header, Unread by default (remembered), All shows the read ones; grouped by day; a click marks read and opens; Mark all as read; no Clear", async () => {
     const now = Date.now();
+    const startOfToday = new Date(now).setHours(0, 0, 0, 0);
     apiFake.notificationsData = [
-      note({ id: 1, kind: "needs_input", title: "Today's question", createdAt: now - 60_000 }),
-      note({ id: 2, kind: "pr_ci_failed", title: "Yesterday's CI", createdAt: now - 26 * 3_600_000, link: { pr: 7 }, readAt: now }),
+      // Day-anchored, not "26 hours ago": run just after midnight, that was two days back (no Yesterday).
+      note({ id: 1, kind: "needs_input", title: "Today's question", createdAt: Math.max(now - 60_000, startOfToday) }),
+      note({ id: 2, kind: "pr_ci_failed", title: "Yesterday's CI", createdAt: startOfToday - 12 * 3_600_000, link: { pr: 7 }, readAt: now }),
       note({ id: 3, kind: "preview_ready", title: "Older preview", createdAt: now - 5 * 86_400_000, link: { url: "http://box:4000" } }),
     ];
     await open("/");

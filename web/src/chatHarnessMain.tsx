@@ -12,8 +12,14 @@
 // a sent message with an image and a secret chip, and a composer draft seeded with both (an image
 // drawn here, a secret NAME only), whose send is held open like "sending"; "assistant" — the
 // Assistant's chat with a Chief of Staff room; "worker" — a workstream chat with its orchestrator
-// room (docs/design/agent-rooms.md; `--click '[data-slot="room-pill"]'` opens the room).
+// room (docs/design/agent-rooms.md; `--click '[data-slot="room-pill"]'` opens the room); "panel" —
+// the real Orca side panel (desktop) with three named agents, for its header's agent menu
+// (`--click '[data-slot="agent-menu"]'` opens it); "page" — the phone's Orca page with the same menu.
 import { createRoot } from "react-dom/client";
+import { getDefaultStore } from "jotai";
+import { Dock } from "@/components/Shell";
+import { OrchestratorPage, OrchestratorPanel } from "@/components/Terminal";
+import { orchestratorOpenAtom } from "@/lib/atoms";
 import "./styles.css";
 import "./lib/theme"; // applies the OS theme, so `orca-shot --dark` shows the dark card
 import { api } from "@/api";
@@ -96,12 +102,30 @@ api.rooms = async () => {
 
 api.turnPage = async () => ({ turns: roomView ? own : [view === "working" ? workingTurn : view === "chips" ? chipsTurn : quoteTurn], older: null });
 
+// The panel and page views: the Orca state and three named agents, answered here.
+const panelView = view === "panel" || view === "page";
+if (panelView) {
+  const base = { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-opus-5-5" };
+  const agents = [
+    { ...base, agent: "chief", displayName: "Chief of Staff", branch: "orchestrator", state: "idle" as const },
+    { ...base, agent: "assistant", displayName: "Assistant", branch: "assistant", state: "waiting" as const, stateNote: "waiting on Finn: merge order", key: "/state/agents/assistant" },
+    { ...base, agent: "research", displayName: "Research", branch: "research", state: "working" as const, running: true, key: "/state/agents/research" },
+  ];
+  api.orchestrator = (async (agent?: string) => agents.find((a) => a.agent === (agent ?? "chief")) ?? base) as typeof api.orchestrator;
+  api.orchestratorAgents = (async () => ({ agents })) as typeof api.orchestratorAgents;
+  if (view === "panel") getDefaultStore().set(orchestratorOpenAtom, true);
+}
+
 const send = view === "sending" || view === "chips" ? () => new Promise<void>(() => {}) : undefined; // held open forever
 
-createRoot(document.getElementById("root")!).render(
+createRoot(document.getElementById("root")!).render(panelView ? (
+  view === "panel"
+    ? <div className="bg-background flex h-screen"><div className="flex-1" /><Dock /><OrchestratorPanel /></div>
+    : <div className="bg-background h-screen px-4 pt-6"><OrchestratorPage /></div>
+) : (
   <div className="bg-background flex min-h-screen items-center justify-center p-6">
     <div className="bg-card text-foreground h-[80vh] w-[90vw] max-w-2xl overflow-hidden rounded-lg border">
       <ChatPanel row={row} send={send} author={view === "orchestrator" ? "Orca" : view === "assistant" ? "Assistant" : undefined} />
     </div>
-  </div>,
-);
+  </div>
+));

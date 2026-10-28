@@ -2,7 +2,7 @@ import { useContext, useEffect, useId, useLayoutEffect, useRef, useState, type C
 import { createPortal } from "react-dom";
 import { ArrowUp, GitBranch, KeyRound, Loader2, Mic, Paperclip, Square, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { AgentAvatar } from "@/components/AgentAvatar";
+import { AgentPill } from "@/components/AgentPill";
 import { ComposerAttachment } from "@/components/ComposerAttachment";
 import { Shortcut } from "@/components/ui/kbd";
 import { Tip } from "@/components/ui/tip";
@@ -613,8 +613,8 @@ export function ChatComposer({
         >
           {m.kind === "agent" ? (
             <>
-              <AgentAvatar name={m.ref.name} size={20} />
-              <span className="min-w-0 flex-1 truncate">{m.ref.displayName}</span>
+              <AgentPill name={m.ref.name} label={m.ref.displayName} />
+              <span className="flex-1" />
               <span className="text-muted-foreground shrink-0 font-mono text-xs">@{m.ref.name}</span>
             </>
           ) : m.kind === "pr" ? (

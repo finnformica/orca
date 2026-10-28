@@ -64,26 +64,47 @@ test("the Assistant's chat: a pill where the agents talked opens the room on the
 
   const log = c.querySelector('[data-slot="chat-log"]')!;
   expect(runIds(log)).toEqual(["you-1", "mix-1"]);
+  // Each reply in the Assistant's chat is headed by its Agent pill, never the robot avatar.
+  expect([...log.querySelectorAll('[data-slot="chat-reply-head"] > [data-slot="agent-pill"]')].map((e) => `${e.getAttribute("data-agent")}:${e.textContent}`))
+    .toEqual(["assistant:Assistant", "assistant:Assistant"]);
+  expect(log.querySelector('[data-slot="chat-reply"] .lucide-bot')).toBeNull();
   // ONE pill between your two turns: the ask, its reply, the escalation and its reply.
   const pills = [...log.querySelectorAll('[data-slot="room-pill"]')];
-  expect(pills.map((p) => p.textContent)).toEqual(["4 messages with Chief of Staff"]);
+  expect(pills.map((p) => p.getAttribute("aria-label"))).toEqual(["4 messages with Chief of Staff"]);
+  // The item: the count, then the Agent pill of the peer; no robot icon; the tint of the other
+  // activity rows; a click opens the room at once (no expand step, no aria-expanded).
+  expect(pills[0]!.querySelector('[data-slot="room-count"]')!.textContent).toBe("4 messages with");
+  expect(pills[0]!.querySelector('[data-slot="agent-pill"]')!.getAttribute("data-agent")).toBe("chief");
+  expect(pills[0]!.querySelector('[data-slot="agent-pill"]')!.textContent).toBe("Chief of Staff");
+  expect(pills[0]!.querySelector(".lucide-bot")).toBeNull();
+  expect(pills[0]!.className).toContain("bg-geist-blue/5");
+  expect(pills[0]!.hasAttribute("aria-expanded")).toBe(false);
   expect(pills[0]!.querySelector('[data-slot="room-unseen"]')).toBeTruthy();
   const order = [...log.querySelectorAll('[data-slot="chat-turn"], [data-slot="room-pill"]')].map((e) => e.getAttribute("data-run-id") ?? "pill");
   expect(order).toEqual(["you-1", "pill", "mix-1"]);
   // The mixed wake: your words in a bubble; the Chief of Staff's as a card with both ends, no wrapper.
   expect([...log.querySelectorAll('[data-slot="chat-user-text"]')].map((e) => e.textContent)).toContain("Also check Slack");
   expect(log.querySelector('[data-slot="agent-ask-route"]')!.textContent).toContain("Chief of Staff → Assistant");
+  expect([...log.querySelectorAll('[data-slot="agent-ask-route"] [data-slot="agent-pill"]')].map((e) => e.getAttribute("data-agent"))).toEqual(["chief", "assistant"]);
   expect(log.textContent).not.toContain("[from ");
 
   await click(pills[0]!);
   // The same pane: the chat log and the composer are hidden, the room is drawn by ChatTurn.
   expect(c.querySelector<HTMLElement>('[data-slot="chat-log"]')!.hidden).toBe(true);
   expect(c.querySelector<HTMLElement>('[data-slot="chat-composer-dock"]')!.hidden).toBe(true);
-  expect(c.querySelector('[data-slot="room-title"]')!.textContent).toBe("Messages with Chief of Staff");
+  // One short header row: Back (an arrow), this chat's agent ⇄ the agent it talks with.
+  const title = c.querySelector('[data-slot="room-title"]')!;
+  expect(title.getAttribute("aria-label")).toBe("Messages between Assistant and Chief of Staff");
+  expect([...title.querySelectorAll('[data-slot="agent-pill"]')].map((e) => e.textContent)).toEqual(["Assistant", "Chief of Staff"]);
+  expect(title.querySelector('[data-slot="room-swap"]')).toBeTruthy();
+  const back = c.querySelector('[data-slot="room-back"]')!;
+  expect(back.getAttribute("aria-label")).toBe("Back");
+  expect(back.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy(); // Back is first, at the left
   const room = c.querySelector('[data-slot="room-log"]')!;
   expect(runIds(room)).toEqual(["ask-1", "esc-1"]);
-  expect([...room.querySelectorAll('[data-slot="chat-speaker"]')].map((e) => e.textContent)).toEqual(["Chief of Staff", "Assistant"]);
-  expect([...room.querySelectorAll('[data-slot="chat-reply-head"] > span:first-child')].map((e) => e.textContent)).toEqual(["Assistant", "Chief of Staff"]);
+  // Each speaker is the Agent pill.
+  expect([...room.querySelectorAll('[data-slot="chat-speaker"] [data-slot="agent-pill"]')].map((e) => e.textContent)).toEqual(["Chief of Staff", "Assistant"]);
+  expect([...room.querySelectorAll('[data-slot="chat-reply-head"] > [data-slot="agent-pill"]')].map((e) => e.textContent)).toEqual(["Assistant", "Chief of Staff"]);
   expect(room.querySelector('[data-slot="chat-user-text"]')!.textContent).toBe("Summarise the inbox for Finn");
   expect(room.textContent).not.toContain("[from ");
   expect(room.querySelector('[aria-label="Quote message"]')).toBeNull(); // read only
@@ -114,10 +135,12 @@ test("a workstream's chat: the brief goes to the room, your words stay in your l
   // Orca's own turn names its sender; your own words are the only unnamed lane.
   expect(log.querySelector('[data-run-id="up-1"] [data-slot="chat-speaker"]')!.textContent).toBe("Orca · PR upkeep");
   expect(log.querySelector('[data-run-id="you-1"] [data-slot="chat-speaker"]')).toBeNull();
+  // A worker is not a named agent: its reply keeps the provider's name, no Agent pill.
+  expect(log.querySelector('[data-run-id="you-1"] [data-slot="chat-reply-head"] [data-slot="agent-pill"]')).toBeNull();
   // The words you said to the orchestrator, in your lane, above the pill to its room.
   expect(log.querySelector('[data-slot="room-person-text"]')!.textContent).toBe("add a cache");
   const pill = log.querySelector('[data-slot="room-pill"]')!;
-  expect(pill.textContent).toBe("3 messages with Chief of Staff");
+  expect(pill.getAttribute("aria-label")).toBe("3 messages with Chief of Staff");
 
   await click(pill);
   const room = c.querySelector('[data-slot="room-log"]')!;

@@ -444,7 +444,7 @@ describe("the phone layout (390px, touch)", () => {
     expect(location.pathname).toBe("/agents");
   });
 
-  test("the orchestrator page on a phone: no top bar, its own 48px header with Back, edge-to-edge dividers, a compact Send", async () => {
+  test("the orchestrator page on a phone: no top bar, its own header (at least 48px) with Back, edge-to-edge dividers, a compact Send", async () => {
     await mount("/", true);
     // The root page keeps the top bar…
     expect($('header[data-slot="topbar"]')!.className).not.toContain("max-md:hidden");
@@ -468,10 +468,11 @@ describe("the phone layout (390px, touch)", () => {
     expect(page.className).not.toContain("3.5rem-env(safe-area-inset-top)-3.1875rem");
     // With the keyboard up it is pinned to the visible area instead (styles.css, data-keyboard-fill).
     expect(page.hasAttribute("data-keyboard-fill")).toBe(true);
-    // The header is the desktop's 48px row (it was a 60px padded block), with the conversation's 12px
-    // at the sides; the conversation and the composer keep their 12px all round.
+    // The header is at least the desktop's 48px row (it was a 60px padded block) — it grows for the
+    // agent menu's 36px touch target and its status line — with the conversation's 12px at the sides;
+    // the conversation and the composer keep their 12px all round.
     const header = page.querySelector('[data-slot="orchestrator-page-header"]')!;
-    expect(cls(header)).toEqual(expect.arrayContaining(["border-b", "h-12", "max-md:px-3"]));
+    expect(cls(header)).toEqual(expect.arrayContaining(["border-b", "min-h-12", "max-md:px-3"]));
     expect(cls(header)).not.toContain("max-md:p-3");
     expect(header.querySelector('button[aria-label="Back"]')).not.toBeNull();
     expect(cls(page.querySelector('[data-slot="chat-composer-dock"]')!)).toEqual(expect.arrayContaining(["border-t", "max-md:p-3"]));
