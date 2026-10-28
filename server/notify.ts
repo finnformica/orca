@@ -11,7 +11,7 @@ import type { RunFinished } from "./agent";
 import { ORCHESTRATOR_REPO } from "../web/src/workstream";
 import * as router from "./integrations/router";
 import { notificationEnvelope } from "../shared/integrations";
-import { checkNotification, prNotifications, previewNotification, runNotification, type Notification, type NotificationInput } from "../shared/notifications";
+import { checkNotification, prNotifications, previewNotification, runNotification, seenMergedNotifications, type Notification, type NotificationInput } from "../shared/notifications";
 
 /** Record and push one event. Returns the row, or undefined when it had already been recorded. */
 export async function emit(input: NotificationInput): Promise<Notification | undefined> {
@@ -69,6 +69,24 @@ export async function stopped(runId: string): Promise<void> {
  *  answer to /api/prs by the instance that answered it; keyed, so two answering is still one row. */
 export async function prs(repo: string, list: Parameters<typeof prNotifications>[1]): Promise<void> {
   for (const n of prNotifications(repo, list)) await emit(n);
+}
+
+/** Keys this process already handed to `emit` from the poller, so a pass every few seconds costs no
+ *  query for a merge it announced. A restart forgets them; the row's key still dedupes. */
+const announced = new Set<string>();
+
+/** The merges the poller saw (gh.donePrs, read by the cleanup pass): each recent one is ONE `merged`
+ *  event, the merge queue's own shape and key — so a PR merged in the GitHub UI or by another person
+ *  fires a `pr:<repo>#<n>:merged` wake too. */
+export async function mergedSeen(repo: string, done: Map<string, { reason: string; at?: number; number?: number }>, now = Date.now()): Promise<void> {
+  const fresh = seenMergedNotifications(repo, done, {}, now).filter((n) => !announced.has(n.key));
+  if (!fresh.length) return;
+  const ench = await db.enrichment(repo).catch(() => ({}) as Record<string, db.Fields>);
+  for (const n of fresh) {
+    const t = ench[n.branch ?? ""]?.title;
+    await emit(typeof t === "string" && t.trim() ? { ...n, title: t.trim() } : n);
+    announced.add(n.key);
+  }
 }
 
 // How often a starting preview is looked at, and for how long before it is called failed. Mutable so

@@ -19,6 +19,7 @@ import * as git from "./git";
 import * as notify from "./notify";
 import { runsHere, type OrcaConfig, type RepoConfig } from "./config";
 import { repoHere } from "./verbs";
+import { mergedNotification } from "../shared/notifications";
 import { mergeQueueReport, mergeRefusal, mergeVerdict, type AgentActivity, type MergeMark, type MergeVerdict } from "../web/src/workstream";
 
 /** How often marked PRs are looked at. A check run takes minutes; a minute's lag on a merge is fine. */
@@ -137,7 +138,7 @@ async function look(cfg: OrcaConfig, repo: RepoConfig, branch: string, mark: Mer
       if (gate.isDraft) await gh.markReady(repo.repoPath, pr);
       await gh.mergePr(repo.repoPath, pr);
       await cancel(repo, branch);
-      await notify.emit({ repo: repo.name, branch, kind: "merged", title, link: { pr }, key: `merged:${repo.name}#${pr}`, body: `Squash-merged PR #${pr} on green.` });
+      await notify.emit(mergedNotification(repo.name, { number: pr, branch, title, by: "queue" }));
       if (theirs) await reportHook?.(report(verdict));
       return verdict;
     }

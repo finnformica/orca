@@ -7,6 +7,11 @@
 // its agent through `deliver` — the orchestrator's report path, so MAX_WAKES and a pause apply.
 import * as db from "./db";
 import * as primary from "./primary";
+import * as gh from "./gh";
+import * as notify from "./notify";
+import { repoHere } from "./verbs";
+import type { OrcaConfig } from "./config";
+import { mergedNotification } from "../shared/notifications";
 import { CHIEF } from "../shared/memory";
 import {
   WAKE_LIMITS, parseDuration, parseWakeAt, parseWakeOn, scheduledWakeMessage, wakeMatches, wakeOnText, type WakeEvent, type WakeOn,
@@ -134,6 +139,36 @@ export async function tick(deliver: Deliver, now = Date.now()): Promise<Schedule
   const due = await claimDue(now);
   await deliverAll(due, deliver);
   return due;
+}
+
+/** The PR events a `pr:` wake waits for are emitted where a PR is seen: the merge queue, the cleanup
+ *  pass (merges by anyone, `author:@me` only, the last day) and the board's /api/prs (CI, conflicts —
+ *  only while a browser asks). None of them sees a PR another person opened, nor a merge from before
+ *  the bridge looked. So the minute tick also reads each pending `pr:` wake's PR itself, on the
+ *  instance that has the repo, and emits what it finds through the same builders and keys: one row
+ *  and one event per PR, whichever path is first. The emit fires the wake (router.onNewEvent). */
+export async function watchPrs(cfg: OrcaConfig, now = Date.now()): Promise<void> {
+  if (!primary.held()) return;
+  const want = new Map<string, { repo: string; pr: number }>();
+  for (const w of await list()) {
+    if (!w.on || w.expiresAt < now) continue;
+    let on: WakeOn;
+    try { on = parseWakeOn(w.on); } catch { continue; }
+    if (on.kind === "pr" && on.event !== "merge_refused") want.set(`${on.repo}#${on.pr}`, { repo: on.repo, pr: on.pr });
+  }
+  for (const { repo: name, pr } of want.values()) {
+    const repo = cfg.repos.find((r) => r.name === name);
+    if (!repo || !repoHere(repo)) continue;
+    try {
+      const gate = await gh.prMergeGate(repo.repoPath, pr);
+      const title = (await db.enrichment(name).catch(() => ({}) as Record<string, db.Fields>))[gate.branch]?.title;
+      const t = typeof title === "string" && title.trim() ? title.trim() : gate.title;
+      if (gate.state === "MERGED") await notify.emit(mergedNotification(name, { number: pr, branch: gate.branch, title: t, by: "github" }));
+      else if (gate.state === "OPEN") await notify.prs(name, [{ ...gate, title: t }]);
+    } catch (e) {
+      db.logUnlessDown(`orca: scheduled wake could not read ${name} PR #${pr}`)(e);
+    }
+  }
 }
 
 /** A new event was published: fire the event wakes it matches. Not in a preview bridge. */

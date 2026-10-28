@@ -201,6 +201,33 @@ export function prNotifications(repo: string, prs: {
   return out;
 }
 
+/** A PR merged — the ONE shape for every path that sees it: the merge queue's own merge, and a merge
+ *  done anywhere else (the GitHub UI, another person, `gh`) that the poller or a `pr:` wake's read
+ *  sees. The key is the repo and number only, so whichever path comes first writes the row (and the
+ *  `orca.pr.merged` event a `pr:<repo>#<n>:merged` wake waits for), and the rest are repeats. */
+export function mergedNotification(repo: string, pr: { number: number; branch: string; title?: string; by: "queue" | "github" }): NotificationInput {
+  return {
+    repo, branch: pr.branch, kind: "merged", title: pr.title || pr.branch, link: { pr: pr.number }, key: `merged:${repo}#${pr.number}`,
+    body: pr.by === "queue" ? `Squash-merged PR #${pr.number} on green.` : `PR #${pr.number} merged on GitHub.`,
+  };
+}
+
+/** How far back a merge the poller sees is still news. An older one is not announced: the first pass
+ *  after a deploy would otherwise post every merged PR in the list. (A pending `pr:` wake reads its
+ *  own PR, at any age.) */
+export const MERGED_NEWS_MS = 24 * 60 * 60 * 1000;
+
+/** The merges in the poller's done list (gh.donePrs: branch → how it ended) that are news. Pure. */
+export function seenMergedNotifications(repo: string, done: Iterable<[string, { reason: string; at?: number; number?: number }]>,
+  titles: Record<string, string | undefined>, now: number): NotificationInput[] {
+  const out: NotificationInput[] = [];
+  for (const [branch, pr] of done) {
+    if (pr.reason !== "merged" || pr.number === undefined || pr.at === undefined || now - pr.at > MERGED_NEWS_MS) continue;
+    out.push(mergedNotification(repo, { number: pr.number, branch, title: titles[branch], by: "github" }));
+  }
+  return out;
+}
+
 /** How many are unread — the bell's badge and the centre's Unread count. */
 export const unreadCount = (list: Pick<Notification, "readAt">[]): number => list.filter((n) => !n.readAt).length;
 
