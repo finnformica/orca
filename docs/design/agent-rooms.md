@@ -30,8 +30,8 @@ your bubble, so the sender was wrong.
 3. Each turn records its sender and recipient as `{ kind, id }`, so the room query is simple.
 4. The wrapper text is stripped in every view. The raw text stays in the turn, for the model only.
 5. A room follows the read access of the chats it reads from.
-6. A worker chat tags each turn with its source, and keeps the person's words in their own lane.
-   It reuses the request origin of #456 (`server/origin.ts`).
+6. A worker chat tags each turn with its source. A brief keeps the person's words as its origin
+   quote (#456, `server/origin.ts`).
 
 ## Data model
 
@@ -75,8 +75,13 @@ and origin, so old turns classify the same way as new ones.
 A room is an unordered pair of sides. Its id is `room:<kind:id>+<kind:id>`, sorted. A room has no
 table and no row. It exists when one entry belongs to it.
 
-A turn is in a room when its sender is ANOTHER agent (`turnPeer`). Worker reports in an agent's chat
-keep their folded `⚙` block there. The same reports show in each worker's room.
+A turn is in a room when it is in a named agent's chat and its sender is ANOTHER agent (`turnPeer`).
+A worker chat keeps ALL its turns in the main chat: a brief, a `send`, an `address`, an autofix, an
+upkeep run and a background resume. Each turn names its sender ("Chief of Staff", "Orca · PR upkeep").
+The route is still recorded on the turn. (History: #472 sent each brief to the Chief of Staff's room,
+so Finn did not see a worker's results in its chat. He asked for them back.)
+Worker reports in an agent's chat keep their folded `⚙` block there. The same reports show in each
+worker's room, behind a pill in the worker chat.
 
 ### Room entry
 
@@ -107,6 +112,7 @@ A room's turns are in two chats. Example, Chief of Staff and Assistant:
 `db.roomTurns`, newest 200 of each kind):
 
 - The chat's own turns with `route.sender.kind = 'agent'`. A row with no route matches by its markers.
+  For a worker chat these give no entry (`turnRoomEntry`): its briefs stay in its main chat.
 - The other `@orca` chats' turns with `route.sender` = the owner, or the owner's needle in the text.
   The needle is `[from <name>] `, or `[worker finished] <repo>/<branch>`. It also finds an ask inside
   a wake that was also yours.
@@ -124,8 +130,8 @@ rooms follow (Flow's #6658 rule).
   the tint of the other activity rows, with the time and a blue dot when it has news. A click opens
   the room at once. N counts the sender's messages and the replies. Adjacent pills of one room merge.
   The pills are placed by time between the turns, by the same pass as notices (`withNotices`).
-- **The person's lane:** in a worker chat, a brief's origin (the words you said to the orchestrator)
-  shows above its pill as your bubble, "You · via Chief of Staff".
+- **The person's lane:** a pill shows the origin messages its entries carry as your bubbles. In a
+  worker chat, the brief is a turn of the main chat, so its origin quote shows above it there.
 - **Room:** the pill opens the room in the same pane. One short header row has a Back arrow, this
   chat's agent ⇄ the peer (two Agent pills and a swap arrow) and "read only". The log is the same `ChatTurn` as the chat, with `saidBy` / `replyBy` speaker names. No
   composer, no Quote. A report keeps its folded block, and a brief keeps its origin quote.

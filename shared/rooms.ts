@@ -91,8 +91,11 @@ export const routeOf = (owner: Side, t: { instruction?: string; prompt?: string;
   t.route ?? turnRoute(owner, t);
 
 /** The room a turn of `owner`'s chat goes to — the other agent — or undefined for the main chat.
+ *  Only a named agent's chat sends turns to rooms. A worker chat keeps every turn (a brief, a `send`,
+ *  an `address`), named by its sender: there the person reads the work at a glance (Finn, after #472).
  *  Worker reports keep their folded block in an agent's chat; each shows in that worker's room too. */
 export function turnPeer(owner: Side, t: { instruction?: string; prompt?: string; origin?: TurnOrigin; route?: TurnRoute }): Side | undefined {
+  if (owner.kind !== "agent") return undefined;
   const { sender } = routeOf(owner, t);
   return sender.kind === "agent" && !sameSide(sender, owner) ? sender : undefined;
 }
@@ -134,10 +137,6 @@ export function turnRoomEntry(chat: Side, t: RoomTurn, viewer: Side): RoomEntry 
   if (sameSide(chat, viewer)) {
     const peer = turnPeer(chat, t);
     if (!peer) return undefined;
-    if (chat.kind !== "agent") {
-      return { ...base, room: roomId(peer, chat), sender: peer, recipient: chat, kind: "brief", messages: [instructionOf(t)], ...reply,
-        ...(t.origin ? { origin: t.origin, ...(t.originMessages ? { originMessages: t.originMessages } : {}) } : {}) };
-    }
     const msgs = messagesIn(instructionOf(t));
     const kind = (messageSender(msgs[0]!)?.kind ?? "ask") as RoomKind;
     return { ...base, room: roomId(peer, chat), sender: peer, recipient: chat, kind, messages: msgs.map(stripAgentWrapper), ...reply };

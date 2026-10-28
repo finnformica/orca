@@ -71,15 +71,35 @@ describe("rules", () => {
     expect(inMainChat(CHIEF, turn("rep", report))).toBe(true); // reports keep their folded block there
   });
 
+  test("a worker chat keeps every turn: a Chief of Staff brief, a send and Orca's own runs, each named by its sender", () => {
+    const origin = turnOrigin({ runId: "wake-1", messages: ["add a cache"], ids: [7], agent: "chief" });
+    const brief = turn("w1", "## Objective\nAdd a cache", { origin });
+    expect(inMainChat(WORKER, brief)).toBe(true);
+    expect(turnPeer(WORKER, brief)).toBeUndefined();
+    expect(turnRoomEntry(WORKER, brief, WORKER)).toBeUndefined();
+    // The sender stays on the turn, so the chat names it.
+    expect(sideLabel(routeOf(WORKER, brief).sender)).toBe("Chief of Staff");
+    // A recorded route from another agent (a send by the Assistant) stays too.
+    const sent = turn("w2", "Also fix the typo", { route: { sender: ASSISTANT, recipient: WORKER } });
+    expect(inMainChat(WORKER, sent)).toBe(true);
+    expect(routeOf(WORKER, sent).sender).toEqual(ASSISTANT);
+    // Orca's own runs: an autofix, an upkeep address.
+    expect(inMainChat(WORKER, turn("w3", `${AUTOFIX_MARKER} Fix it.`))).toBe(true);
+    expect(inMainChat(WORKER, turn("w4", "Address the PR", { route: { sender: orcaSide("upkeep"), recipient: WORKER } }))).toBe(true);
+  });
+
+  test("an orca ask between two agents still goes to their room", () => {
+    const ask = turn("a1", agentMessage("chief", "Summarise #general"));
+    expect(inMainChat(ASSISTANT, ask)).toBe(false);
+    expect(turnPeer(ASSISTANT, ask)).toEqual(CHIEF);
+    expect(turnRoomEntry(ASSISTANT, ask, ASSISTANT)!.room).toBe(roomId(CHIEF, ASSISTANT));
+  });
+
   test("an entry names both ends, with the wrapper stripped; the reply goes back", () => {
     const e = turnRoomEntry(ASSISTANT, turn("a1", agentMessage("chief", "Summarise #general")), ASSISTANT)!;
     expect([e.sender, e.recipient, e.kind, e.messages, e.reply]).toEqual([CHIEF, ASSISTANT, "ask", ["Summarise #general"], "reply to a1"]);
     expect(e.room).toBe(roomId(CHIEF, ASSISTANT));
     expect(stripAgentWrapper("[from assistant] hi")).toBe("hi");
-    const origin = turnOrigin({ runId: "wake-1", messages: ["do it"], ids: [7], agent: "chief" });
-    const brief = turnRoomEntry(WORKER, turn("w1", "## Objective\nAdd a cache", { origin }), WORKER)!;
-    expect([brief.sender, brief.recipient, brief.kind]).toEqual([CHIEF, WORKER, "brief"]);
-    expect(brief.origin).toEqual(origin);
     expect(turnRoomEntry(ASSISTANT, turn("a2", agentMessage("chief", "x"), { finishedAt: undefined }), ASSISTANT)!.reply).toBeUndefined();
     expect(turnRoomEntry(ASSISTANT, turn("a3", "What is new?"), ASSISTANT)).toBeUndefined();
   });
@@ -108,8 +128,8 @@ describe("rules", () => {
     const merged = mergePills(items, (i) => i.pill, (pill) => ({ pill }));
     expect(merged.map((i) => i.pill?.count ?? i.text)).toEqual([4, "yours", 2]);
     const origin = turnOrigin({ runId: "w", messages: ["fix it"], ids: [3], agent: "chief" });
-    const brief = turnRoomEntry(WORKER, turn("w1", "brief", { origin, originMessages: [{ id: 3, text: "fix it" }, { id: 4, missing: true }] }), WORKER)!;
-    expect(entryPill(WORKER, brief).person).toEqual([{ id: 3, text: "fix it" }]);
+    const brief = { ...a, id: "w1", origin, originMessages: [{ id: 3, text: "fix it" }, { id: 4, missing: true as const }] };
+    expect(entryPill(ASSISTANT, brief).person).toEqual([{ id: 3, text: "fix it" }]);
     expect(roomUnseen(40, 20)).toBe(true);
     expect(roomUnseen(40, 40)).toBe(false);
     expect(roomUnseen(40, undefined, 40 + 24 * 3600_000 + 1)).toBe(false); // never opened: the last day only
@@ -165,7 +185,7 @@ describe("database", () => {
     expect(you!.route!.sender).toEqual(PERSON);
   });
 
-  test("the rooms read finds both sides of a pair across chats, and a worker's briefs and reports", async () => {
+  test("the rooms read finds both sides of a pair across chats, and the reports about a worker", async () => {
     await record("@orca", "assistant", "a-ask", agentMessage("chief", "Summarise the inbox"), 100);
     await record("@orca", "assistant", "a-you", "What is new?", 110);
     await record("@orca", "orchestrator", "c-esc", agentMessage("assistant", "Please merge #12"), 120);
@@ -181,8 +201,8 @@ describe("database", () => {
     ]);
     expect(show(await roomEntries("@orca", "orchestrator"))).toEqual(["a-ask ask chief>assistant +reply", "c-esc ask assistant>chief +reply"]);
     const worker = await roomEntries("orca", "feat/cache");
-    expect(show(worker)).toEqual(["w-brief brief chief>orca/feat/cache +reply", "c-rep report orca/feat/cache>chief +reply"]);
-    expect(worker[0]!.origin?.agent).toBe("chief");
+    // The brief stays in the worker's own chat; only the Chief of Staff's side of the report is a room.
+    expect(show(worker)).toEqual(["c-rep report orca/feat/cache>chief +reply"]);
     // No wrapper text reaches the view.
     expect(JSON.stringify(await roomEntries("@orca", "assistant"))).not.toContain("[from ");
   });
