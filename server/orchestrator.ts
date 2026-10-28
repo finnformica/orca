@@ -1006,10 +1006,16 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
         await db.patchEnrichment(repo.name, branch, { preferredModel: args.model, preferredProvider: provider });
       }
       if (Object.keys(steer).length) await db.patchEnrichment(repo.name, branch, steer);
+      // Same lookup as board() (~line 634): only when the repo is checked out here, and never let a
+      // GitHub failure (no token, bad auth) stop the send — it just means no PR-sync instruction.
+      // Never cached on the workstream: a stale PR number could point at one already closed.
+      const prNumber = verbs.repoHere(repo)
+        ? (await gh.listPrs(repo.repoPath).catch(() => [])).find((p) => p.branch === branch)?.number
+        : undefined;
       const home = await verbs.placement(repo, { branch });
       const { status } = home !== db.instanceName()
-        ? (await viaInstance(cfg, home, "/api/workstreams/followup", { repo: repo.name, branch, instruction: text, origin: await wakeOrigin(b, ag.name) }) as { status: string })
-        : await verbs.followUp(cfg, repo, branch, { instruction: text, origin: await wakeOrigin(b, ag.name) });
+        ? (await viaInstance(cfg, home, "/api/workstreams/followup", { repo: repo.name, branch, instruction: text, origin: await wakeOrigin(b, ag.name), prNumber }) as { status: string })
+        : await verbs.followUp(cfg, repo, branch, { instruction: text, origin: await wakeOrigin(b, ag.name), prNumber });
       await db.patchEnrichment(repo.name, branch, { orchestrated: true }); // now yours to hear back from
       return status === "queued" ? "Queued behind the run in flight; it is sent when that finishes." : `Sent to ${repo.name}/${branch}. End your turn; you are woken when it finishes.`;
     }
