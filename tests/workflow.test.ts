@@ -11,7 +11,7 @@ import { freePort, killTree, orphanPreviewDbs, previewDbName, previewHost } from
 import { portFree, reclaimBridgePort, waitForPortFree } from "../server/net";
 import { run } from "../server/run";
 import {
-  addressPrPrompt, addressReviewPrompt, attachCommand, bulkActions, canMerge, chatPrompt, deriveKanbanState, draftState, followAction, followBlockers, followDecision, followUpPrompt, investigateReportPrompt, launchPrompt,
+  addressPrPrompt, addressReviewPrompt, attachCommand, bulkActions, canMerge, chatPrompt, deriveKanbanState, draftState, followAction, followBlockers, followDecision, followUpPrompt, investigateReportPrompt, KEEP_PR_TEXT_IN_SYNC, launchPrompt,
   DEFAULT_PR_TEMPLATE, prDescriptionPrompt, prMenuActions, promptFor, resolveCiPrompt, resolveConflictsPrompt, shouldBump, slackApiText, slackClipboard, slackMessage, slackPrompt, slugifyBranch, summarizeSync, validPrDescription, withAttachments, type WorkstreamState,
 } from "../web/src/workstream";
 import { retryTitle, titleFromModelJson } from "../server/title";
@@ -442,11 +442,14 @@ describe("W10 active-following (followAction)", () => {
     expect(all).toContain("resolveReviewThread");
     expect(all.match(/## Outcome/g)).toHaveLength(1); // one contract, not three
     expect(all).toContain("Do NOT open a pull request");
+    expect(all).toContain(KEEP_PR_TEXT_IN_SYNC); // the PR already exists: keep its title/body in sync
     const reviewOnly = addressPrPrompt({ prNumber: 7, branch: "feat" }, { base: "main", conflicting: false });
     expect(reviewOnly).not.toContain("## Merge conflicts");
     expect(reviewOnly).not.toContain("## Failing CI");
     expect(reviewOnly).toContain("## Review");        // always present: comments can only be judged by reading them
     expect(reviewOnly).toContain("gh pr view 7 --comments");
+    // No PR number (shouldn't happen for Address PR, but the builder must not claim one exists).
+    expect(addressPrPrompt({ branch: "feat" }, { base: "main", conflicting: false })).not.toContain(KEEP_PR_TEXT_IN_SYNC);
   });
   test("pending CI and unknown mergeability are not (yet) actionable", () => {
     expect(followAction({ mergeable: "UNKNOWN", ciStatus: "pending", reviewStatus: "review_required" })).toBeNull();
@@ -1209,6 +1212,10 @@ test("P6 a chat message is a conversation; a board action is still a work order"
   const action = followUpPrompt("Fix the failing test");
   expect(action).toContain("Work autonomously");
   expect(action).not.toContain("replying in a conversation");
+  // No PR yet → Orca opens it itself; don't ask the agent to keep a non-existent PR's text in sync.
+  expect(action).not.toContain(KEEP_PR_TEXT_IN_SYNC);
+  // The branch already has an open PR → keep its title and body describing the whole PR.
+  expect(followUpPrompt("Fix the failing test", { prNumber: 9 })).toContain(KEEP_PR_TEXT_IN_SYNC);
 });
 
 test("P7 a launch reads what's being asked, says which reading it took, and narrates", () => {
