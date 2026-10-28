@@ -46,7 +46,7 @@ a:hover { text-decoration-thickness: 2px; }
 
 .doc { position: relative; z-index: 1; max-width: 680px; margin: 0 auto; padding: 48px 24px 72px; }
 .doc .brand { display: inline-flex; align-items: center; gap: 12px; margin-bottom: 40px; text-decoration: none; }
-.doc .brand svg { width: 32px; height: 32px; }
+.doc .brand img { width: 32px; height: 32px; display: block; }
 .doc .brand span { font-family: "Unbounded", ui-sans-serif, system-ui, sans-serif; font-weight: 700; font-size: 22px; letter-spacing: -0.03em; }
 .doc h1 { font-size: 32px; line-height: 1.2; margin: 0 0 8px; }
 .doc h2 { font-size: 19px; margin: 32px 0 8px; }
