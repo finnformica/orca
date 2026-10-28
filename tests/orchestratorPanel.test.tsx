@@ -543,6 +543,28 @@ test("the PiP window never reads its own narrow width as a phone for the compose
   } finally { void pip; }
 });
 
+test("the main chat is the default agent: with the Chief of Staff archived or not the default, it follows the agent the server names", async () => {
+  const now = Date.now();
+  apiFake.turnsData.set("@orca::assistant", [{ id: "run-a", provider: "claude", instruction: "triage #ops", prompt: "p", response: "Default agent here.", startedAt: now - 500, finishedAt: now }]);
+  // The status with no agent answers the Assistant (Settings > Agents: default agent).
+  apiFake.orchestratorState = { ...apiFake.orchestratorState, agent: "assistant", displayName: "Assistant", branch: "assistant", key: "/state/agents/assistant" };
+  apiFake.extraAgents = [{ agent: "research", displayName: "Research", branch: "research", state: "idle", running: false, paused: false, notes: "", model: "claude-fable-5-1", key: "/state/agents/research" }];
+  await mount(<Entry />);
+  await click(launcher());
+  await afterSlide();
+  // The header's agent menu shows the default agent as chosen, and lists it first.
+  expect(menuChosen()).toBe("assistant");
+  await pointerdown(agentMenu()!);
+  expect(agentOptions().map((o) => o.querySelector('[data-slot="agent-pill"]')!.textContent)).toEqual(["Assistant", "Research"]);
+  expect(agentOptions()[0]!.getAttribute("aria-checked")).toBe("true");
+  await act(async () => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); await flush(); });
+  expect(panel()!.textContent).toContain("Default agent here.");
+  expect(panel()!.querySelector('[data-slot="agent-chat"]')).toBeNull(); // the main chat, not another agent's
+  // Before the first status answer the main chat reads the Chief of Staff's branch (it mounts at once
+  // for the composer's focus); once the server names the default agent, it reads that agent's.
+  expect(apiFake.turnPageCalls.at(-1)!.branch).toBe("assistant");
+});
+
 test("named agents: the header's agent menu lists each agent's pill and state dot, the Chief of Staff first; a pick is the same chat over its own branch", async () => {
   const now = Date.now();
   apiFake.turnsData.set("@orca::orchestrator", [{ id: "run-c", provider: "claude", instruction: "ship it", prompt: "p", response: "Spawned r/ship.", startedAt: now - 1000, finishedAt: now }]);

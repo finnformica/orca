@@ -321,11 +321,13 @@ export const CHIEF_BRANCH = "orchestrator";
 export const agentOfBranch = (branch: string): string => (branch === CHIEF_BRANCH ? CHIEF : branch);
 
 /** The agent an inbound message goes to (§7.7): `@chief` or `chief:` at the start of the text on a
- *  work grant or higher → the Chief of Staff; else the link's agent; else the Assistant. */
-export function inboundAgent(text: string | undefined, level: Level | undefined, linkAgent?: string): string {
+ *  work grant or higher → the Chief of Staff; else the link's agent; else undefined = the default
+ *  agent (an `orchestrator` target, server/integrations/inbox.ts toOrchestrator). An agent named here
+ *  that is archived since is the default agent too (inbox.toAgent). */
+export function inboundAgent(text: string | undefined, level: Level | undefined, linkAgent?: string): string | undefined {
   const high = !level || level === "full" || level === "work" || level === "admin";
   if (high && /^\s*(@chief\b|chief:)/i.test(text ?? "")) return CHIEF;
-  return linkAgent || ASSISTANT;
+  return linkAgent || undefined;
 }
 
 /** Where an inbound external message goes when no subscription claims it (§3.6, §7.4): a thread an
@@ -337,7 +339,8 @@ export function defaultInboundTarget(e: Pick<Envelope, "topic" | "grant" | "noti
   if (!agentMay(e)) return undefined;
   if (threadLink?.repo === AGENTS_REPO) return { kind: "agent", name: agentOfBranch(threadLink.branch) };
   if (threadLink && grantAllowsRepo(e.grant, threadLink.repo, "work")) return { kind: "workstream", repo: threadLink.repo, branch: threadLink.branch };
-  return { kind: "agent", name: inboundAgent(e.text, e.grant?.level, linkAgent) };
+  const name = inboundAgent(e.text, e.grant?.level, linkAgent);
+  return name ? { kind: "agent", name } : { kind: "orchestrator" };
 }
 
 /** Does a delivery target wake an agent (a named agent or a workstream)? */

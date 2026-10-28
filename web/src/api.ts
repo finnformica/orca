@@ -9,6 +9,8 @@ import type { PackView, WirePack } from "../../server/handoff";
 import type { ActivityRow as MemoryActivityRow, LinkedMemory } from "../../server/memory";
 import type { ScheduledWake } from "../../server/scheduledWake";
 import type { CoreSelection, Memory, MemoryRevision, ReflectionPass } from "../../shared/memory";
+import type { AgentDef, AgentTools } from "../../shared/agents";
+import { rememberAgentNames } from "../../shared/rooms";
 import type { AgentOutcome, AgentProvider, AgentStep, AgentTurn, TurnCheck } from "../../shared/agent";
 import type { Notification } from "../../shared/notifications";
 import type { RoomEntry } from "../../shared/rooms";
@@ -175,7 +177,8 @@ export const api = {
   memory: (id: number): Promise<MemoryDetail> => get(`/api/memory/${id}`).then(res),
   memoryActivity: (): Promise<{ revisions: MemoryActivityRow[] }> => get("/api/memory/activity").then(res),
   memoryReflections: (): Promise<{ passes: ReflectionPass[] }> => get("/api/memory/reflections").then(res),
-  memoryCore: (agent = "chief"): Promise<MemoryCore> => get(`/api/memory/core?agent=${encodeURIComponent(agent)}`).then(res),
+  // No agent = the default agent (the server picks it).
+  memoryCore: (agent = ""): Promise<MemoryCore> => get(`/api/memory/core${agent ? `?agent=${encodeURIComponent(agent)}` : ""}`).then(res),
   writeMemory: (body: { owner: string; title: string; body: string; tags?: string[]; importance?: number }): Promise<{ memory: Memory }> => post("/api/memory", body),
   changeMemory: (id: number, body: Record<string, unknown> & { action: "edit" | "pin" | "unpin" | "trust" | "state" | "revert" }): Promise<{ memory: Memory }> => post(`/api/memory/${id}`, body),
   handoffs: (): Promise<{ self: string; packs: PackView[] }> => get("/api/handoffs").then(res),
@@ -270,7 +273,18 @@ export const api = {
   // turns are read through the ordinary chat routes under its reserved repo/branch.
   // `agent` names a named agent (docs/design/named-agents-and-memory.md §7); none = the Chief of Staff.
   orchestrator: (agent?: string): Promise<AgentStatus> => get(`/api/orchestrator${agent ? `?agent=${encodeURIComponent(agent)}` : ""}`).then(res),
-  orchestratorAgents: (): Promise<{ agents: AgentStatus[]; cleanReportsTo: string }> => get("/api/orchestrator/agents").then(res),
+  // Each read also teaches the chat the agents' display names (shared/rooms.ts sideLabel).
+  // `defaultAgent`: the panel's main chat (an older bridge answers none: the Chief of Staff).
+  orchestratorAgents: (): Promise<{ agents: AgentStatus[]; defaultAgent?: string; cleanReportsTo: string }> =>
+    get("/api/orchestrator/agents").then(res).then((r: { agents: AgentStatus[]; defaultAgent?: string; cleanReportsTo: string }) => { rememberAgentNames(r.agents); return r; }),
+  // Settings > Agents: every agent's row (server/agents.ts), and the verbs its checklist offers.
+  agentDefs: (): Promise<{ agents: AgentDef[]; verbs: string[]; defaultAgent?: string; defaultSetting?: string }> => get("/api/orchestrator/agent-defs").then(res),
+  setDefaultAgent: (name: string): Promise<{ ok: true }> => post("/api/orchestrator/default-agent", { name }),
+  addAgentDef: (input: { name: string; displayName: string; role: string; model?: string; tools: AgentTools }): Promise<{ agent: AgentDef }> =>
+    post("/api/orchestrator/agents", input),
+  editAgentDef: (name: string, edit: { displayName?: string; role?: string; model?: string | null; tools?: AgentTools }): Promise<{ agent: AgentDef }> =>
+    post(`/api/orchestrator/agent-defs/${encodeURIComponent(name)}`, edit),
+  archiveAgentDef: (name: string): Promise<{ ok: true }> => post(`/api/orchestrator/agent-defs/${encodeURIComponent(name)}/archive`, {}),
   orchestratorModel: (model: string, agent?: string): Promise<{ ok: true }> => post("/api/orchestrator/model", { model, ...(agent ? { agent } : {}) }),
   orchestratorMessage: (text: string, attachments: string[] = [], agent?: string): Promise<{ status: "running" | "queued" }> =>
     post("/api/orchestrator/message", { text, attachments, ...(agent ? { agent } : {}) }),

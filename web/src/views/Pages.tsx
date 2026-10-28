@@ -32,6 +32,7 @@ import { cn } from "@/lib/utils";
 import { loadIdentity, useServerIdentity } from "@/lib/identity";
 import { IDENTITY_NAME_MAX, NEUTRAL, colorFromName, colorGrid, isNeutral, markBg, markColor, normalizeColor, normalizeTheme, swatchBackground, type GridCell } from "../../../shared/serverIdentity";
 import { RunningPreviews, TestMaster } from "./PreviewControl";
+import { AgentsSettings } from "./AgentSettings";
 
 /** A section of Settings with an anchor: `/settings#repos` (the old /repos) scrolls to it. */
 function SettingsSection({ id, title, children }: { id: string; title: string; children: React.ReactNode }) {
@@ -107,6 +108,7 @@ export function Settings() {
       <MachineCostSettings />
       <InstancesSettings />
       <ServerKeysSettings />
+      <AgentsSettings />
       <ReposSection />
       <GitHubSection />
       <VCard slot="settings-config" title="Configuration" aside={<span className="text-muted-foreground text-xs">read-only · orca.config.ts</span>}>

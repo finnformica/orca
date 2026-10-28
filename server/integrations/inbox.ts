@@ -8,7 +8,6 @@ import * as verbs from "../verbs";
 import type { OrcaConfig } from "../config";
 import * as store from "./store";
 import { repoSlug } from "../github";
-import { CHIEF } from "../../shared/agents";
 import { agentMay, fenceExternal, integrationMetaLine, integrationPlace, integrationUrl, orcaEventText, replyToOf, type Envelope, type SendResult } from "../../shared/integrations";
 
 /** The text an event becomes for an agent: an outside sender's fenced as data, Orca's own as is. */
@@ -33,15 +32,17 @@ export async function orcaEvent(cfg: OrcaConfig, e: Pick<Envelope, "topic" | "sc
   return orcaEventText(e, slug);
 }
 
-/** `inbox.toOrchestrator` (§3.5): a stored `orchestrator` target is the Chief of Staff. */
-export const toOrchestrator = (cfg: OrcaConfig, e: Envelope): Promise<SendResult> => toAgent(cfg, CHIEF, e);
+/** `inbox.toOrchestrator` (§3.5): a stored `orchestrator` target (a subscription to "the orchestrator",
+ *  or an inbound message with no link agent) is the default agent (server/agents.ts defaultAgent). */
+export const toOrchestrator = async (cfg: OrcaConfig, e: Envelope): Promise<SendResult> => toAgent(cfg, (await agents.defaultAgent(cfg)).name, e);
 
 /** `inbox.toAgent` (§3.5, §7.4). An outside sender's message goes in as a message with its grant
  *  (a separate wake from any other grant, verbs checked server-side); a person resets the wake count,
  *  a script does not. Orca's own event (a subscription of `orca.*` to an agent) is a worker report:
  *  management by exception, batched like the rest. */
-export async function toAgent(cfg: OrcaConfig, agent: string, e: Envelope): Promise<SendResult> {
-  if (agent !== CHIEF && !(await agents.get(agent))) return { ok: false, retryable: false, error: `no agent ${agent} (removed?)` };
+export async function toAgent(cfg: OrcaConfig, named: string, e: Envelope): Promise<SendResult> {
+  // An agent archived since the link or subscription named it: the default agent takes it instead.
+  const agent = (await agents.get(named)) ? named : (await agents.defaultAgent(cfg)).name;
   if (e.grant) {
     if (!agentMay(e)) return { ok: false, retryable: false, error: "this message may not wake an agent (notify agent is off, or a machine event under notify)" };
     // A `notify` grant is READ-ONLY: the wake may only tell you about it. No reply target (it may not

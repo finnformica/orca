@@ -19,9 +19,10 @@ import * as dispatcher from "../server/integrations/dispatcher";
 import * as inbox from "../server/integrations/inbox";
 import type { OrcaConfig } from "../server/config";
 import type { AgentTurn } from "../shared/agent";
-import { ASSISTANT, CHIEF, agentMessage, agentState, agentVerbRefusal, authoredPost, BUILTIN_AGENTS, inboundAgent } from "../shared/agents";
+import { AGENT_VERBS, ASSISTANT, CHIEF, agentMessage, agentState, agentVerbRefusal, authoredPost, inboundAgent } from "../shared/agents";
+import { SEED_AGENTS } from "../server/agentSeed";
 import { ORCA_EVENT_MARKER, planDeliveries, type Envelope, type Grant } from "../shared/integrations";
-import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, WORKER_EVENT_MARKER, commandsFor, isUserMessage, orchestratorPrompt, turnSource } from "../web/src/workstream";
+import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, WORKER_EVENT_MARKER, agentDraftOf, agentDraftPatch, agentToolsLabel, commandsFor, toggleAgentVerb, isUserMessage, orchestratorPrompt, turnSource } from "../web/src/workstream";
 import { installFakeGh, makeScratchRepo, setPrListFixture } from "./helpers";
 import { freshSchema, type TestDb } from "./pg";
 
@@ -107,11 +108,11 @@ test("A1: the two agents have separate queues, wake counts, sessions and directo
   expect(orchestrator.dir(ASSISTANT)).toEndWith("/agents/assistant");
   const asst = runs.filter((r) => r.cwd === orchestrator.dir(ASSISTANT));
   expect(asst).toHaveLength(2);
-  // The Assistant: its own role and Sonnet, no shell, its command list without spawn.
+  // The Assistant: its own role and Sonnet, and the Chief of Staff's tools (shell, every verb).
   expect(asst[0]!.argv).toContain("You are Orca's Assistant");
   expect(asst[0]!.argv).toContain("--model claude-sonnet-5-5");
-  expect(asst[0]!.argv).not.toContain("bypassPermissions");
-  expect(asst[0]!.argv).not.toContain("orca spawn --repo");
+  expect(asst[0]!.argv).toContain("bypassPermissions"); // every seeded agent has the shell (Finn narrows one in Settings)
+  expect(asst[0]!.argv).toContain("orca spawn --repo");
   expect(asst[0]!.argv).toContain("orca ask <agent>");
   // Separate sessions; the second Assistant wake resumed the Assistant's own.
   const [cb, ab] = [await blobOf(ORCHESTRATOR_BRANCH), await blobOf(ASSISTANT)];
@@ -126,13 +127,16 @@ test("A1: the two agents have separate queues, wake counts, sessions and directo
   expect((await blobOf(ASSISTANT)).wakes ?? 0).toBe(0);
   // Status per agent, and the list for the tabs.
   const all = await orchestrator.statuses(cfg());
-  expect(all.map((s) => [s.agent, s.displayName, s.branch, s.state])).toEqual([[CHIEF, "Chief of Staff", ORCHESTRATOR_BRANCH, "idle"], [ASSISTANT, "Assistant", ASSISTANT, "idle"]]);
+  expect(all.map((s) => [s.agent, s.displayName, s.branch, s.state])).toEqual([[CHIEF, "Chief of Staff", ORCHESTRATOR_BRANCH, "idle"], [ASSISTANT, "Assistant", ASSISTANT, "idle"], ["research", "Research", "research", "idle"]]);
 });
 
-test("A2: the Assistant cannot spawn, merge, send or post as the user; agent add is the user's alone", async () => {
+test("A2: a narrowed agent cannot spawn, merge, send or post as the user; agent add is the user's word, to any agent", async () => {
   const as = { _agent: ASSISTANT };
+  // Every seeded agent has every verb: Finn narrows one in Settings. Here, the Assistant's old list.
+  expect(await agents.get(ASSISTANT)).toMatchObject({ tools: { shell: true, verbs: "all" } });
+  await agents.edit(ASSISTANT, { tools: { shell: false, verbs: OLD_ASSISTANT_VERBS } });
   const brief = { repo: "r", title: "Add cache", model: "claude-sonnet-5-5", objective: "x", output: "y", boundaries: "z" };
-  await expect(orchestrator.tool(cfg(), "spawn", { ...brief, ...as })).rejects.toThrow(/Assistant may not run "spawn".*orca ask chief/);
+  await expect(orchestrator.tool(cfg(), "spawn", { ...brief, ...as })).rejects.toThrow(/Assistant may not run "spawn".*orca ask <agent>/);
   const refused: [string, Record<string, unknown>][] = [["merge", { repo: "r", pr: "1", "when-green": true }], ["send", { repo: "r", branch: "b", _: ["hi"] }], ["sweep", {}], ["archive", { repo: "r", branch: "b" }]];
   for (const [verb, args] of refused) {
     await expect(orchestrator.tool(cfg(), verb, { ...args, ...as })).rejects.toThrow(/may not run/);
@@ -141,17 +145,18 @@ test("A2: the Assistant cannot spawn, merge, send or post as the user; agent add
   await expect(orchestrator.tool(cfg(), "preview", { repo: "r", branch: "b", ...as })).rejects.toThrow(/only preview --status/);
   // Its reads work.
   expect(await orchestrator.tool(cfg(), "board", as)).toBeString();
-  // `agent add`: never an agent's own idea, and not the Chief of Staff's from a worker report.
+  // `agent add`: never an agent's own idea (no wake of only the user's messages), for any agent.
   await expect(orchestrator.tool(cfg(), "agent", { _: ["add", "scout"], display: "Scout", role: "Look around.", ...as })).rejects.toThrow(/user's alone/);
   await expect(orchestrator.tool(cfg(), "agent", { _: ["add", "scout"], display: "Scout", role: "Look around." })).rejects.toThrow(/user's alone/);
-  // From the user's own chat with the Chief of Staff it works, and the new agent gets the Assistant's verbs.
-  await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { wakeFromUser: true });
-  expect(await orchestrator.tool(cfg(), "agent", { _: ["add", "scout"], display: "Scout", role: "Look around." })).toContain("Added the agent scout");
+  // On the user's word it works, in ANY agent's wake (here the Assistant's), and the new agent gets
+  // what every seeded agent got: a shell and every verb.
+  await db.patchEnrichment(ORCHESTRATOR_REPO, ASSISTANT, { wakeFromUser: true });
+  expect(await orchestrator.tool(cfg(), "agent", { _: ["add", "scout"], display: "Scout", role: "Look around.", ...as })).toContain("Added the agent scout");
   const scout = await agents.get("scout");
-  expect(scout).toMatchObject({ displayName: "Scout", role: "Look around.", branch: "scout", tools: { shell: false } });
-  expect(agentVerbRefusal(scout!, "spawn", [], {})).toMatch(/Scout may not run "spawn"/);
+  expect(scout).toMatchObject({ displayName: "Scout", role: "Look around.", branch: "scout", tools: { shell: true, verbs: "all" } });
+  expect(agentVerbRefusal(scout!, "spawn", [], {})).toBeUndefined();
   expect((await orchestrator.tool(cfg(), "agent", { _: ["list"] })).split("\n")).toEqual([
-    "chief · Chief of Staff · idle", "assistant · Assistant · idle · limited verbs", "scout · Scout · idle · limited verbs",
+    "chief · Chief of Staff · idle", "assistant · Assistant · idle · limited verbs", "research · Research · idle", "scout · Scout · idle",
   ]);
 });
 
@@ -191,7 +196,7 @@ test("A4: an inbound message goes to its link's agent, @chief to the Chief of St
   const targets = async (key: string) => (await db.withRetry((sql) => sql`SELECT d.target FROM delivery d JOIN event e ON e.id = d.event_id WHERE e.key = ${key}`) as { target: { kind: string; name?: string } }[])
     .map((r) => r.target).filter((t) => t.kind !== "web");
   expect(await router.ingest("disc", msg("1", "C1", "is CI green?"))).toBe("new");
-  expect(await targets("discord:1")).toEqual([{ kind: "agent", name: ASSISTANT }]); // the default
+  expect(await targets("discord:1")).toEqual([{ kind: "orchestrator" }]); // no link agent: the default agent
   expect(await store.link("L2")).toMatchObject({ agent: CHIEF });
   await router.ingest("disc", msg("2", "C2", "status?"));
   expect(await targets("discord:2")).toEqual([{ kind: "agent", name: CHIEF }]); // the link's agent
@@ -203,12 +208,16 @@ test("A4: an inbound message goes to its link's agent, @chief to the Chief of St
   expect(await targets("discord:4")).toEqual([{ kind: "agent", name: ASSISTANT }]);
 });
 
-test("A5: a clean report goes to cleanReportsTo; a problem report always to the Chief of Staff", async () => {
+test("A5: a clean report goes to cleanReportsTo; a problem report always to the default agent", async () => {
   const toAssistant = cfg({ agents: { cleanReportsTo: ASSISTANT } });
   wire(toAssistant);
-  expect(orchestrator.reportTarget(cfg(), report("done"))).toBe(CHIEF); // the default: Finn has not moved them
-  expect(orchestrator.reportTarget(toAssistant, report("done"))).toBe(ASSISTANT);
-  expect(orchestrator.reportTarget(toAssistant, report("error"))).toBe(CHIEF);
+  expect(await orchestrator.reportTarget(cfg(), report("done"))).toBe(CHIEF); // no setting: the first agent
+  expect(await orchestrator.reportTarget(toAssistant, report("done"))).toBe(ASSISTANT);
+  expect(await orchestrator.reportTarget(toAssistant, report("error"))).toBe(CHIEF);
+  // A default agent setting moves problems (and unset clean reports) there; a gone name falls back.
+  expect(await orchestrator.reportTarget(cfg({ agents: { default: "research" } }), report("error"))).toBe("research");
+  expect(await orchestrator.reportTarget(cfg({ agents: { default: "research" } }), report("done"))).toBe("research");
+  expect(await orchestrator.reportTarget(cfg({ agents: { default: "gone", cleanReportsTo: "gone" } }), report("done"))).toBe(CHIEF);
   await orchestrator.report(toAssistant, report("done"));
   await orchestrator.report(toAssistant, report("error"));
   const [asst] = await settled(() => turnsOf(ASSISTANT), 1);
@@ -263,12 +272,14 @@ test("A7: visible state — the agent sets waiting, a user message clears it; a 
 });
 
 test("A8: the pure rules — routing, the prefix, the classifiers, the prompt and its command list", () => {
+  const [chiefSeed, assistantSeed] = SEED_AGENTS;
   expect(inboundAgent("@chief hi", "work")).toBe(CHIEF);
   expect(inboundAgent("chief: hi", "admin", "assistant")).toBe(CHIEF);
-  expect(inboundAgent("@chief hi", "ask")).toBe(ASSISTANT); // a lower grant goes to the link's agent only
+  expect(inboundAgent("@chief hi", "ask")).toBeUndefined(); // a lower grant: the link's agent only, here none = the default agent
+  expect(inboundAgent("hi", "work", "assistant")).toBe(ASSISTANT);
   expect(inboundAgent("hi", "work", "scout")).toBe("scout");
-  expect(authoredPost(BUILTIN_AGENTS[1]!, "on it")).toBe("**Assistant**: on it");
-  expect(authoredPost(BUILTIN_AGENTS[0]!, "on it")).toBe("on it");
+  expect(authoredPost(assistantSeed!, "on it")).toBe("**Assistant**: on it");
+  expect(authoredPost(chiefSeed!, "on it")).toBe("on it");
   expect(agentState({ running: true, paused: true, stored: "waiting" })).toEqual({ state: "working" });
   expect(agentState({ running: false, paused: false, stored: "done", note: "shipped" })).toEqual({ state: "done", note: "shipped" });
   const asked = agentMessage(ASSISTANT, "please merge #7");
@@ -277,8 +288,8 @@ test("A8: the pure rules — routing, the prefix, the classifiers, the prompt an
   // Outside an agent's thread or with no link agent, the plan names the Assistant.
   const inbound = { topic: "ext.slack.message", source: { adapter: "slack", linkId: "L1" }, grant: { level: "work" as const, repos: ["r"] }, actor: { external: { adapter: "slack", id: "U1" } }, text: "hi" } as unknown as Envelope;
   expect(planDeliveries(inbound, [], new Map([["L1", { integrationId: "s", adapter: "slack", externalId: "C1", agent: "scout" }]]))).toEqual([{ subscriptionId: null, target: { kind: "agent", name: "scout" } }]);
-  // The Assistant's prompt: its role, its verbs, no Models, no notes.
-  const p = orchestratorPrompt({ fresh: true, board: "(empty)", messages: ["hi"], agent: { name: ASSISTANT, displayName: "Assistant", verbs: BUILTIN_AGENTS[1]!.tools.verbs } });
+  // A narrowed agent (no spawn): its role and verbs, no Models, no notes.
+  const p = orchestratorPrompt({ fresh: true, board: "(empty)", messages: ["hi"], role: assistantSeed!.role, verbs: OLD_ASSISTANT_VERBS, agent: { name: ASSISTANT, displayName: "Assistant" } });
   expect(p).toContain("You are Orca's Assistant");
   expect(p).not.toContain("## Models");
   expect(p).not.toContain("## Your notes");
@@ -289,8 +300,143 @@ test("A8: the pure rules — routing, the prefix, the classifiers, the prompt an
   expect(cmds).not.toContain("orca slack post");
   expect(cmds).not.toContain("orca spawn");
   // The Chief of Staff's prompt is the orchestrator's, plus the line about its team.
-  const chief = orchestratorPrompt({ fresh: true, board: "(empty)", messages: ["hi"] });
+  const chief = orchestratorPrompt({ fresh: true, board: "(empty)", messages: ["hi"], role: chiefSeed!.role });
   expect(chief).toContain("You are Orca's orchestrator");
   expect(chief).toContain("You are the Chief of Staff of a small team of named agents");
   expect(chief).toContain("## Models");
+});
+
+// ── Agents defined by rows (server/agents.ts, named step 20261027-agent-definitions) ──
+
+/** The Assistant's verbs as the code enforced them before the move: the seed must equal them. */
+const OLD_ASSISTANT_VERBS = [
+  "board", "channels", "machine", "chats", "read", "post", "thread", "ask-user", "ask-form",
+  "memory", "wake", "ask", "agent", "status", "preview", "slack", "gmail", "cloudflare",
+];
+
+test("A9: the migration seeds three agents with equal tools, Research's role and Fable", async () => {
+  const all = await agents.all();
+  expect(all.map((a) => a.name)).toEqual([CHIEF, ASSISTANT, "research"]);
+  for (const a of all) expect(a).toMatchObject({ tools: { shell: true, verbs: "all" }, maxGrant: "full" });
+  expect(all.map((a) => a.model)).toEqual(["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1"]);
+  expect(all[0]!.role).toStartWith("You are Orca's orchestrator.");
+  expect(all[1]!.role).toStartWith("You are Orca's Assistant");
+  expect(all[2]!.role).toStartWith("You research features and ideas before any code is written.");
+  expect(all[2]).toMatchObject({ displayName: "Research", branch: "research" });
+
+  // The live database: Finn added `research` (no shell, the old Assistant verbs, Opus, his role), no
+  // other row, and a link with no agent (= the Assistant then). The step keeps his role and its state,
+  // gives it Fable and every verb, writes the other two, and names the Assistant on the link.
+  const { seedAgentsSql } = await import("../server/agentSeed");
+  await db.withRetry((sql) => sql`DELETE FROM agent`);
+  await db.withRetry((sql) => sql`INSERT INTO agent (user_id, name, display_name, role, model, branch, tools, state, created_at, updated_at)
+    VALUES ('me', 'research', 'Research', 'Finn wrote this.', 'claude-opus-5-5', 'research', ${{ shell: false, verbs: OLD_ASSISTANT_VERBS }}, 'waiting', 500, 500)`);
+  await store.addIntegration({ id: "disc", kind: "discord", name: "Discord", instance: "local", config: {}, enabled: true });
+  await store.addLink({ id: "L1", integrationId: "disc", externalId: "C1", label: "#ops", level: "work", repos: [], requireMention: false });
+  await db.withRetry((sql) => sql.unsafe(seedAgentsSql()));
+  expect((await agents.all()).map((a) => a.name)).toEqual([CHIEF, ASSISTANT, "research"]);
+  expect(await agents.get("research")).toMatchObject({ role: "Finn wrote this.", model: "claude-fable-5-1", tools: { shell: true, verbs: "all" }, state: "waiting" });
+  expect(await agents.get(CHIEF)).toMatchObject({ model: "claude-opus-5-5", tools: { shell: true, verbs: "all" } });
+  expect(await store.link("L1")).toMatchObject({ agent: ASSISTANT });
+  // A re-run never undoes an edit made in Settings, nor a link set to the default agent since.
+  await agents.edit(ASSISTANT, { tools: { shell: false, verbs: ["board"] }, role: "Edited." });
+  await db.withRetry((sql) => sql`UPDATE channel_link SET agent = NULL`);
+  await db.withRetry((sql) => sql.unsafe(seedAgentsSql()));
+  expect(await agents.get(ASSISTANT)).toMatchObject({ role: "Edited.", tools: { verbs: ["board"] } });
+  expect((await store.link("L1"))!.agent).toBeFalsy();
+});
+
+test("A10: the verb check reads the row, and an edit applies to the next call with no restart", async () => {
+  const as = { _agent: ASSISTANT };
+  expect(await orchestrator.tool(cfg(), "board", as)).toBeString();
+  await agents.edit(ASSISTANT, { tools: { shell: false, verbs: ["chats"] } });
+  await expect(orchestrator.tool(cfg(), "board", as)).rejects.toThrow(/Assistant may not run "board"/);
+  await agents.edit(ASSISTANT, { tools: { shell: false, verbs: "all" } });
+  expect(await orchestrator.tool(cfg(), "board", as)).toBeString();
+  // The Chief of Staff is a row like any other: a narrowed row narrows it.
+  await agents.edit(CHIEF, { tools: { shell: true, verbs: ["chats"] } });
+  await expect(orchestrator.tool(cfg(), "board", {})).rejects.toThrow(/Chief of Staff may not run "board"/);
+  // A bad edit is refused and changes nothing.
+  await expect(agents.edit(CHIEF, { tools: { shell: true, verbs: ["rm-rf"] } })).rejects.toThrow(/unknown verb rm-rf/);
+  await expect(agents.edit(CHIEF, { role: "  " })).rejects.toThrow(/role text is required/);
+  expect((await agents.get(CHIEF))!.tools).toEqual({ shell: true, verbs: ["chats"] });
+});
+
+test("A11: an edited role and model reach the next fresh wake", async () => {
+  wire();
+  await agents.edit(ASSISTANT, { role: "You are the Night Watch. Read and report.", model: "claude-haiku-4-5-20251001", displayName: "Night Watch" });
+  await orchestrator.message(cfg(), "hello", [], { agent: ASSISTANT });
+  await settled(() => turnsOf(ASSISTANT), 1);
+  const [run] = (await launches()).filter((l) => l.cwd === orchestrator.dir(ASSISTANT));
+  expect(run!.argv).toContain("You are the Night Watch. Read and report.");
+  expect(run!.argv).not.toContain("You are Orca's Assistant");
+  expect(run!.argv).toContain("claude-haiku-4-5-20251001");
+  expect((await orchestrator.status(cfg(), ASSISTANT)).displayName).toBe("Night Watch");
+});
+
+test("A12: no agent edits or archives an agent; any agent archives but the last one", async () => {
+  await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { wakeFromUser: true }); // even on the user's word
+  for (const sub of ["edit", "remove", "archive"]) {
+    await expect(orchestrator.tool(cfg(), "agent", { _: [sub, ASSISTANT], verbs: "all" })).rejects.toThrow(/user's alone: Settings > Agents/);
+    await expect(orchestrator.tool(cfg(), "agent", { _: [sub, ASSISTANT], _agent: ASSISTANT })).rejects.toThrow(/user's alone/);
+  }
+  // Every agent has every verb: the agent verb's rule comes first.
+  await expect(orchestrator.tool(cfg(), "agent", { _: ["edit", CHIEF], _agent: ASSISTANT })).rejects.toThrow(/user's alone/);
+  await expect(orchestrator.tool(cfg(), "agent", { _: ["add", "scout"], display: "S", role: "r", _agent: ASSISTANT })).rejects.toThrow(/user's alone/);
+  // Any row archives, the Chief of Staff's too; the last one stays.
+  await agents.remove(CHIEF);
+  await agents.remove("research");
+  await expect(agents.remove(ASSISTANT)).rejects.toThrow(/assistant is the last agent/);
+  expect((await agents.all()).map((a) => a.name)).toEqual([ASSISTANT]);
+  await agents.add({ name: "scout", displayName: "Scout", role: "Look around." });
+  await agents.remove(ASSISTANT);
+  expect((await agents.all()).map((a) => a.name)).toEqual(["scout"]);
+});
+
+test("A14: with the Chief of Staff archived, everything that names no agent reaches the default agent", async () => {
+  wire();
+  await agents.remove(CHIEF);
+  // No setting: the first active agent (the Assistant). The panel's main chat (status with no agent).
+  expect((await orchestrator.status(cfg())).agent).toBe(ASSISTANT);
+  // The setting picks another; a gone name falls back to the first active agent.
+  const toResearch = cfg({ agents: { default: "research" } });
+  await setDefaultAgentForTest("research");
+  expect((await orchestrator.status(toResearch)).agent).toBe("research");
+  // A message to no agent, a problem worker report and a stored "orchestrator" delivery: all to Research.
+  await orchestrator.message(toResearch, "hello default");
+  await settled(() => turnsOf("research"), 1);
+  await orchestrator.deliverReport(toResearch, report("error"));
+  await inbox.toOrchestrator(toResearch, { key: "k1", topic: "orca.pr.ci", at: Date.now(), source: { adapter: "orca" }, text: "CI red on #1" } as unknown as Envelope);
+  // A delivery to an archived agent goes to the default agent too, never an error.
+  expect(await inbox.toAgent(toResearch, CHIEF, { key: "k2", topic: "orca.pr.ci", at: Date.now(), source: { adapter: "orca" }, text: "CI red on #2" } as unknown as Envelope)).toEqual({ ok: true });
+  await rm(hold, { force: true });
+  const turns = await settled(() => turnsOf("research"), 2);
+  expect(turns[0]!.instruction).toContain("hello default");
+  expect(turns.map((t) => t.instruction).join("\n")).toContain("It broke.");
+  expect(await turnsOf(ORCHESTRATOR_BRANCH)).toEqual([]);
+  expect(await turnsOf(ASSISTANT)).toEqual([]);
+  // `orca` with no agent (an old bin/orca) runs as the default agent.
+  expect(await orchestrator.tool(toResearch, "agent", { _: ["state", "waiting"], note: "on Finn" })).toContain("State: waiting");
+  expect(await agents.get("research")).toMatchObject({ state: "waiting" });
+});
+
+/** Settings' setter, on the test's own config document (the store reads `agents.default` from it). */
+async function setDefaultAgentForTest(name: string) {
+  const { setDefaultAgent, saveConfigDocument, invalidateConfig } = await import("../server/config");
+  await saveConfigDocument(cfg());
+  await setDefaultAgent(name);
+  invalidateConfig();
+}
+
+test("A13: AGENT_VERBS is every verb of the tool route; the Settings form's pure helpers", async () => {
+  const src = await readFile(join(import.meta.dir, "../server/orchestrator.ts"), "utf8");
+  const cases = [...src.slice(src.indexOf("export async function tool(")).matchAll(/^\s+case "([a-z-]+)":/gm)].map((m) => m[1]!);
+  expect([...new Set(cases)].sort()).toEqual([...AGENT_VERBS].sort());
+  const def = { name: "a", displayName: "A", role: "r", model: "m", tools: { shell: false, verbs: ["board", "chats"] } };
+  expect(agentDraftPatch(def, agentDraftOf(def))).toEqual({});
+  expect(agentDraftPatch(def, { ...agentDraftOf(def), verbs: ["chats", "board"] })).toEqual({});
+  expect(agentDraftPatch(def, { ...agentDraftOf(def), model: "", verbs: "all" })).toEqual({ model: null, tools: { shell: false, verbs: "all" } });
+  expect(toggleAgentVerb(["board"], "ask", true)).toEqual(["ask", "board"]);
+  expect(toggleAgentVerb("all", "ask", false)).toEqual([]);
+  expect(agentToolsLabel({ verbs: [] })).toBe("no verbs");
 });

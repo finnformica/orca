@@ -646,7 +646,7 @@ describe("Slack on the integrations core (Postgres)", () => {
     await settle();
     const e = await store.event("slack:T1:D1:1700000000.000100");
     expect(e).toMatchObject({ source: { linkId: "dm", channel: "D1" }, thread: { externalId: "D1" }, grant: { level: "ask", linkId: "dm", principalId: "saajan" } });
-    expect((await store.deliveries()).filter((d) => d.envelope.key === e!.key).map((d) => d.target.kind).sort()).toEqual(["agent", "web"]); // the link's agent (the Assistant); web: the link's Notify me
+    expect((await store.deliveries()).filter((d) => d.envelope.key === e!.key).map((d) => d.target.kind).sort()).toEqual(["orchestrator", "web"]); // no link agent: the default agent (an `orchestrator` target); web: the link's Notify me
     await router.replyToEvent(e!.id, "Yes, it merged an hour ago.");
     await dispatcher.dispatchOnce();
     const post = calls.filter((x) => x.method === "chat.postMessage");

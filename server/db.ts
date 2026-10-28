@@ -31,6 +31,7 @@ import { hostname } from "os";
 import { join } from "path";
 import type { AgentOutcome, AgentProvider, AgentTurn, StopReason, TurnCheck, TurnOrigin, TurnSource } from "../shared/agent";
 import * as bus from "./bus";
+import { seedAgentsSql } from "./agentSeed";
 import { chatOwner, turnRoute, type Side, type TurnRoute } from "../shared/rooms";
 import type { Notification, NotificationInput } from "../shared/notifications";
 
@@ -1231,6 +1232,16 @@ export const MIGRATIONS: MigrationStep[] = [
       ALTER TABLE subscription DROP CONSTRAINT IF EXISTS subscription_target_kind_check,
         ADD CONSTRAINT subscription_target_kind_check CHECK (target_kind IN ('link','orchestrator','agent','workstream','web'));
     `,
+  },
+  {
+    name: "20261027-agent-definitions",
+    idempotent: true,
+    // Agents defined by rows only (server/agents.ts, docs/design/named-agents-and-memory.md §3, §7.3).
+    // The step seeds the Chief of Staff, the Assistant and Research (server/agentSeed.ts), each with the
+    // Chief of Staff's tools (shell, every verb, full grant: Finn's call). `agent.seeded_at` marks a
+    // seeded row, so a re-run changes nothing a user edited. A channel link with no agent meant the
+    // Assistant; it names it now, because no agent now means the default agent.
+    sql: seedAgentsSql(),
   },
 ];
 

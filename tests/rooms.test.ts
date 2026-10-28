@@ -14,7 +14,7 @@ import { agentMessage } from "../shared/agents";
 import { scheduledWakeMessage } from "../shared/scheduledWake";
 import {
   PERSON, agentSide, chatOwner, entryPill, inMainChat, mergePills, messageSender, orcaSide, reportWorker, roomId, roomUnseen, roomsOf,
-  routeLabel, routeOf, sideLabel, stripAgentWrapper, turnPeer, turnRoomEntry, turnRoute, workerSide, type RoomPill, type RoomTurn,
+  rememberAgentNames, routeLabel, routeOf, sideLabel, stripAgentWrapper, turnPeer, turnRoomEntry, turnRoute, workerSide, type RoomPill, type RoomTurn,
 } from "../shared/rooms";
 import { joinMessages, turnOrigin, workerEvent } from "../web/src/workstream";
 
@@ -118,7 +118,11 @@ describe("rules", () => {
   test("labels: agents by display name, a worker by its branch, Orca by what it did", () => {
     expect(routeLabel(CHIEF, ASSISTANT)).toBe("Chief of Staff → Assistant");
     expect(sideLabel(WORKER)).toBe("Worker feat/cache");
-    expect(sideLabel(agentSide("scout"), { scout: "Scout" })).toBe("Scout");
+    expect(sideLabel(agentSide("scout"), { scout: "Scout Bot" })).toBe("Scout Bot");
+    // The agents list teaches the labels (api.orchestratorAgents); before it, the name, capitalised.
+    expect(sideLabel(agentSide("night-watch"))).toBe("Night-watch");
+    rememberAgentNames([{ agent: "night-watch", displayName: "Night Watch" }]);
+    expect(sideLabel(agentSide("night-watch"))).toBe("Night Watch");
     expect(sideLabel(orcaSide("upkeep"))).toBe("Orca · PR upkeep");
     expect(sideLabel(PERSON)).toBe("You");
   });

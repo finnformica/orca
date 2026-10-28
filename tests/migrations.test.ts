@@ -107,8 +107,10 @@ test("every step named uniquely, ids strictly increasing, and an idempotent step
     const statements = step.sql.replace(/--[^\n]*/g, "").split(";").map((s) => s.trim().replace(/\s+/g, " ")).filter(Boolean);
     for (const st of statements) {
       // …or a backfill that only fills NULLs, so a re-run touches nothing it already wrote, or one
-      // ALTER TABLE that drops a constraint IF EXISTS and re-adds the same one (a widened CHECK).
-      expect(`${db.stepLabel(step)}: ${st}`).toMatch(/^[\w-]+: (CREATE (UNIQUE )?(TABLE|INDEX) IF NOT EXISTS |ALTER TABLE \S+ ADD COLUMN IF NOT EXISTS |ALTER TABLE \S+ DROP CONSTRAINT IF EXISTS (\S+), ADD CONSTRAINT \4 |UPDATE (\S+) .* AND \S+ IS NULL$)/i);
+      // ALTER TABLE that drops a constraint IF EXISTS and re-adds the same one (a widened CHECK), or a
+      // seed upsert that changes a row only while a flag says it is not seeded yet (the agent seed:
+      // `ON CONFLICT … DO UPDATE … WHERE agent.seeded_at IS NULL`), so a re-run never undoes a user's edit.
+      expect(`${db.stepLabel(step)}: ${st}`).toMatch(/^[\w-]+: (CREATE (UNIQUE )?(TABLE|INDEX) IF NOT EXISTS |ALTER TABLE \S+ ADD COLUMN IF NOT EXISTS |ALTER TABLE \S+ DROP CONSTRAINT IF EXISTS (\S+), ADD CONSTRAINT \4 |UPDATE (\S+) .* AND \S+ IS NULL$|INSERT INTO \S+ .* ON CONFLICT .* DO UPDATE SET .* WHERE \S+ IS NULL$)/i);
     }
   }
 });

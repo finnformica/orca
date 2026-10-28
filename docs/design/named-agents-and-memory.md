@@ -245,6 +245,11 @@ CREATE TABLE IF NOT EXISTS agent (
 CREATE UNIQUE INDEX IF NOT EXISTS agent_branch ON agent (user_id, branch) WHERE archived_at IS NULL;
 ```
 
+Named step `20261027-agent-definitions` adds `seeded_at BIGINT` (set on a row the seed wrote, so a
+re-run changes nothing). The row is the single source of truth for an agent: no code adds to or
+overrides it, and no agent is special in code (section 7.3). Any row may be archived but the last
+active one.
+
 The Chief of Staff keeps `branch = 'orchestrator'`. So its whole chat history, its session and its
 queue stay where they are. Its name is `chief` from PR A on, so memories written in PR A have the
 right owner and need no rename later.
@@ -325,12 +330,24 @@ orca agent state <idle|working|waiting|blocked|done> [--note "<…>"]   (PR B)
 orca agent add <name> --display "<Display name>" --role @file [--model m]   (PR B, user only)
 ```
 
+There is no `orca agent edit` or `orca agent remove`. Edit and archive an agent in Settings > Agents
+only (`/settings#agents`, `POST /api/orchestrator/agent-defs/<name>[/archive]`).
+
 - `orca ask` queues a message on the other agent's queue, tagged `[from <caller>]`. It is not the
   user's input (`isUserMessage` is false), so it does not reset the wake count. The other agent's
   reply does not come back by itself. The caller sets `orca wake --on agent:<name>` if it wants it
   (a fourth pattern, added in PR B).
-- `orca agent add` and agent removal are user-only verbs. An agent cannot make another agent.
-  The Settings page and the user's own chat with the Chief of Staff can run them.
+- `orca agent add` runs only on the user's word: in a wake of ANY agent whose every message is the
+  user's (`fromUser`). An agent cannot make another agent on its own idea. An agent it adds gets a
+  shell and every verb, like every seeded agent; the user narrows it in Settings.
+- `orca agent <anything else>` (edit, remove, archive) is refused for every agent, even on the
+  user's word (`agentVerbRefusal`). Only the user changes an agent row, in Settings > Agents.
+- The verb check runs on the server against the CALLER'S ROW, read on every call. A limited agent
+  (a verb list, not `all`) gets only the read part of `preview` (`--status`), `slack`, `cloudflare`,
+  `status` and `wake`. Only an agent whose row has `all` may post on an adapter that posts as the
+  user (Slack). The grant check, the reflection limits and the repos' `mergePolicy` apply as before.
+- Limit: the HTTP API has no auth. An agent with a shell can call the Settings routes with `curl`.
+  The verb check covers the `orca` command, not a shell.
 
 ### 3.4 The notes verbs
 
@@ -567,15 +584,42 @@ sets three:
   message clears `waiting` and `blocked`.
 - A paused agent (`MAX_WAKES`) shows `blocked` with the note "paused: reply to resume".
 
-### 7.3 The two agents
+### 7.3 The agents
 
-| | Chief of Staff (`chief`) | Assistant (`assistant`) |
-| --- | --- | --- |
-| Role | Today's orchestrator: spawns and steers workers, merges through the queue, runs the box. | Takes in integration traffic and worker updates. Handles small things. Tells the Chief of Staff what needs it. |
-| Model | Opus 5.5 (today's default) | Sonnet by default; the user can pin another. |
-| Shell | Today's rule (`orchestratorShell`) | No shell: `orca` verbs, read, web. |
-| Verbs | All, as today | Read verbs, `post`, `thread link`, `ask-user`, `memory`, `wake`, `ask`, `status`, `channels`, `slack`/`gmail`/`cloudflare` read verbs. No `spawn`, `send`, `address`, `merge`, `move`, `sweep`, `archive`, `repo`. |
-| Wakes on | Your chat, `orca ask chief`, problem worker reports, its own scheduled wakes | Inbound channel messages, Orca events, clean worker reports, its own scheduled wakes |
+Every agent is a row of `agent` (section 2.6). Named step `20261027-agent-definitions` seeds three
+(`server/agentSeed.ts`, frozen): the Chief of Staff (Opus 5.5), the Assistant (Sonnet) and Research
+(Fable, the role Finn wrote on its row). From then on the code reads only the rows, and the user
+edits them in Settings > Agents: display name, role text, model, shell flag and verbs (a checklist
+of `AGENT_VERBS`, or "all"). The table below is the SEED, not a rule.
+
+- Equal power (Finn's call): the seed gives every row the Chief of Staff's tools: shell on, verbs
+  `all`, max grant `full`. Finn narrows an agent in Settings. The server checks every call against the row.
+- A row that exists keeps its state, its created_at and any role it had. Its display name, model and
+  tools become the seed's (so Research gets Fable and every verb).
+- A channel link with no agent meant the Assistant. The step names `assistant` on it, because no
+  agent now means the default agent.
+- **The default agent** (`agents.default` in the app config, Settings > Agents' Select,
+  `POST /api/orchestrator/default-agent`): the agent that gets what names no agent. A name that is no
+  active row reads as the first active agent (`defaultAgentName`). It takes: the panel's main chat
+  and every route or `orca` call with no agent, a problem worker report, a clean one when
+  `agents.cleanReportsTo` is unset or gone, the New-draft box, a link with no agent, an `orchestrator`
+  subscription, and a delivery to an archived agent.
+- Any agent may be archived, the Chief of Staff too, but not the last active one. Its chat, memory and
+  queue stay. The Chief of Staff keeps the `orchestrator` branch and directory while its row exists.
+- A row with no model runs on Opus 5.5 (`ORCHESTRATOR_DEFAULT_MODEL`).
+- An edit applies at once: the next `orca` call is checked against the row. The role text goes in
+  when a session starts, so a running session sees a new role after its next reset.
+- The database-down fallback is `FALLBACK_CHIEF` (`shared/agents.ts`): the Chief of Staff's name,
+  display name and branch, with no shell, no verbs and no role. A wake needs the database anyway.
+- Roll back: edit the rows in Settings. Or revert the PR: the old code ignores `seeded_at` and the
+  role and tools of the Chief of Staff and Assistant rows.
+
+| | Chief of Staff (`chief`) | Assistant (`assistant`) | Research (`research`) |
+| --- | --- | --- | --- |
+| Role | Today's orchestrator: spawns and steers workers, merges through the queue, runs the box. | Takes in integration traffic and worker updates. Handles small things. Tells the Chief of Staff what needs it. | Researches features and ideas before code; hands a brief to the Chief of Staff. |
+| Model | Opus 5.5 | Sonnet 5.5 | Fable 5.1 |
+| Tools | Shell, verbs `all`, grant `full` | The same | The same |
+| Wakes on | Your chat, the default agent's traffic while it is the default (first row) | Links that name it, clean reports when `cleanReportsTo` names it | `orca ask research`, your messages to its tab |
 
 ### 7.4 Which events go to which agent
 
@@ -865,9 +909,9 @@ The code changed these points of the plan. Each has its reason.
 - **Clean reports stay with the Chief of Staff by default.** `agents.cleanReportsTo` is `chief`
   unless the app config sets `assistant`. Finn has not chosen to move them. A problem report always
   goes to `chief` (`orchestrator.reportTarget`).
-- **The built-in agents need no row.** `server/agents.ts` merges `BUILTIN_AGENTS` (`shared/agents.ts`)
-  with the `agent` table. A row is written the first time a built-in agent's state changes. So the
-  Chief of Staff's wake path reads no new table, and `tests/orchestrator.test.ts` passes unchanged.
+- **The built-in agents needed no row (superseded).** PR B merged code definitions with the
+  `agent` table, and the code's role and tools won over a row. Named step
+  `20261027-agent-definitions` replaced that: every agent is its row only (sections 2.6, 3.3, 7.3).
 - **One named step.** `20261025-team-agents` makes `agent`, adds `channel_link.agent` and widens the
   `subscription.target_kind` CHECK with `agent`. A step's name must sort after the steps above it,
   and `20261025-agent` sorts before `20261025-memory`.

@@ -31,14 +31,17 @@ export type IntegrationCard = {
 };
 
 export type LinkRow = { id: string; integrationId: string; externalId: string; label?: string; level: Exclude<Level, "full">; repos: string[]; requireMention: boolean; notifyMe?: boolean; notifyAgent?: boolean;
-  /** The named agent that takes its inbound messages; absent = the Assistant. */
+  /** The named agent that takes its inbound messages; absent = the default agent. */
   agent?: string };
 /** One named agent, as the link's Agent Select lists it. */
 export type AgentOption = { name: string; displayName: string };
-/** The value the link's Agent Select shows: the link's agent, else the Assistant (the default). */
-export const linkAgentValue = (l: Pick<LinkRow, "agent">): string => l.agent || "assistant";
+/** The link's Agent Select value for "no agent": the default agent (Settings > Agents). */
+export const DEFAULT_AGENT_VALUE = "default";
+/** The value the link's Agent Select shows: the link's agent, else the default agent. */
+export const linkAgentValue = (l: Pick<LinkRow, "agent">): string => l.agent || DEFAULT_AGENT_VALUE;
 /** An agent's display name, else its name. Pure. */
-export const agentLabel = (name: string, agents: AgentOption[] = []): string => agents.find((a) => a.name === name)?.displayName ?? name;
+export const agentLabel = (name: string, agents: AgentOption[] = []): string =>
+  name === DEFAULT_AGENT_VALUE ? "Default agent" : agents.find((a) => a.name === name)?.displayName ?? name;
 /** One platform identity of a person: the adapter kind, the platform's id, and the name it goes by there. */
 export type IdentityRow = { adapter: string; externalId: string; name?: string };
 /** A person (a principal): global, with identities on any number of adapters. */
