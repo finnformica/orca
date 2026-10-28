@@ -4,6 +4,7 @@
 import * as db from "../db";
 import { AUTO_INSTANCE, DEFAULT_ACCESS, DEFAULT_EVENTS, digestWindow, PAIRING_TTL_MS, type Access, type AutoLease, type DeliveryState, type EventsMode, type DeliveryTarget, type Envelope, type Level, type PlannedDelivery, type Subscription, type TargetKind } from "../../shared/integrations";
 import type { Connection } from "./adapter";
+import { serverKeyRow } from "../../shared/serverKeys";
 import type { Notification } from "../../shared/notifications";
 import { muteKey, OWN_EVENT, type Conversation, type OutboundRecord, type ThreadLinkRecord } from "../../shared/inbox";
 
@@ -12,12 +13,21 @@ const user = () => db.currentUser();
 // ── integration (credentials: a variable NAME only) ─────────────────────────────────────────────
 
 type IntegrationRow = { id: string; kind: string; name: string; instance: string; config: Record<string, unknown> | null; secret_ref: string | null; enabled: boolean; auto: AutoLease | null; access: Access | null; events: EventsMode | null };
-const toConnection = (r: IntegrationRow): Connection => ({
+const toConnection = (r: IntegrationRow): Connection => withServerKeys({
   id: r.id, kind: r.kind, name: r.name, instance: r.instance, config: r.config ?? {},
   ...(r.secret_ref ? { secretRef: r.secret_ref } : {}), enabled: r.enabled,
   access: r.access ?? DEFAULT_ACCESS, events: r.events ?? DEFAULT_EVENTS,
   ...(r.auto && typeof r.auto.holder === "string" ? { auto: { holder: r.auto.holder, until: Number(r.auto.until) } } : {}),
 });
+
+// A server key saved on a row before it moved to the environment (shared/serverKeys.ts) is ignored,
+// with ONE log line per value per process that names the variable to set.
+const ignoredLogged = new Set<string>();
+function withServerKeys(c: Connection): Connection {
+  const { row, ignored } = serverKeyRow(c);
+  for (const line of ignored) if (!ignoredLogged.has(line)) { ignoredLogged.add(line); console.warn(`orca: ${line}`); }
+  return row;
+}
 
 export async function addIntegration(c: Connection): Promise<void> {
   return db.withRetry(async (sql) => {

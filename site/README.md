@@ -51,6 +51,6 @@ deploy keeps the dashboard variable.
 
 1. In Google Cloud, add `https://<public domain>/api/integrations/oauth/google/callback` as an
    authorized redirect URI. Add the public domain as an authorized domain.
-2. In Orca, set `googleOAuth.redirectOrigin` to `https://<public domain>`.
+2. On the Orca server, set `ORCA_GOOGLE_OAUTH_REDIRECT_ORIGIN=https://<public domain>` in `.env` and restart Orca.
 
 See `docs/integrations/gmail.md` sections 4 and 5.
