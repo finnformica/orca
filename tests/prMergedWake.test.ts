@@ -18,7 +18,11 @@ import { MERGED_NEWS_MS, seenMergedNotifications } from "../shared/notifications
 import { installFakeGh, makeScratchRepo, restorePath, setDonePrListFixture, setPrListFixture, setViewFixture } from "./helpers";
 import { freshSchema, type TestDb } from "./pg";
 
-let pg: TestDb, repoPath: string, prevDb: string | undefined;
+let pg: TestDb, repoPath: string;
+// Every env var this file sets. bun runs every test file in one process, so a fixture left set here
+// answers a later file's searches: a set ORCA_PRLIST_DONE_FIXTURE wins every is:merged search.
+const ENV_KEYS = ["ORCA_DATABASE_URL", "ORCA_PRLIST_FIXTURE", "ORCA_PRLIST_DONE_FIXTURE", "ORCA_GH_FIXTURE"] as const;
+let prevEnv: Record<string, string | undefined> = {};
 const delivered: string[] = [];
 const deliver = async (t: string) => { delivered.push(t); };
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -33,7 +37,7 @@ beforeAll(async () => {
 });
 afterAll(() => { listening = false; restorePath(); });
 beforeEach(async () => {
-  prevDb = process.env.ORCA_DATABASE_URL;
+  prevEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
   pg = await freshSchema("prwake");
   process.env.ORCA_DATABASE_URL = pg.url;
   await db.close();
@@ -46,7 +50,7 @@ afterEach(async () => {
   mergeQueue.onReport(undefined);
   await db.close();
   await pg.drop();
-  if (prevDb === undefined) delete process.env.ORCA_DATABASE_URL; else process.env.ORCA_DATABASE_URL = prevDb;
+  for (const k of ENV_KEYS) if (prevEnv[k] === undefined) delete process.env[k]; else process.env[k] = prevEnv[k];
   await rm(repoPath, { recursive: true, force: true });
 });
 
