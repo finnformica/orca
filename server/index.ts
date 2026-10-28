@@ -215,9 +215,8 @@ agent.onRunFinished(async (run) => {
   await notify.onRunFinished(run);
   const cfg = await loadConfig();
   await orchestrator.onRunFinished(cfg, run);
-  // New screenshots on a branch whose PR is already open refresh its Screenshots section.
-  void prShots.afterRun(cfg.repos.find((r) => r.name === run.options.repo), run.options.branch,
-    [run.result ?? "", ...(run.structured?.verification ?? [])].join("\n"));
+  // Any run on a branch whose PR is already open may leave the workstream's newest shots unsynced.
+  void prShots.afterRun(cfg.repos.find((r) => r.name === run.options.repo), run.options.branch);
 });
 // The merge queue (server/mergeQueue.ts): every marked PR this instance drives, once a minute. A red
 // or refused PR the orchestrator owns is reported to it like a worker's problem; a merge, like a finish.

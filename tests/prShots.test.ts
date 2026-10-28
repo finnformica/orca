@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { syncPrShots, uploadPrAssets } from "../server/prShots";
 import { resetCaches, setFetch } from "../server/github";
-import { prAssetsRef, prShotIds, reportShots, screenshotsSection, shotRefs, withScreenshotsSection, workstreamShots } from "../web/src/workstream";
+import { newestShots, prAssetsRef, prShotIds, reportShots, screenshotsSection, shotRefs, withScreenshotsSection, workstreamShots } from "../web/src/workstream";
 import { native } from "./happydom";
 
 let dir: string;
@@ -92,6 +92,20 @@ test("shotRefs / workstreamShots / reportShots: label and time from the file nam
   const body = `Outcome: ok\nScreenshots (Read to view):\n- after: /h/.orca/attachments/shots/${B}.png\nFull turn: orca read --run r3`;
   expect(reportShots(body)).toEqual({ text: "Outcome: ok\nFull turn: orca read --run r3", shots: shotRefs(body) });
   expect(prAssetsRef(42, "orca/Update-banner_x")).toBe("pr-assets/42-update-banner-x");
+});
+
+test("newestShots: the newest capture across every run, not just whichever run is newest", () => {
+  const turns = [
+    { id: "r1", response: `before: /h/.orca/attachments/shots/${A}.png`, startedAt: 1, finishedAt: 2 },
+    { id: "r2", response: `after: /h/.orca/attachments/shots/${B}.png`, startedAt: 3, finishedAt: 4 },
+    // r3 is the newest run. It takes no new screenshot — it only resolved a conflict — but its
+    // reply happens to quote r1's old shot back (e.g. "still looks right"). workstreamShots then
+    // (correctly, for its own per-run grouping) re-attributes that mention to r3, the newest turn,
+    // so A's group now sorts ahead of r2's B. The PR must still rank by actual capture time.
+    { id: "r3", response: `still looks right: /h/.orca/attachments/shots/${A}.png`, startedAt: 5, finishedAt: 6 },
+  ];
+  expect(workstreamShots(turns).map((g) => g.shots.map((s) => s.id))).toEqual([[A], [B]]);
+  expect(newestShots(turns).map((s) => s.id)).toEqual([B, A]);
 });
 
 test("syncPrShots: blobs → tree → orphan commit → ref (created when missing) → the body's Screenshots section", async () => {

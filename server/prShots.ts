@@ -14,7 +14,7 @@ import * as git from "./git";
 import { forRepo } from "./github";
 import { diskStore } from "./screenshot";
 import type { RepoConfig } from "./config";
-import { PR_SHOTS_MAX, prAssetsRef, prShotIds, screenshotsSection, shotRefs, withScreenshotsSection, workstreamShots, type ShotRef } from "../web/src/workstream";
+import { PR_SHOTS_MAX, newestShots, prAssetsRef, prShotIds, screenshotsSection, withScreenshotsSection, type ShotRef } from "../web/src/workstream";
 
 /** One REST call on the repo at `cwd`; `{repo}` in `path` is `repos/<owner>/<name>`. */
 async function api(cwd: string, method: string, path: string, payload?: unknown): Promise<any> {
@@ -83,7 +83,7 @@ export function attachPrShots(repo: RepoConfig, branch: string, opts: { pr?: num
     const pr = opts.pr ?? (await gh.listPrs(repo.repoPath)).find((p) => p.branch === branch)?.number;
     if (!pr) throw new Error(`${repo.name}/${branch} has no open PR`);
     const store = diskStore();
-    const shots = workstreamShots(await db.turns(repo.name, branch)).flatMap((t) => t.shots)
+    const shots = newestShots(await db.turns(repo.name, branch))
       .flatMap((s) => { const file = store.path(s.id); return file ? [{ ...s, file }] : []; });
     return syncPrShots(repo.repoPath, pr, branch, shots);
   });
@@ -92,10 +92,13 @@ export function attachPrShots(repo: RepoConfig, branch: string, opts: { pr?: num
   return next;
 }
 
-/** After a run: if it reported screenshots and its branch already has an open PR, refresh the PR's
- *  section. Silent otherwise; never throws (a failure is logged — the run's own result stands). */
-export async function afterRun(repo: RepoConfig | undefined, branch: string | undefined, text: string): Promise<void> {
-  if (!repo || !branch || !shotRefs(text).length) return;
+/** After any run on a branch whose PR is already open, refresh the PR's Screenshots section to the
+ *  workstream's newest reported shots — from any of its runs, not only the one that just finished.
+ *  A run after the one that took them (a conflict fix, a CI retry) often reports none of its own,
+ *  and must not skip the refresh on that account. Silent otherwise; never throws (a failure is
+ *  logged — the run's own result stands). */
+export async function afterRun(repo: RepoConfig | undefined, branch: string | undefined): Promise<void> {
+  if (!repo || !branch) return;
   try {
     if (!(await git.hasRemote(repo.repoPath))) return;
     const pr = (await gh.listPrs(repo.repoPath)).find((p) => p.branch === branch)?.number;
