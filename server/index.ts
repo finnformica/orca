@@ -55,7 +55,7 @@ import * as verbs from "./verbs";
 import * as repos from "./repos";
 import { linkOrigins } from "./origin";
 import { BusyError, checkGate, compact, launchOptions, launchQueued, newWorktree, placement, removeWorktree, startPreview } from "./verbs";
-import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, attachmentRefs, workstreamShots, mergeSafe, prDescriptionPrompt, sweepText, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
+import { HIDDEN_FOREVER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, attachmentRefs, workstreamShots, mergeSafe, prDescriptionPrompt, sweepText, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
 import { AGENT_PROVIDERS, attachCommand, isAgentProvider, providerBinary, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn } from "../shared/agent";
 import { providerOfModel } from "../shared/models";
 import * as prShots from "./prShots";
@@ -447,7 +447,7 @@ const NOTICE_WINDOW = 200;
 // the machine that produced it is asleep. Everything else touches a worktree or spawns a process and
 // must run where the repo lives.
 const DATABASE_ONLY = new Set([
-  "/api/turns", "/api/turns/local", "/api/rooms", "/api/enrichment", "/api/enrichment/import", "/api/config", "/api/config/document",
+  "/api/turns", "/api/turns/local", "/api/rooms", "/api/enrichment", "/api/workstreams/hide", "/api/enrichment/import", "/api/config", "/api/config/document",
   // /api/usage merges every reachable instance's reading (usageAcrossInstances); /api/usage/local is
   // what that merge fetches from a PEER — always this host's own, unmerged, never forwarded (a repo's
   // placement must not send it chasing a worktree that has nothing to do with hydra).
@@ -1359,6 +1359,15 @@ async function api(req: Request, url: URL): Promise<Response> {
     try { return json(await verbs.moveWorkstream(cfg, repo, String(body.branch), String(body.to))); }
     catch (e) { return json({ error: e instanceof Error ? e.message : String(e) }, 409); }
   }
+  if (req.method === "POST" && p === "/api/workstreams/hide") {
+    // Hide a card (until = ms), archive it (HIDDEN_FOREVER) or show it again (null). Only the
+    // database changes: the agent, worktree, branch, PR and queue stay as they are.
+    const until = body.until === null || body.until === undefined ? null : Number(body.until);
+    if (!body.branch) return json({ error: "branch is required" }, 400);
+    if (until !== null && (!Number.isFinite(until) || until <= Date.now())) return json({ error: "until must be a future time (ms) or null" }, 400);
+    await db.setHidden(repo.name, String(body.branch), until === null ? null : Math.min(until, HIDDEN_FOREVER));
+    return json({ ok: true, hiddenUntil: until });
+  }
   if (req.method === "POST" && p === "/api/workstreams/archive") {
     // `orca archive` for a workstream living here, sent by the orchestrator's instance. Placement
     // forwards it to the instance holding the worktree, which is the only one that can remove it.
@@ -1450,6 +1459,7 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (req.method === "GET" && p === "/api/prs") {
     const prs = await gh.listPrs(repo.repoPath, repo.previewLabel ?? "preview"); // source of truth for the PR lanes
     void notify.prs(repo.name, prs); // CI failing / conflicts, once per PR — read off the list, no extra call
+    void notify.hiddenFeedback(repo.name, prs).catch(db.logUnlessDown("orca: hidden PR feedback check failed"));
     return json(prs);
   }
   if (req.method === "GET" && p === "/api/prs/merged") {

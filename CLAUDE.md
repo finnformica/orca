@@ -202,7 +202,7 @@ rides `queued_message.grant_scope`: one grant per orchestrator wake, `orchestrat
 verbs outside it (`grantRefusal`), and such a wake has no shell. Levels, low to high (Settings
 names in brackets, stored values unchanged): `notify` (Notify), `ask` (Viewer: read verbs, `post` on
 its own link), `work` (Editor: spawn, send, address, status, pr-shots, preview, thread link, stop,
-archive and `merge --when-green` on the link's repos), `admin` (Admin: every verb on those repos,
+archive, hide, unhide and `merge --when-green` on the link's repos), `admin` (Admin: every verb on those repos,
 plus `move`, `sweep`, `repo add`; named step `20261020-principal-link-admin-level` widened the
 CHECKs), `full` (your own chat only). `status --clear-grant`, `notes set`, `preview
 --push-to-template --confirm` and `handoff create` stay `full` at every level. Pairing approval
@@ -678,6 +678,16 @@ is a branch; its lane (`store.laneFor`):
   an open, unapproved PR moves it to Verified (`verifiedLane`). A new head commit (`sha` ≠ the PR's
   head) puts it back in In Review with an amber "Changed since verified" pill (`verifiedState`,
   `prPill`). Approval still wins: Mergeable. The Agents list has a Verified chip (`?pr=verified`).
+- **Hidden / Archived** (Finn 2026-10-28; docs/WORKFLOW.md "Hide and archive"): a card out of the
+  main view, the work untouched. ONE nullable column, `workstream.hidden_until` (ms; named step
+  `20261028-workstream-hidden-until`), read into enrichment as `hiddenUntil`; `HIDDEN_FOREVER`
+  (9999-12-31) = archived. Pure rules in `workstream.ts` (`hiddenState`, `parseHideFor`). Card menu
+  Hide ▸ 1 day / 1 week / Until a date…, Archive, Unhide; `POST /api/workstreams/hide`;
+  `orca hide --for 1d|1w|<date>|forever` / `orca unhide` (work verbs). The Agents list and Board
+  leave them out; `?hidden=1` ("Hidden / Archived") lists only them. A new problem notification
+  (`HIDE_REVIVE_KINDS`, in `notify.emit`) or new review feedback (`notify.hiddenFeedback`) clears a
+  TIMED hide, never an archive. `orca board` still lists them, marked. The final archive
+  (`archiveWorkstream`, `orca archive`) is **Close** in the UI.
 
 Actions (all via `ActionButton`, spinner → ✓/✗, no double-fire):
 - **A failed action is a notification, never text in the row** — kind `action_failed`, in the ONE

@@ -767,9 +767,9 @@ describe("gestures", () => {
       const rows = [...sheet.querySelectorAll<HTMLElement>('[data-slot="sheet-item"]')];
       const labels = rows.map((r) => r.textContent?.trim());
       // The ⋯ menu's own items (submenus open in place as labelled groups), in the desktop order.
-      for (const l of ["Agent chat", "Ask Orca", "Branch name", "Worktree path", "Rename…", "Discard"]) expect(labels).toContain(l);
+      for (const l of ["Agent chat", "Ask Orca", "Branch name", "Worktree path", "Rename…", "For 1 day", "Archive", "Discard"]) expect(labels).toContain(l);
       expect(labels).not.toContain("Follow up…");
-      expect([...sheet.querySelectorAll('[role="group"]')].map((g) => g.getAttribute("aria-label"))).toEqual(["Open", "Copy", "PR", "Agent"]); // Agent: Move to cloud
+      expect([...sheet.querySelectorAll('[role="group"]')].map((g) => g.getAttribute("aria-label"))).toEqual(["Open", "Copy", "PR", "Agent", "Hide"]); // Agent: Move to cloud
       for (const r of rows) {
         expect(r.className).toContain("min-h-12"); // a 48px touch row
         expect(r.querySelector("svg")).not.toBeNull(); // with its icon

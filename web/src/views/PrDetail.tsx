@@ -189,7 +189,7 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
           <TabsContent value="chat">
             {liveRow ? <ChatCard row={liveRow} />
               : !loaded ? <p data-slot="chat-loading" className="text-muted-foreground pt-4 text-sm">Loading conversation…</p>
-              : <p data-slot="chat-none" className="text-muted-foreground pt-4 text-sm">No agent conversation for this PR on the board. It is not an Orca workstream, or it is merged or archived.</p>}
+              : <p data-slot="chat-none" className="text-muted-foreground pt-4 text-sm">No agent conversation for this PR on the board. It is not an Orca workstream, or it is merged or closed.</p>}
           </TabsContent>
         )}
 

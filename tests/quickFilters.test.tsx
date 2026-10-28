@@ -16,7 +16,7 @@ import { App } from "@/App";
 import { navigate } from "@/lib/route";
 import { agentQueryAtom, instanceScopeAtom, repoFilterAtom } from "@/lib/atoms";
 import {
-  MERGED_WEEK_MS, NO_QUICK_FILTER, applyQuickFilter, attentionReasons, clearQuickGroup, dropStaleRepos, mergedThisWeek, mergedToday, newestMergedPerBranch, notMergedCount, overviewStats, parseQuickFilter, quickCount, quickFilterQuery, quickGroupActive, toggleNotMerged, toggleQuick, type OverviewRow,
+  HIDDEN_FOREVER, MERGED_WEEK_MS, NO_QUICK_FILTER, applyQuickFilter, attentionReasons, clearQuickGroup, dropStaleRepos, mergedThisWeek, mergedToday, newestMergedPerBranch, notMergedCount, overviewStats, parseQuickFilter, quickCount, quickFilterQuery, quickGroupActive, toggleNotMerged, toggleQuick, type OverviewRow,
 } from "@/workstream";
 
 const row = (over: Partial<OverviewRow>): OverviewRow => ({ repo: "a", branch: "b", title: "t", lane: "LOCAL", ...over });
@@ -41,7 +41,7 @@ describe("quick filters (pure)", () => {
 
   test("the URL holds the chips: parse drops unknown values; the query is stable and empty when nothing is on", () => {
     const f = parseQuickFilter("?status=attention,bogus&pr=merged&on=cloud&repo=a,b&by=orchestrated&x=1");
-    expect(f).toEqual({ status: ["attention"], pr: ["merged"], by: ["orchestrated"], on: ["cloud"], repo: ["a", "b"], notMerged: true });
+    expect(f).toEqual({ status: ["attention"], pr: ["merged"], by: ["orchestrated"], on: ["cloud"], repo: ["a", "b"], notMerged: true, hidden: false });
     expect(quickFilterQuery(f)).toBe("?status=attention&pr=merged&by=orchestrated&on=cloud&repo=a,b");
     expect(quickFilterQuery(NO_QUICK_FILTER)).toBe(""); // a plain URL already means "not merged" is on
     expect(parseQuickFilter(quickFilterQuery(f))).toEqual(f); // round-trips
@@ -215,6 +215,27 @@ describe("quick filter chips on the Agents page", () => {
     apiFake.enrichmentData.set("r::cloud-bot", { title: "Bot work", orchestrated: true });
   };
 
+  test("Hidden / Archived: hidden cards leave the list; the filter lists them with the time left and Unhide", async () => {
+    seed();
+    apiFake.enrichmentData.set("r::local-held", { hiddenUntil: Date.now() + 2 * 24 * 3_600_000 });
+    apiFake.enrichmentData.set("r::feat-ok", { hiddenUntil: HIDDEN_FOREVER });
+    await open("/agents");
+    expect(listed()).toEqual(["cloud-bot", "feat-ci", "local-run"]);
+    await openGroup("state");
+    expect(count("hidden")).toBe("2");
+    await click(box("hidden"));
+    expect(window.location.search).toBe("?hidden=1");
+    expect(listed()).toEqual(["feat-ok", "local-held"]);
+    const pills = [...container!.querySelectorAll('[data-slot="hidden-pill"]')].map((p) => p.textContent).sort();
+    expect(pills).toEqual(["Archived", "Hidden · 2d left"]);
+    const unhide = container!.querySelector<HTMLElement>('[data-branch="local-held"] [data-slot="unhide"]')!;
+    expect(unhide.textContent).toBe("Unhide");
+    expect(container!.querySelector('[data-branch="feat-ok"] [data-slot="unhide"]')!.textContent).toBe("Unarchive");
+    await click(unhide);
+    expect(apiFake.hideCalls).toEqual([{ repo: "r", branch: "local-held", until: null }]);
+    expect(listed()).toEqual(["feat-ok"]); // shown again: out of the hidden view
+  });
+
   test("one dropdown per group: choices toggle and combine, each shows its count, and the URL holds the view", async () => {
     seed();
     await open("/agents");
@@ -227,7 +248,7 @@ describe("quick filter chips on the Agents page", () => {
 
     await openGroup("state");
     expect([...menu()!.querySelectorAll('[data-slot="quick-filter"]')].map((c) => c.getAttribute("data-chip")))
-      .toEqual(["pr:open", "pr:verified", "pr:mergeable", "pr:merged", "pr:week", "notMerged"]);
+      .toEqual(["pr:open", "pr:verified", "pr:mergeable", "pr:merged", "pr:week", "notMerged", "hidden"]);
     expect(chip("pr:merged").textContent).toContain("Merged today");
     expect(chip("pr:week").textContent).toContain("Merged this week");
     expect(chip("pr:merged").querySelector('[data-slot="status-dot"], [data-tone]')).not.toBeNull(); // the colored dot stays

@@ -94,6 +94,23 @@ archives the card. Orca does not reap a worktree in these conditions:
 
 In these conditions, Orca puts a flag on the card.
 
+### Hide and archive
+
+Use these to take a card out of the main view. The work does not change: the agent, branch, PR and
+queue stay as they are.
+
+- **Hide** (card menu: Hide ▸ For 1 day, For 1 week, Until a date…) hides the card until that time.
+  At that time, the card comes back by itself.
+- A problem brings a hidden card back early: a run report (finished, failed, needs input, check
+  failed), red CI, merge conflicts or new review feedback on its PR.
+- **Archive** hides the card with no end time. Only **Unarchive** brings it back. A problem does not.
+- The Agents list's State filter has **Hidden / Archived**. It lists only those cards, each with the
+  time left and an **Unhide** or **Unarchive** button. The Board leaves them out.
+- **Close** is a different thing: it ends the workstream (`orca archive`).
+
+Orca stores the hide in one column, `workstream.hidden_until` (ms). NULL or a past time means shown.
+The value `9999-12-31` (`HIDDEN_FOREVER`) means archived.
+
 ## The orchestrator
 
 You can open the orchestrator from these locations:
@@ -148,7 +165,9 @@ the bridge's `/api/orchestrator/tool`. You can also run it yourself on the box. 
 | `send --repo r --branch b [--model m] [--attach …] "message"` | Sends a follow-up to a workstream. If a run is in progress, Orca adds the message to the queue. `--model` re-pins the workstream (it moves it on the ladder). |
 | `address --repo r --branch b` | Addresses a PR in one run. The run does these items in this sequence, if they apply: merge conflicts, failing CI, review comments. If a conflict is only in changelog files, Orca resolves it itself with no agent. |
 | `move --repo r --branch b --to instance` | Pushes the branch, removes the worktree on this instance and adopts it on the target instance. The next run starts from the portable transcript. |
-| `archive --repo r --branch b` | Archives a workstream that this orchestrator owns. Orca removes the worktree and keeps the history. |
+| `archive --repo r --branch b` | Closes a workstream that this orchestrator owns. Orca stops the agent, drops the queue, removes the worktree and keeps the history. The UI calls this **Close**. |
+| `hide --repo r --branch b --for 1d\|1w\|<ISO date>\|forever` | Hides the card from the user's board until that time. `forever` archives it. Nothing else changes. `board` still lists it, marked hidden. |
+| `unhide --repo r --branch b` | Shows a hidden or archived card again. |
 | `sweep [--confirm]` | Reports finished worktrees, orphaned previews and Orca branches with nothing behind them, on each instance. With `--confirm`, it removes them. |
 | `preview --repo r --branch b` | Starts the branch's preview. `--status` shows its state and the ends of its logs. `--push-to-template [--confirm]` makes it the repo's template (see [Previews](#previews)). |
 | `merge --repo r (--pr N \| --branch b) --when-green [--small]` / `--cancel` | Marks the PR for the merge queue, or removes the mark. It does not merge directly. |

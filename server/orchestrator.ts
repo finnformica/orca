@@ -48,7 +48,7 @@ import { featuresOf, runLimits, runsHere, type OrcaConfig, type RepoConfig } fro
 import {
   MODEL_LADDER, NO_REPLY_PLACEHOLDER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, boardText, briefProblems, continuation, isUserMessage, isWorkerProblem, wakeFromUser, onlyCleanReports,
   handoffRef, joinMessages, ladderStep, mergedPrIsHistory, nextFailStreak, orchStatusText, orchStatusUpdate, verifiedMark, verifiedState, orchestratorPrompt, sessionHint, sweepText, turnSource, wakeExitReason, wakeProgress, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
-  machineText, originQuote, turnOrigin, type BoardRow, type FailStreak, type MachineReport, type OrchStatus, type VerifiedMark, type WakeExit,
+  hiddenNote, machineText, originQuote, parseHideFor, turnOrigin, type BoardRow, type FailStreak, type MachineReport, type OrchStatus, type VerifiedMark, type WakeExit,
 } from "../web/src/workstream";
 import { activityLines, type AgentTurn, type TurnOrigin } from "../shared/agent";
 import { linkOrigins } from "./origin";
@@ -679,6 +679,7 @@ export async function board(cfg: OrcaConfig): Promise<BoardRow[]> {
         last: run?.structured?.outcome ?? run?.error ?? ((remote?.data.agentOutcome as { outcome?: string } | undefined)?.outcome),
         instance: several ? (remote?.instance ?? (worktreePath ? here : undefined)) : undefined,
         status: e.orchStatus as OrchStatus | undefined,
+        hiddenUntil: e.hiddenUntil as number | undefined,
       });
     }
   }
@@ -1056,6 +1057,17 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       if (home !== db.instanceName()) await viaInstance(cfg, home, "/api/workstreams/archive", { repo: repo.name, branch });
       else await verbs.archiveWorkstream(repo, branch);
       return `Archived ${repo.name}/${branch}. Its branch, commits and transcript stay readable with \`orca chats\` / \`orca read\`.`;
+    }
+    case "hide":
+    case "unhide": {
+      // Only the card's place in the user's view: the database row, on any instance.
+      const repo = repoNamed(cfg, args.repo);
+      const branch = required(args, "branch");
+      if (verb === "unhide") { await db.setHidden(repo.name, branch, null); return `${repo.name}/${branch} shows on the user's board again.`; }
+      const until = parseHideFor(required(args, "for"));
+      await db.setHidden(repo.name, branch, until);
+      const note = hiddenNote(until);
+      return `${repo.name}/${branch} is ${note}. The agent, branch, PR and queue do not change; \`orca board\` still lists it.`;
     }
     case "stop": {
       const repo = repoNamed(cfg, args.repo);

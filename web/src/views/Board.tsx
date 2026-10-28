@@ -9,7 +9,7 @@ import {
   baseBranch, cliCommand, instanceChoices, modelFor, rerunAgent, thisInstance, setCardModel,
   useWorkstreams, useWorkstreamsLoaded, type Lane, type Row,
 } from "../store";
-import { mergedToday } from "../workstream";
+import { isHidden, mergedToday } from "../workstream";
 import { copyText } from "@/lib/dialogs";
 import { navigate } from "@/lib/route";
 import { Bot, Check, CircleStop, Copy, ExternalLink, Eye, Loader2, Play, Rows2, Rows3, SquareTerminal, X } from "lucide-react";
@@ -70,7 +70,8 @@ export function Board() {
   const all = useWorkstreams();
   const loaded = useWorkstreamsLoaded();
   const filter = useAtomValue(repoFilterAtom);
-  const rows = filter === "all" ? all : all.filter((r) => r.repo === filter);
+  // A hidden or archived card is out of the lanes; the Agents list's "Hidden / Archived" lists it.
+  const rows = all.filter((r) => !isHidden(r) && (filter === "all" || r.repo === filter));
   const cardsFor = (lane: Lane) => {
     // The board holds a week of merged rows (the Agents page's "Merged this week"); this lane is today's.
     const cards = rows.filter((r) => (lane === "DONE" ? mergedToday(r) : r.lane === lane));

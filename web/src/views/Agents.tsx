@@ -25,9 +25,10 @@ import { useNarrow } from "@/lib/viewport";
 import { afterDockMotion } from "@/lib/dock";
 import { usePullToRefresh } from "@/lib/gestures";
 import { BottomSheet } from "@/components/BottomSheet";
-import { instanceChoices, modelFor, refresh, thisInstance, useRepos, useReposLoaded, useWorkstreams, useWorkstreamsLoaded, type Row } from "../store";
+import { actionFailed } from "@/lib/notificationStore";
+import { instanceChoices, modelFor, refresh, setHidden, thisInstance, useRepos, useReposLoaded, useWorkstreams, useWorkstreamsLoaded, type Row } from "../store";
 import {
-  DEFAULT_LIST_FILTER, detailPath, NO_QUICK_FILTER, QUICK_GROUPS, SORT_LABELS, applyQuickFilter, attentionReasons, dropStaleRepos, filterRows, prPill,
+  DEFAULT_LIST_FILTER, detailPath, hiddenCount, hiddenLabel, hiddenState, toggleHidden, NO_QUICK_FILTER, QUICK_GROUPS, SORT_LABELS, applyQuickFilter, attentionReasons, dropStaleRepos, filterRows, prPill,
   LIST_ITEM_GAP_PX, NO_FOLD, browserKillLabel, listColumns, listLayout, modelBadge, notMergedCount, parseQuickFilter, promptInstruction, quickActive, quickCount, quickFilterQuery, quickGroupActive, clearQuickGroup, rowInstance, rowTone, sortRows, sublineDots, sublineOverflow, toggleNotMerged, toggleQuick,
   type ListColumn, type ListFold, type ListSort, type ListWidths, type QuickFilter, type QuickGroup, type RowTone, type SublineSepItem,
 } from "../workstream";
@@ -281,6 +282,21 @@ function FilterOption({ chip, on, count, onToggle }: { chip: { key: string; labe
   );
 }
 
+/** A hidden or archived row's pill (the time left) and its Unhide / Unarchive. Nothing when shown. */
+function HiddenBadge({ row }: { row: Row }) {
+  const label = hiddenLabel(row.hiddenUntil);
+  if (!label) return null;
+  const archived = hiddenState(row.hiddenUntil) === "archived";
+  return (
+    <span data-slot="hidden-badge" className="inline-flex shrink-0 items-center gap-1">
+      <Pill tone="purple" slot="hidden-pill">{label}</Pill>
+      <Button size="xs" variant="ghost" data-slot="unhide" onClick={(e) => { e.stopPropagation(); setHidden(row, null).catch((err) => actionFailed({ action: archived ? "Unarchive" : "Unhide", title: row.title, repo: row.repo, branch: row.branch, prNumber: row.prNumber }, err)); }}>
+        {archived ? "Unarchive" : "Unhide"}
+      </Button>
+    </span>
+  );
+}
+
 /** A filter group's choices (AND across groups, OR within one). The State group also holds the
  *  default-on "Not merged" toggle, under a divider. */
 function FilterOptions({ g, quick, setQuick, scoped, loaded }: { g: FilterGroup; quick: QuickFilter; setQuick: (f: QuickFilter) => void; scoped: Row[]; loaded: boolean }) {
@@ -298,6 +314,8 @@ function FilterOptions({ g, quick, setQuick, scoped, loaded }: { g: FilterGroup;
           <div role="separator" className="bg-border -mx-1 my-1 h-px" />
           <FilterOption chip={{ key: "notMerged", label: "Not merged" }} on={quick.notMerged} onToggle={() => setQuick(toggleNotMerged(quick))}
             count={loaded ? notMergedCount(scoped, quick, here) : skeleton} />
+          <FilterOption chip={{ key: "hidden", label: "Hidden / Archived" }} on={quick.hidden} onToggle={() => setQuick(toggleHidden(quick))}
+            count={loaded ? hiddenCount(scoped, quick, here) : skeleton} />
         </>
       )}
     </div>
@@ -542,6 +560,7 @@ export function AgentRow({ row, fold = NO_FOLD, stacked = false }: { row: Row; f
     !row.prNumber && row.mergeClean === "conflict" && { key: "conflicts", sep: "none", part: "signals", node: <Pill tone="red">Conflicts</Pill> },
     browserKillLabel(row.browserKilled) && { key: "browser", sep: "none", part: "signals", node: <BrowserKillBadge record={row.browserKilled} /> },
   ].filter(Boolean) as SublineItem[];
+  if (hiddenLabel(row.hiddenUntil)) signals.unshift({ key: "hidden", sep: "none", part: "signals", node: <HiddenBadge row={row} /> });
   // The PR cell's pill and number; the folded checks join them, or all of it joins the subline.
   const prItems: SublineItem[] = [];
   const prLink = row.prNumber && <a href={row.prUrl} target="_blank" rel="noreferrer" data-slot="pr-link" className="text-muted-foreground hover:text-foreground inline-flex shrink-0 items-center gap-0.5 font-mono text-xs"><GitPullRequest className="size-3.5" />{row.prNumber}</a>;
@@ -603,6 +622,7 @@ export function AgentRow({ row, fold = NO_FOLD, stacked = false }: { row: Row; f
           {row.prNumber && !isDone && <ReviewCluster row={row} />}
           {!row.prNumber && row.mergeClean === "conflict" && <Pill tone="red">Conflicts</Pill>}
           <BrowserKillBadge record={row.browserKilled} />
+          <HiddenBadge row={row} />
           {(quick || menu) && <div data-slot="row-actions" className="ml-auto flex shrink-0 items-center gap-1">{quick}{menu}</div>}
         </div>
         {reasons.length > 0 && <div role="cell" data-slot="row-reasons" className="text-geist-warning-fg text-xs">{reasons.join(" · ")}</div>}

@@ -166,6 +166,7 @@ export type Enrichment = {
   upkeep?: UpkeepRecord; // automatic PR upkeep's last attempt (server/upkeep.ts)
   cleanupBlocked?: { why?: string; at?: string }; // the reaper left the worktree: it holds work (server/verbs.ts cleanupRepo)
   browserKilled?: BrowserKillRecord; // the browser watchdog killed a browser this branch's run started (server/browserWatch.ts)
+  hiddenUntil?: number; // the `workstream.hidden_until` column, read in by the bridge: hidden / archived (workstream.ts hiddenState)
 };
 /** Where a branch's preview runs: the instance, and its key there (a worktree path ON that instance —
  *  "Test on cloud" for a laptop worktree previews the box's own checkout of the branch). */
@@ -478,6 +479,8 @@ function runFollowers() {
 export type Lane = "LOCAL" | "DRAFT" | "IN_REVIEW" | "VERIFIED" | "MERGEABLE" | "DONE";
 export type Row = {
   isDraft?: boolean;
+  /** Hidden until (ms) or archived (HIDDEN_FOREVER): out of the main view (workstream.ts hiddenState). */
+  hiddenUntil?: number;
   repo: string;
   hasRemote: boolean;
   branch: string;
@@ -761,7 +764,7 @@ export function assembleRows(): Row[] {
         prNumber: pr?.number, prBase: pr?.base, prAdditions: pr?.additions, prDeletions: pr?.deletions,
         prUrl: pr?.url, previewUrl: pr?.previewUrl, hasPreviewLabel: pr?.hasPreviewLabel, isDraft: pr?.isDraft,
         ciStatus: pr?.ciStatus, reviewStatus: pr?.reviewStatus, mergeable: pr?.mergeable, autoMergeEnabled: pr?.autoMergeEnabled, autoMergeMethod: pr?.autoMergeMethod,
-        following: e.following, followUps: e.followUps, orchestrated: e.orchestrated, orchStatus: e.orchStatus, grantScope: e.grantScope, upkeep: e.upkeep, previewInstance: e.previewInstance, mergeWhenGreen: e.mergeWhenGreen, verified: e.verified ?? undefined,
+        following: e.following, followUps: e.followUps, orchestrated: e.orchestrated, orchStatus: e.orchStatus, grantScope: e.grantScope, upkeep: e.upkeep, previewInstance: e.previewInstance, mergeWhenGreen: e.mergeWhenGreen, verified: e.verified ?? undefined, hiddenUntil: e.hiddenUntil,
         failingChecks: pr?.failingChecks, prHead: pr?.head, cleanupBlocked: e.cleanupBlocked ?? undefined, browserKilled: e.browserKilled ?? undefined, feedback: pr?.feedback,
         slackNotifiedAt: e.slackNotifiedAt, slackLastBumpedAt: e.slackLastBumpedAt,
         lane: "DRAFT",
@@ -1185,6 +1188,19 @@ export async function mergeWhenGreen(row: Row) {
 export function setVerified(row: Row, on: boolean) {
   if (!row.prNumber) return;
   patchEnrich(row.repo, row.branch, { verified: on ? verifiedMark("user", row.prHead, row.prNumber, now()) : undefined });
+}
+
+/** Hide a card until `until` (ms), archive it (HIDDEN_FOREVER) or show it again (null). The mirror
+ *  changes at once; the column is written by its own route (`hiddenUntil` is not a blob field). */
+export async function setHidden(row: Pick<Row, "repo" | "branch">, until: number | null) {
+  const k = ekey(row.repo, row.branch);
+  const fields: Enrichment = { hiddenUntil: until ?? undefined };
+  enrichMap = { ...enrichMap, [k]: { ...enrichMap[k], ...fields } };
+  const inFlight = { ...pendingWrites.get(k), ...fields };
+  pendingWrites.set(k, inFlight); // a poll that started before the write must not flash it back
+  notify();
+  try { await api.hideWorkstream(row.repo, row.branch, until); }
+  finally { if (pendingWrites.get(k) === inFlight) pendingWrites.delete(k); }
 }
 
 /** Turns auto-merge back off — GitHub's own, or Orca's merge-when-green queue mark left by the
