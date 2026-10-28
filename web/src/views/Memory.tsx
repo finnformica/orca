@@ -256,10 +256,10 @@ function PassRow({ p, onOpen }: { p: ReflectionPass; onOpen: (id: number) => voi
 /** The core one agent gets on every wake (§9), for each agent: a Select picks which. */
 function Core({ reload, agents, onOpen }: { reload: number; agents: string[]; onOpen: (id: number) => void }) {
   const [core, setCore] = useState<MemoryCore | null>(null);
-  const [agent, setAgent] = useState("chief");
+  const [agent, setAgent] = useState(agents[0] ?? ""); // "" = the default agent (the server picks it)
   useEffect(() => { setCore(null); api.memoryCore(agent).then(setCore).catch((e) => failed("Load core", e)); }, [reload, agent]);
   return (
-    <VCard slot="memory-core" title={`What ${agent} gets on every wake`}
+    <VCard slot="memory-core" title={`What ${agent || "the default agent"} gets on every wake`}
       aside={<span className="flex items-center gap-2">
         {agents.length > 1 && (
           <Select value={agent} onValueChange={setAgent}>

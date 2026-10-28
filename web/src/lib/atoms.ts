@@ -92,9 +92,10 @@ export const quickAskOpenAtom = atom(false);
 // `unread` once a wake finished while the panel was closed (cleared when it opens). One subscriber
 // (useOrchestratorActivity in components/Terminal) keeps it current from the live stream.
 export const orchestratorActivityAtom = atom<{ running: boolean; unread: boolean }>({ running: false, unread: false });
-// Which named agent's chat the side panel shows (docs/design/named-agents-and-memory.md §7.6). Every
-// open path (openOrchestrator) sets it back to the Chief of Staff; only a tab click moves it.
-export const orchestratorTabAtom = atom<string>("chief");
+// Which named agent's chat the side panel shows (docs/design/named-agents-and-memory.md §7.6). "" is
+// the main chat: the default agent (Settings > Agents). Every open path (openOrchestrator) sets it
+// back to ""; only a tab click or a send to another agent moves it.
+export const orchestratorTabAtom = atom<string>("");
 export const addNewOpenAtom = atom(false);
 export const paletteOpenAtom = atom(false);
 export const shortcutsHelpOpenAtom = atom(false);

@@ -1,5 +1,5 @@
 import {
-  API_PORT, configDocument, featuresOf, invalidateConfig, loadConfig, setInstanceTerminal, setServerIdentity, setUiOptions, setGoogleOAuth, modelFor, parseConfigDocument,
+  API_PORT, configDocument, featuresOf, invalidateConfig, loadConfig, setInstanceTerminal, setServerIdentity, setUiOptions, setGoogleOAuth, setDefaultAgent, modelFor, parseConfigDocument,
   providerAllowed, providersFor, repoOf, runsHere, saveConfigDocument, type OrcaConfig, type RepoConfig,
 } from "./config";
 import * as git from "./git";
@@ -36,7 +36,7 @@ import { CALLBACK_PATH as GOOGLE_CALLBACK_PATH } from "./integrations/adapters/g
 import { deadNotification, webAdapter } from "./integrations/adapters/web";
 import * as orchestrator from "./orchestrator";
 import * as agents from "./agents";
-import { AGENT_VERBS, agentOfBranch, cleanReportsTo } from "../shared/agents";
+import { AGENT_VERBS, agentOfBranch, cleanReportsTo, defaultAgentName } from "../shared/agents";
 import * as scheduledWake from "./scheduledWake";
 import { handleMemory } from "./memoryRoutes";
 import * as primary from "./primary";
@@ -1046,7 +1046,11 @@ async function api(req: Request, url: URL): Promise<Response> {
   const agentName = (url.searchParams.get("agent") ?? (typeof body.agent === "string" ? body.agent : "")) || undefined;
   try {
     if (req.method === "GET" && p === "/api/orchestrator") return json(await orchestrator.status(cfg, agentName));
-    if (req.method === "GET" && p === "/api/orchestrator/agents") return json({ agents: await orchestrator.statuses(cfg), cleanReportsTo: cleanReportsTo(cfg) });
+    if (req.method === "GET" && p === "/api/orchestrator/agents") {
+      // The default agent first: the panel's main chat (what names no agent goes to it).
+      const list = await orchestrator.statuses(cfg), names = list.map((a) => a.agent);
+      return json({ agents: list, defaultAgent: defaultAgentName(cfg, names), cleanReportsTo: cleanReportsTo(cfg, names) });
+    }
     if (req.method === "POST" && p === "/api/orchestrator/agents") {
       // Settings: add an agent (the user's alone; `orca agent add` is the same from their own chat).
       const def = await agents.add({
@@ -1057,7 +1061,17 @@ async function api(req: Request, url: URL): Promise<Response> {
     }
     // Settings > Agents: every agent's row, and the verbs its checklist offers. Edit and archive are
     // here only — no `orca` verb reaches them, so no agent edits an agent's row.
-    if (req.method === "GET" && p === "/api/orchestrator/agent-defs") return json({ agents: await agents.all(), verbs: AGENT_VERBS });
+    if (req.method === "GET" && p === "/api/orchestrator/agent-defs") {
+      const list = await agents.all();
+      return json({ agents: list, verbs: AGENT_VERBS, defaultAgent: defaultAgentName(cfg, list.map((a) => a.name)), defaultSetting: cfg.agents?.default ?? "" });
+    }
+    if (req.method === "POST" && p === "/api/orchestrator/default-agent") {
+      // Settings > Agents: the agent that gets what names no agent. "" = the first active agent.
+      const name = typeof body.name === "string" ? body.name : "";
+      if (name && !(await agents.get(name))) return json({ error: `no agent ${name}` }, 400);
+      await setDefaultAgent(name);
+      return json({ ok: true });
+    }
     const defRoute = p.match(/^\/api\/orchestrator\/agent-defs\/([a-z][a-z0-9-]*)(\/archive)?$/);
     if (req.method === "POST" && defRoute) {
       if (defRoute[2]) { await agents.remove(defRoute[1]!); return json({ ok: true }); }
@@ -1078,7 +1092,7 @@ async function api(req: Request, url: URL): Promise<Response> {
       return json(await orchestrator.message(cfg, body.text, body.attachments ?? [], { ...(agentName ? { agent: agentName } : {}) }));
     }
   } catch (e) {
-    if (e instanceof Error && /^no agent |^the orchestrator runs on|^the name is|^an agent named|^--display|^--role|^"orchestrator" is|^tools|^the display name|^the role text| is built in and stays$/.test(e.message)) return json({ error: e.message }, 400);
+    if (e instanceof Error && /^no agent |^the orchestrator runs on|^the name is|^an agent named|^--display|^--role|^"orchestrator" is|^tools|^the display name|^the role text| is the last agent: /.test(e.message)) return json({ error: e.message }, 400);
     throw e;
   }
   // Forms in the chat (`orca ask-form`, server/forms.ts): the card reads one, then submits or cancels

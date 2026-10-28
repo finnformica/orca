@@ -22,7 +22,7 @@ export const newAskSession = (): number => ++askSeq;
 export function openOrchestrator(text = "", session = newAskSession()): void {
   startTypeahead();
   const s = getDefaultStore();
-  s.set(orchestratorTabAtom, "chief"); // the quick-ask pill, O and Ask Orca open the Chief of Staff (§7.6)
+  s.set(orchestratorTabAtom, ""); // the quick-ask pill, O and Ask Orca open the default agent (§7.6)
   if (isNarrow()) navigate("/orchestrator"); else s.set(orchestratorOpenAtom, true);
   s.set(orchestratorPrefillAtom, { text, session, seq: ++askSeq });
 }

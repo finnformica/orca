@@ -1936,9 +1936,9 @@ const ORCA_COMMANDS = [
   "  orca agent list                 the named agents: name, state, what is queued for each",
   "  orca agent state <idle|waiting|blocked|done> [--note \"<…>\"]   what you are doing, on your tab in the user's",
   "                                  panel (Orca sets working itself). A message from the user clears waiting and blocked",
-  "  orca agent add <name> --display \"<name>\" --role @file [--model m]   ONLY on the user's word in their own chat:",
-  "                                  a new agent with no shell and no verbs. Only the user edits or archives an agent,",
-  "                                  in Settings > Agents: no verb does it",
+  "  orca agent add <name> --display \"<name>\" --role @file [--model m]   ONLY on the user's own word: a new agent",
+  "                                  with a shell and every verb, like every agent. Only the user edits, narrows or",
+  "                                  archives an agent, in Settings > Agents: no verb does it",
   "  orca memory merge <id> <id>… --title \"…\" --body \"…\" --reason \"…\"   one memory from several: the old ones",
   "                                  are archived and linked to it. Untrusted when any of them is",
   "  orca memory reflect             ask for a reflection pass: in idle time you read your recent turns, worker",
@@ -2065,7 +2065,8 @@ export function orchestratorPrompt(input: { fresh: boolean; role?: string; verbs
     // Every wake too — not just the role text — because a resumed session only ever sees the role
     // once, and the model rule is the one most worth repeating: without it every worker got the
     // config default, which was the biggest model.
-    ...(chief ? [
+    // Any agent that may spawn (not only the Chief of Staff): a New-draft message goes to the default agent.
+    ...(!input.verbs || input.verbs === "all" || input.verbs.includes("spawn") ? [
       "", "## Models",
       "`spawn` requires --model. Start from Opus; step DOWN to Sonnet for small, clear tasks and UP to Fable only when Opus has failed:",
       ...MODEL_LADDER.map((m) => `  ${m.id}: ${m.when}`),
@@ -2102,10 +2103,11 @@ export function orchestratorPrompt(input: { fresh: boolean; role?: string; verbs
 export type AgentDraft = { name: string; displayName: string; role: string; model: string; shell: boolean; verbs: "all" | string[] };
 type DraftSource = { name: string; displayName: string; role?: string; model?: string; tools: { shell: boolean; verbs: "all" | readonly string[] } };
 
-/** The form for a row, or an empty one for a new agent: no shell and no verbs until the user ticks them. */
+/** The form for a row, or an empty one for a new agent: a shell and every verb, as every seeded agent
+ *  has (Finn: every named agent has the same power). The user narrows it before Add. */
 export const agentDraftOf = (def?: DraftSource): AgentDraft => def
   ? { name: def.name, displayName: def.displayName, role: def.role ?? "", model: def.model ?? "", shell: def.tools.shell, verbs: def.tools.verbs === "all" ? "all" : [...def.tools.verbs] }
-  : { name: "", displayName: "", role: "", model: "", shell: false, verbs: [] };
+  : { name: "", displayName: "", role: "", model: "", shell: true, verbs: "all" };
 
 /** Only the fields the form changed, for POST /api/orchestrator/agent-defs/<name>. `model: null`
  *  clears the pin. */

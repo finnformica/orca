@@ -255,11 +255,14 @@ export function OrchestratorPanel() {
   // slide's frames.
   const settled = useSlideSettled(open);
   const { state, load, controls } = useOrchestratorState(settled, pip ?? window);
-  // The named agents' tabs (§7.6): the Chief of Staff first and the default. A tab row shows only once
-  // there is more than one agent. Another agent's chat mounts the first time its tab is chosen.
+  // The named agents' tabs (§7.6): the main chat is the DEFAULT agent (the status answer with no agent
+  // names it), first in the row. A tab row shows only once there is more than one agent. Another
+  // agent's chat mounts the first time its tab is chosen.
   const [tab, setTab] = useAtom(orchestratorTabAtom);
-  const team = useAgentList(settled, pip ?? window);
-  const current = team.find((a) => a.agent === tab && a.agent !== "chief");
+  const main = state?.agent ?? "chief";
+  const listed = useAgentList(settled, pip ?? window);
+  const team = useMemo(() => [...listed.filter((a) => a.agent === main), ...listed.filter((a) => a.agent !== main)], [listed, main]);
+  const current = team.find((a) => a.agent === tab && a.agent !== main);
   const [seen, setSeen] = useState<string[]>([]);
   if (current && !seen.includes(current.agent!)) setSeen([...seen, current.agent!]);
   // The `@` picker's agents in every tab's composer. A send with recipient chips goes to those agents
@@ -314,11 +317,12 @@ export function OrchestratorPanel() {
     w.addEventListener("pagehide", () => { savePipSize(w); setPip(null); setTimeout(syncEvents); }, { once: true });
     setPip(w);
   };
-  const key = state?.key, running = !!state?.running;
+  // The default agent's branch (the status answer with no agent names it); the Chief of Staff's until it loads.
+  const key = state?.key, running = !!state?.running, mainBranch = state?.branch ?? ORCHESTRATOR_BRANCH;
   const row: Row = useMemo(() => ({
-    repo: ORCHESTRATOR_REPO, hasRemote: false, branch: ORCHESTRATOR_BRANCH, title: "Orca", prompt: "", lane: "LOCAL",
+    repo: ORCHESTRATOR_REPO, hasRemote: false, branch: mainBranch, title: "Orca", prompt: "", lane: "LOCAL",
     worktreePath: key, agentStatus: running ? "running" : "idle",
-  }), [key, running]);
+  }), [key, running, mainBranch]);
   // Width: dragged from the panel's left edge (SidePanel), remembered per browser, clamped to the
   // viewport. Read here too for the Pop out window's first size.
   const { width } = usePanelWidth(orchestratorWidthAtom);
@@ -355,13 +359,13 @@ export function OrchestratorPanel() {
   // The conversation fills the panel edge to edge, in the chat styling that follows the page's theme.
   const chat = (
     <>
-      {team.length > 1 && <AgentTabs team={team} tab={current ? current.agent! : "chief"} onTab={setTab} />}
+      {team.length > 1 && <AgentTabs team={team} tab={current ? current.agent! : main} onTab={(t) => setTab(t === main ? "" : t)} />}
       <div className="min-h-0 flex-1" hidden={Boolean(current)}>
         {/* Mounted at once, not after the status read: the composer must exist to take focus in the
             same commit that opens the panel, or the first keystrokes go nowhere. */}
         <OrchestratorChat row={row} prefill={prefill} controls={controls} load={load} mention={mention} />
       </div>
-      {team.filter((a) => a.agent !== "chief" && seen.includes(a.agent!)).map((a) => (
+      {team.filter((a) => a.agent !== main && seen.includes(a.agent!)).map((a) => (
         <div key={a.agent} className="min-h-0 flex-1" hidden={current?.agent !== a.agent} data-slot="agent-chat" data-agent={a.agent}>
           <AgentChat agent={a.agent!} displayName={a.displayName ?? a.agent!} branch={a.branch ?? a.agent!} active={current?.agent === a.agent} win={pip ?? window} mention={mention} />
         </div>
@@ -490,7 +494,7 @@ export function OrchestratorPage() {
   const prefill = useAtomValue(orchestratorPrefillAtom);
   const { state, load, controls } = useOrchestratorState(true);
   const row: Row = {
-    repo: ORCHESTRATOR_REPO, hasRemote: false, branch: ORCHESTRATOR_BRANCH, title: "Orca", prompt: "", lane: "LOCAL",
+    repo: ORCHESTRATOR_REPO, hasRemote: false, branch: state?.branch ?? ORCHESTRATOR_BRANCH, title: "Orca", prompt: "", lane: "LOCAL",
     worktreePath: state?.key, agentStatus: state?.running ? "running" : "idle",
   };
   return (
@@ -551,11 +555,12 @@ export const isOrchestratorWindow = (path = location.pathname, search = location
 export function OrchestratorWindow() {
   const prefill = useAtomValue(orchestratorPrefillAtom);
   const { state, load, controls } = useOrchestratorState(true);
-  const key = state?.key, running = !!state?.running;
+  // The default agent's branch (the status answer with no agent names it); the Chief of Staff's until it loads.
+  const key = state?.key, running = !!state?.running, mainBranch = state?.branch ?? ORCHESTRATOR_BRANCH;
   const row: Row = useMemo(() => ({
-    repo: ORCHESTRATOR_REPO, hasRemote: false, branch: ORCHESTRATOR_BRANCH, title: "Orca", prompt: "", lane: "LOCAL",
+    repo: ORCHESTRATOR_REPO, hasRemote: false, branch: mainBranch, title: "Orca", prompt: "", lane: "LOCAL",
     worktreePath: key, agentStatus: running ? "running" : "idle",
-  }), [key, running]);
+  }), [key, running, mainBranch]);
   // The size you leave it at is the next Pop out's size, as for the PiP window.
   useEffect(() => {
     const save = () => savePipSize(window);

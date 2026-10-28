@@ -71,8 +71,8 @@ const ASSISTANT_ROLE = [
   "priorities. You take in what arrives from outside — channel messages (Discord, Slack, Linear, mail),",
   "Orca's events and the reports the user routes to you — and keep the user's attention free.",
   "",
-  "Your tools are the `orca` command (run it with Bash) and reading. You have no shell. The `## Commands`",
-  "section lists the verbs you may run; Orca refuses any other.",
+  "Your tools are the `orca` command (run it with Bash) and what the `## Access` line of each message",
+  "says. The `## Commands` section lists the verbs you may run; Orca refuses any other.",
   "",
   "What tends to work:",
   "- Handle a small thing yourself: answer a question from the board, past chats or memory; reply on the",
@@ -87,46 +87,46 @@ const ASSISTANT_ROLE = [
 ].join("\n");
 
 
-/** The Assistant's verbs before the move (§7.3): reads, posts on links, questions, memory, wakes,
- *  escalation. No spawn, send, address, merge, move, sweep, archive, stop, repo, secret, handoff or notes. */
-const ASSISTANT_SEED_VERBS = [
-  "board", "channels", "machine", "chats", "read", "post", "thread", "ask-user", "ask-form",
-  "memory", "wake", "ask", "agent", "status", "preview", "slack", "gmail", "cloudflare",
-];
+/** The Research agent's role, as Finn wrote it on its row (it was added with `orca agent add`). */
+const RESEARCH_ROLE = "You research features and ideas before any code is written. Finn asks you directly, or the Chief of Staff hands you a question with orca ask. For each question: find how others solve it (web, docs, similar products), read the relevant repo code (orca read, chats, memory), list the options with trade-offs and costs, and give one clear recommendation. Check facts; say 'estimate' when you have not measured. Write the result as a short brief in plain simple English: problem, findings with links, options, recommendation, open questions, and a ready-to-use workstream brief (objective, output, boundaries, files). You do not write code and you do not spawn workers: when Finn agrees, hand the brief to the Chief of Staff with orca ask chief, and the Chief starts the workstream. Save lasting findings as memories tagged research.";
+
+/** Every seeded agent gets the Chief of Staff's tools: Finn's call, "every named agent has the same
+ *  power". He narrows an agent in Settings > Agents. */
+const ALL: AgentTools = { shell: true, verbs: "all" };
 
 export type SeedAgent = { name: string; displayName: string; branch: string; role: string; model: string; tools: AgentTools };
 
 export const SEED_AGENTS: readonly SeedAgent[] = [
-  { name: "chief", displayName: "Chief of Staff", branch: "orchestrator", role: CHIEF_ROLE, model: "claude-opus-5-5", tools: { shell: true, verbs: "all" } },
-  { name: "assistant", displayName: "Assistant", branch: "assistant", role: ASSISTANT_ROLE, model: "claude-sonnet-5-5", tools: { shell: false, verbs: ASSISTANT_SEED_VERBS } },
+  { name: "chief", displayName: "Chief of Staff", branch: "orchestrator", role: CHIEF_ROLE, model: "claude-opus-5-5", tools: ALL },
+  { name: "assistant", displayName: "Assistant", branch: "assistant", role: ASSISTANT_ROLE, model: "claude-sonnet-5-5", tools: ALL },
+  { name: "research", displayName: "Research", branch: "research", role: RESEARCH_ROLE, model: "claude-fable-5-1", tools: ALL },
 ];
 
 /** A SQL text value, base64-encoded: the role text has quotes, `;` and `--`, which the migration
  *  runner's statement checks (tests/migrations.test.ts) read as statement ends and comments. */
 const lit = (text: string): string => `convert_from(decode('${Buffer.from(text, "utf8").toString("base64")}', 'base64'), 'UTF8')`;
 
-/** The step's SQL. Idempotent: the column is IF NOT EXISTS, and the upsert changes a row only while it
- *  is not yet built in — so a re-run never undoes an edit made in Settings.
+/** The step's SQL. Idempotent: every column is IF NOT EXISTS, and each write changes a row only while
+ *  its `seeded_at` is null, so a re-run never undoes an edit made in Settings.
  *  - Each seed row goes to "me" (db.currentUser's default) and to every user id that has a workstream
- *    or an agent row already.
- *  - A row the old code wrote for a built-in agent (its state, a pinned model) keeps its state, its
- *    model pin and any role it had; it gets the seed's tools, which are the tools the code enforced.
- *  - An agent the user added before keeps its row. One with no model pin is pinned to Sonnet, its old
- *    runtime default, because the default for an agent with no pin is now Opus. Only on the first run. */
+ *    or an agent row already. `created_at` 1, 2, 3 lists them first, in this order.
+ *  - A row that exists (the old code wrote one for an agent's state; Finn added `research`) keeps its
+ *    state, its created_at and any role it had. It gets the seed's display name, model and tools.
+ *  - A channel link with no agent meant the Assistant. It now names it, because no agent now means
+ *    the default agent (server/agents.ts defaultAgent). */
 export function seedAgentsSql(): string {
   const now = "(extract(epoch from now()) * 1000)::bigint";
   const users = "(SELECT 'me' AS user_id UNION SELECT user_id FROM workstream UNION SELECT user_id FROM agent) u";
   return [
-    "ALTER TABLE agent ADD COLUMN IF NOT EXISTS builtin BOOLEAN NOT NULL DEFAULT false;",
-    `UPDATE agent SET model = 'claude-sonnet-5-5' WHERE name NOT IN (${SEED_AGENTS.map((a) => `'${a.name}'`).join(", ")}) AND NOT EXISTS (SELECT 1 FROM agent b WHERE b.builtin) AND model IS NULL;`,
-    ...SEED_AGENTS.map((a) => `
-      INSERT INTO agent (user_id, name, display_name, role, model, branch, tools, max_grant, state, builtin, created_at, updated_at)
-      SELECT u.user_id, '${a.name}', ${lit(a.displayName)}, ${lit(a.role)}, '${a.model}', '${a.branch}', ${lit(JSON.stringify(a.tools))}::jsonb, 'full', 'idle', true, ${now}, ${now}
+    "ALTER TABLE agent ADD COLUMN IF NOT EXISTS seeded_at BIGINT;",
+    "UPDATE channel_link SET agent = 'assistant' WHERE NOT EXISTS (SELECT 1 FROM agent WHERE seeded_at IS NOT NULL) AND agent IS NULL;",
+    ...SEED_AGENTS.map((a, i) => `
+      INSERT INTO agent (user_id, name, display_name, role, model, branch, tools, max_grant, state, seeded_at, created_at, updated_at)
+      SELECT u.user_id, '${a.name}', ${lit(a.displayName)}, ${lit(a.role)}, '${a.model}', '${a.branch}', ${lit(JSON.stringify(a.tools))}::jsonb, 'full', 'idle', ${now}, ${i + 1}, ${now}
       FROM ${users}
-      ON CONFLICT (user_id, name) DO UPDATE SET builtin = true, display_name = EXCLUDED.display_name, branch = EXCLUDED.branch,
-        tools = EXCLUDED.tools, max_grant = EXCLUDED.max_grant, archived_at = NULL,
-        role = CASE WHEN agent.role = '' THEN EXCLUDED.role ELSE agent.role END,
-        model = COALESCE(agent.model, EXCLUDED.model), updated_at = EXCLUDED.updated_at
-      WHERE NOT agent.builtin;`),
+      ON CONFLICT (user_id, name) DO UPDATE SET seeded_at = EXCLUDED.seeded_at, display_name = EXCLUDED.display_name, branch = EXCLUDED.branch,
+        tools = EXCLUDED.tools, max_grant = EXCLUDED.max_grant, model = EXCLUDED.model, archived_at = NULL,
+        role = CASE WHEN agent.role = '' THEN EXCLUDED.role ELSE agent.role END, updated_at = EXCLUDED.updated_at
+      WHERE agent.seeded_at IS NULL;`),
   ].join("\n");
 }

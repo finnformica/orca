@@ -225,10 +225,12 @@ export type OrcaConfig = {
    *  subagents. Worth turning off on a shared box: it reads every worker's output, so a shell makes
    *  that output a path to running commands outside any worktree. */
   orchestratorShell?: boolean;
-  /** Named agents (docs/design/named-agents-and-memory.md §7.4). `cleanReportsTo`: the agent that
-   *  takes a clean worker report — `chief` (the default) or `assistant`. A problem report always goes
-   *  to the Chief of Staff. */
-  agents?: { cleanReportsTo?: string };
+  /** Named agents (docs/design/named-agents-and-memory.md §7.4). `default`: the agent that gets what
+   *  names no agent (a problem worker report, a message to no agent, a link with no agent); a name that
+   *  is no active row reads as the first active agent (server/agents.ts defaultAgent). Settings >
+   *  Agents sets it. `cleanReportsTo`: the agent that takes a clean worker report; unset or gone = the
+   *  default agent. */
+  agents?: { default?: string; cleanReportsTo?: string };
   /** `--max-budget-usd` for ONE orchestrator wake (default 5). A wake on a long resumed session
    *  re-reads its whole history, so the cap can bite after a tool call or two; a wake that hits it
    *  says so in the chat and its message is retried. Workers are capped per repo (`agentMaxBudgetUsd`). */
@@ -429,8 +431,8 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
     errors.push("orchestratorOn must be an instance name");
   }
   if (d.agents !== undefined && (typeof d.agents !== "object" || d.agents === null || Array.isArray(d.agents)
-    || ((d.agents as { cleanReportsTo?: unknown }).cleanReportsTo !== undefined && typeof (d.agents as { cleanReportsTo?: unknown }).cleanReportsTo !== "string"))) {
-    errors.push("agents must be an object: { cleanReportsTo?: \"chief\" | \"assistant\" }");
+    || ["default", "cleanReportsTo"].some((k) => (d.agents as Record<string, unknown>)[k] !== undefined && typeof (d.agents as Record<string, unknown>)[k] !== "string"))) {
+    errors.push("agents must be an object: { default?: \"<agent name>\", cleanReportsTo?: \"<agent name>\" }");
   }
   if (d.orchestratorShell !== undefined && typeof d.orchestratorShell !== "boolean") {
     errors.push("orchestratorShell must be true or false");
@@ -714,6 +716,18 @@ export async function setUiOptions(ui: UiOptions): Promise<void> {
   const { config, errors } = parseConfigDocument(await configDocument());
   if (!config) throw new Error(`the stored config does not parse: ${errors.join("; ")}`);
   await saveConfigDocument({ ...config, ...(current.terminal ? { terminal: current.terminal } : {}), ui: { ...config.ui, ...ui } });
+}
+
+/** Set the default agent (Settings > Agents): one key of `agents`, the rest of the document unchanged.
+ *  An empty name clears it (the first active agent). */
+export async function setDefaultAgent(name: string): Promise<void> {
+  invalidateConfig();
+  const current = await loadConfig();
+  const { config, errors } = parseConfigDocument(await configDocument());
+  if (!config) throw new Error(`the stored config does not parse: ${errors.join("; ")}`);
+  const { default: _old, ...rest } = config.agents ?? {};
+  const agents = name ? { ...rest, default: name } : rest;
+  await saveConfigDocument({ ...config, ...(current.terminal ? { terminal: current.terminal } : {}), agents });
 }
 
 /** Set the Google OAuth client — Settings' Google sign-in card. An empty field clears that key; an

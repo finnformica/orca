@@ -1,6 +1,7 @@
 // The Memory page's API (docs/design/named-agents-and-memory.md §9). Postgres only, so any instance
 // answers; never forwarded. Every change here is the USER's (server/memory.ts `USER`): pin, mark
 // trusted and revert exist only on this path, never as an `orca` verb.
+import * as agents from "./agents";
 import * as db from "./db";
 import * as memory from "./memory";
 import * as scheduledWake from "./scheduledWake";
@@ -25,7 +26,7 @@ export async function handleMemory(req: Request, url: URL, body: Record<string, 
     if (req.method === "GET" && p === "/api/memory/reflections") return json({ passes: await memory.passes({ ...(url.searchParams.get("agent") ? { agent: url.searchParams.get("agent")! } : {}) }) });
     if (req.method === "GET" && p === "/api/memory/activity") return json({ revisions: await memory.activity(num(url.searchParams.get("limit")) ?? 200) });
     if (req.method === "GET" && p === "/api/memory/core") {
-      const c = await memory.core(url.searchParams.get("agent") || "chief");
+      const c = await memory.core(url.searchParams.get("agent") || (await agents.defaultAgent()).name);
       return json({ ...c, budget: MEMORY_BUDGET.coreTokens, pinnedWarn: MEMORY_BUDGET.pinnedWarnTokens });
     }
     if (req.method === "POST" && p === "/api/memory") {

@@ -921,11 +921,16 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   message is `[from assistant] …`: not the user's, and it keeps an outside grant. Clean worker
   reports go to `agents.cleanReportsTo` (default `chief`, Finn's call); problems always to `chief`.
   **Every agent is its `agent` row and nothing else** (named step `20261027-agent-definitions`
-  seeded both from the old code values, `server/agentSeed.ts`, frozen): role text, model, tools
-  (shell + verbs or `all`), max grant, `builtin` (only stops an archive). No code default wins over a
-  row; the DB-down fallback is `FALLBACK_CHIEF` (identity, no verbs). Settings > Agents
-  (`views/AgentSettings.tsx`, `/api/orchestrator/agent-defs`) is the ONLY editor: no `orca` verb
-  edits or archives an agent, and `orca agent add` makes one with no verbs.
+  seeded the Chief of Staff, the Assistant and Research, `server/agentSeed.ts`, frozen): role text,
+  model, tools (shell + verbs or `all`), max grant. **Every seeded agent has the Chief of Staff's
+  power** (shell, `all`, `full`: Finn's call; he narrows one in Settings). No agent is special in
+  code: any row archives but the last one. What names no agent (the panel's main chat, a route or
+  `orca` call with no agent, problem reports, New draft, a link with no agent, an `orchestrator`
+  subscription, a delivery to an archived agent) goes to the **default agent**: `agents.default` in
+  the app config, else the first active row (`defaultAgentName`, `agents.defaultAgent`). The DB-down
+  fallback is `FALLBACK_CHIEF` (identity, no verbs). Settings > Agents (`views/AgentSettings.tsx`,
+  `/api/orchestrator/agent-defs`, `/api/orchestrator/default-agent`) is the ONLY editor: no `orca`
+  verb edits or archives an agent; `orca agent add` runs only on the user's own word, in any agent's wake.
   The runtime is one module over an `AgentRef` (`orchestrator.ts`): each agent its own blob, chain and
   lease; no name = `chief`, so every old caller and route works. `/api/orchestrator*?agent=`,
   `/api/orchestrator/agents`. The side panel has a shadcn Tabs row, one per agent; every open path

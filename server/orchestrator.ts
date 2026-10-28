@@ -58,7 +58,7 @@ import type { ReflectionTrigger } from "../shared/memory";
 import { AGENT_REPLIED, isScheduledWake, parseScheduledWake } from "../shared/scheduledWake";
 import { providerOfModel } from "../shared/models";
 import {
-  FALLBACK_CHIEF, SET_STATES, agentListText, agentMessage, agentMessageFrom, agentState, agentVerbRefusal, authoredPost, clearsOnUserMessage, cleanReportsTo,
+  SET_STATES, agentListText, defaultAgentName, agentMessage, agentMessageFrom, agentState, agentVerbRefusal, authoredPost, clearsOnUserMessage, cleanReportsTo,
   type AgentDef, type AgentStateName,
 } from "../shared/agents";
 import { attachmentIdOf, attachmentRefusal, catchAllPostRefusal, deleteRefusal, grantKey, grantRefusal, outboundRefusal, postsAsUser, repoScoped, type Grant, type ReplyTo } from "../shared/integrations";
@@ -94,18 +94,20 @@ export function dir(name: string = CHIEF): string {
  *  its workstream branch under ORCHESTRATOR_REPO, its directory and its definition. */
 export type AgentRef = { name: string; branch: string; dir: string; def: AgentDef };
 const refOf = (def: AgentDef): AgentRef => ({ name: def.name, branch: def.branch, dir: dir(def.name), def });
-/** The Chief of Staff's IDENTITY (name, branch, directory) with no read of the agent table: for the
- *  blob, the queue and the run key only. Its definition (role, model, tools) is `agentRef()`'s, read
- *  from its row; this ref's def is the database-down fallback, which may run nothing. */
-const chiefRef = (): AgentRef => refOf(FALLBACK_CHIEF);
-/** The agent named `name` (none = the Chief of Staff), with its definition read from its row on every
- *  call, so an edit in Settings applies at once. Throws for an unknown name. */
-export async function agentRef(name?: string): Promise<AgentRef> {
-  const def = await agents.get(name || CHIEF);
+/** The agent named `name` (none = the default agent, server/agents.ts defaultAgent), with its
+ *  definition read from its row on every call, so an edit in Settings applies at once. Throws for an
+ *  unknown name. */
+export async function agentRef(name?: string, cfg?: OrcaConfig): Promise<AgentRef> {
+  const def = name ? await agents.get(name) : await agents.defaultAgent(cfg);
   if (!def) throw new Error(`no agent "${name}" (orca agent list)`);
   return refOf(def);
 }
-/** Every agent's ref, the Chief of Staff first. */
+/** `name` while it is an active agent, else the default agent: for what must reach SOME agent (a
+ *  worker report, an inbound message, a fired wake) after its agent was archived. */
+export async function agentRefOrDefault(name?: string, cfg?: OrcaConfig): Promise<AgentRef> {
+  return refOf((name && await agents.get(name)) || await agents.defaultAgent(cfg));
+}
+/** Every agent's ref, oldest row first. */
 export async function agentRefs(): Promise<AgentRef[]> {
   return (await agents.all()).map(refOf);
 }
@@ -154,7 +156,7 @@ const modelOf = (_cfg: OrcaConfig, b: Blob, ag: AgentRef): string =>
   (providerOfModel(b.preferredModel) === "claude" ? b.preferredModel! : undefined)
   ?? (providerOfModel(ag.def.model) === "claude" ? ag.def.model! : undefined)
   ?? ORCHESTRATOR_DEFAULT_MODEL;
-const blob = async (ag: AgentRef = chiefRef()): Promise<Blob> => ((await db.enrichment(ORCHESTRATOR_REPO))[ag.branch] ?? {}) as Blob;
+const blob = async (ag: AgentRef): Promise<Blob> => ((await db.enrichment(ORCHESTRATOR_REPO))[ag.branch] ?? {}) as Blob;
 const patch = (ag: AgentRef, fields: db.Fields) => db.patchEnrichment(ORCHESTRATOR_REPO, ag.branch, fields);
 const enqueue = (ag: AgentRef, instruction: string, attachments: string[] = [], grant?: Grant | null, replyTo?: ReplyTo | null) =>
   db.queueMessage({ repo: ORCHESTRATOR_REPO, branch: ag.branch, worktreePath: ag.dir, instruction, attachments, provider: "claude", ...(grant ? { grant } : {}), ...(replyTo ? { replyTo } : {}) });
@@ -184,9 +186,9 @@ export type AgentStatus = {
   agent: string; displayName: string; branch: string; state: AgentStateName; stateNote?: string;
 };
 
-/** One agent's status (none = the Chief of Staff, as `/api/orchestrator` always answered). */
+/** One agent's status (none = the default agent: the panel's main chat, as `/api/orchestrator` answers). */
 export async function status(cfg: OrcaConfig, name?: string): Promise<AgentStatus> {
-  const ag = await agentRef(name);
+  const ag = await agentRef(name, cfg);
   const b = await blob(ag);
   const running = agent.isRunning(ag.dir);
   const paused = (b.wakes ?? 0) >= MAX_WAKES;
@@ -228,7 +230,7 @@ async function clearWaiting(ag: AgentRef): Promise<void> {
  *  of another grant, and that wake's `orca` verbs are checked against it. `person: false` (a webhook
  *  script, not a person) does not reset the wake count, so a script cannot keep it awake forever. */
 export async function message(cfg: OrcaConfig, text: string, attachments: string[] = [], opts: { grant?: Grant; person?: boolean; replyTo?: ReplyTo; agent?: string } = {}): Promise<{ status: "running" | "queued" }> {
-  const ag = await agentRef(opts.agent);
+  const ag = await agentRef(opts.agent, cfg);
   const l = lane(ag);
   const grant = opts.grant && opts.grant.level !== "full" ? opts.grant : undefined;
   if (agent.isRunning(ag.dir) && !l.messagesInChain) {
@@ -269,7 +271,7 @@ export async function message(cfg: OrcaConfig, text: string, attachments: string
  *  card's verb does. Not a wake — no prompt, no board, no claimed messages; whatever queued while it
  *  ran is drained when it finishes, like after any run of its own. */
 export async function compact(cfg: OrcaConfig, name?: string): Promise<{ runId: string }> {
-  const ag = await agentRef(name);
+  const ag = await agentRef(name, cfg);
   return serial(ag, async () => {
     const b = await blob(ag);
     if (!b.sessionId) throw new Error("the orchestrator has no session to compact yet");
@@ -288,7 +290,7 @@ export async function compact(cfg: OrcaConfig, name?: string): Promise<{ runId: 
  *  its part here: drop the wake's claim (Stop is not a death, so nothing is re-queued) and send what
  *  queued up meanwhile at once — the same drain a finished wake gets. */
 export async function stop(cfg: OrcaConfig, name?: string): Promise<string | undefined> {
-  const ag = await agentRef(name);
+  const ag = await agentRef(name, cfg);
   const runId = await agent.interrupt(ag.dir, { queue: false });
   await serial(ag, async () => {
     const b = await blob(ag);
@@ -396,15 +398,18 @@ async function autoPr(cfg: OrcaConfig, repoName: string, branch: string, run: ag
   }
 }
 
-/** Which agent a report goes to when the caller names none (§7.4): a problem to the Chief of Staff,
- *  a clean report to `agents.cleanReportsTo` (the Chief of Staff unless the user chose otherwise). */
-export const reportTarget = (cfg: OrcaConfig, text: string): string => (isWorkerProblem(text) ? CHIEF : cleanReportsTo(cfg));
+/** Which agent a report goes to when the caller names none (§7.4): a problem to the default agent, a
+ *  clean report to `agents.cleanReportsTo` while that agent is active, else the default agent. */
+export async function reportTarget(cfg: OrcaConfig, text: string): Promise<string> {
+  const names = (await agents.all()).map((a) => a.name);
+  return isWorkerProblem(text) ? defaultAgentName(cfg, names) : cleanReportsTo(cfg, names);
+}
 
 /** Hand a report to an agent: here, or posted to the instance the agents live on (ONE process wakes
  *  each — two resuming the same session at once was the "one message behind" bug). Worker reports,
  *  the merge queue's and fired scheduled wakes all go through this. */
 export async function report(cfg: OrcaConfig, text: string, key?: string, name?: string): Promise<void> {
-  const to = name ?? reportTarget(cfg, text);
+  const to = name ?? await reportTarget(cfg, text);
   const host = cfg.orchestratorOn;
   if (host && host !== db.instanceName()) {
     const base = cfg.instances?.[host];
@@ -419,7 +424,7 @@ export async function report(cfg: OrcaConfig, text: string, key?: string, name?:
 /** Deliver a worker's report by the management-by-exception rules, from this or another instance.
  *  `name` is the agent that takes it (none = by `reportTarget`). */
 export async function deliverReport(cfg: OrcaConfig, text: string, key?: string, name?: string): Promise<void> {
-  const ag = await agentRef(name ?? reportTarget(cfg, text));
+  const ag = await agentRefOrDefault(name ?? await reportTarget(cfg, text), cfg);
   // Management by exception. A manager is interrupted for a problem, not for every completion: a
   // worker that failed, was stopped, or whose commit failed Orca's check wakes the orchestrator now.
   // A clean finish is queued and delivered when the batch is done — the last of its running
@@ -474,7 +479,7 @@ async function died(ag: AgentRef, runId: string, exit: WakeExit, costUsd?: numbe
  *  are re-queued like any other death; if it outlived the bridge and finished, the queue it left is
  *  drained. `reconcile` is index.ts's turn reconciliation, re-run once the wake is really gone. */
 export async function recover(cfg: OrcaConfig, reconcile: () => Promise<unknown>, opts: { runId?: string; agent?: string } = {}): Promise<void> {
-  const ag = await agentRef(opts.agent);
+  const ag = await agentRef(opts.agent, cfg);
   const { handling } = await blob(ag);
   // None, or another instance's wake — unless it is the run `evictForeignWake` just killed, whose
   // stray bridge may have stamped it with a different instance name.
@@ -512,7 +517,7 @@ export async function recover(cfg: OrcaConfig, reconcile: () => Promise<unknown>
  *  Returns what it stopped. Primary only. */
 export async function evictForeignWake(cfg: OrcaConfig, reconcile: () => Promise<unknown>, table?: procs.ProcRow[], name?: string): Promise<{ bridge: number; run: number; runId: string } | undefined> {
   if (!primary.held()) return undefined;
-  const ag = await agentRef(name);
+  const ag = await agentRef(name, cfg);
   const state = lane(ag);
   const l = lease.current(ag.dir);
   if (!l || !lease.pidAlive(l.pid)) return undefined;
@@ -808,7 +813,7 @@ async function wakeOrigin(b: Blob, agent: string): Promise<TurnOrigin | undefine
 export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): Promise<string> {
   // Who calls (bin/orca sends the run's ORCA_AGENT; none = the Chief of Staff): its own wake's blob
   // holds the grant and reply target, and its definition limits its verbs (§7.1 step 5).
-  const ag = await agentRef(typeof args._agent === "string" && args._agent ? args._agent : undefined);
+  const ag = await agentRef(typeof args._agent === "string" && args._agent ? args._agent : undefined, cfg);
   // The grant check (§3.7): a wake an outside sender caused may only use the verbs its grant allows.
   // Server-side, so no prompt can talk its way past it.
   const b = await blob(ag);
@@ -1208,7 +1213,7 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       await patch(ag, { notes: text });
       return "Notes saved.";
     }
-    case "wake": return scheduledWake.wakeTool(ag.name, words, args, b.handling?.runId, Date.now(), (await agents.all()).map((a) => a.name));
+    case "wake": return scheduledWake.wakeTool(ag.name, words, args, b.handling?.runId, Date.now(), (await agents.all()).map((a) => a.name), ag.def.tools.verbs === "all");
     case "memory": {
       if (words[0] === "reflect") return requestReflection(ag, b);
       return memory.memoryTool(ag.name, words, args, () => memoryActor(ag.name, b));
@@ -1260,7 +1265,7 @@ async function requestReflection(ag: AgentRef, b: Blob, now = Date.now()): Promi
 export async function maybeReflect(cfg: OrcaConfig, now = Date.now(), name?: string): Promise<string | undefined> {
   if (!primary.held()) return undefined;
   if (cfg.orchestratorOn && cfg.orchestratorOn !== db.instanceName()) return undefined;
-  const ag = await agentRef(name);
+  const ag = await agentRef(name, cfg);
   return serial(ag, async () => {
     const b = await blob(ag);
     const idle = !agent.isRunning(ag.dir);
@@ -1345,7 +1350,7 @@ async function agentVerb(cfg: OrcaConfig, ag: AgentRef, words: string[], args: T
     const name = words[1] ?? "";
     const role = typeof args.role === "string" ? args.role : "";
     const def = await agents.add({ name, displayName: typeof args.display === "string" ? args.display : "", role, ...(typeof args.model === "string" ? { model: args.model } : {}) });
-    return `Added the agent ${def.name} (${def.displayName}): no shell and no verbs yet. The user gives it verbs in Settings > Agents. Its tab is in the side panel.`;
+    return `Added the agent ${def.name} (${def.displayName}): a shell and every verb, like every agent. The user narrows it in Settings > Agents. Its tab is in the side panel.`;
   }
   throw new Error('usage: orca agent list | orca agent state <state> [--note "<…>"] | orca agent add <name> --display "<name>" --role "<role text>" [--model <id>]. Edit and archive an agent in Settings > Agents.');
 }

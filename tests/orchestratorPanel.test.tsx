@@ -528,6 +528,24 @@ test("the PiP window never reads its own narrow width as a phone for the compose
   } finally { void pip; }
 });
 
+test("the main chat is the default agent: with the Chief of Staff archived or not the default, it follows the agent the server names", async () => {
+  const now = Date.now();
+  apiFake.turnsData.set("@orca::assistant", [{ id: "run-a", provider: "claude", instruction: "triage #ops", prompt: "p", response: "Default agent here.", startedAt: now - 500, finishedAt: now }]);
+  // The status with no agent answers the Assistant (Settings > Agents: default agent).
+  apiFake.orchestratorState = { ...apiFake.orchestratorState, agent: "assistant", displayName: "Assistant", branch: "assistant", key: "/state/agents/assistant" };
+  apiFake.extraAgents = [{ agent: "research", displayName: "Research", branch: "research", state: "idle", running: false, paused: false, notes: "", model: "claude-fable-5-1", key: "/state/agents/research" }];
+  await mount(<Entry />);
+  await click(launcher());
+  await afterSlide();
+  const tabs = () => [...panel()!.querySelectorAll<HTMLElement>('[data-slot="agent-tab"]')];
+  expect(tabs().map((t) => t.textContent)).toEqual(["Assistant", "Research"]);
+  expect(tabs()[0]!.dataset.state).toBe("active");
+  expect(panel()!.textContent).toContain("Default agent here.");
+  // Before the first status answer the main chat reads the Chief of Staff's branch (it mounts at once
+  // for the composer's focus); once the server names the default agent, it reads that agent's.
+  expect(apiFake.turnPageCalls.at(-1)!.branch).toBe("assistant");
+});
+
 test("named agents: a tab per agent with its state dot, the Chief of Staff first; a tab is the same chat over its own branch", async () => {
   const now = Date.now();
   apiFake.turnsData.set("@orca::orchestrator", [{ id: "run-c", provider: "claude", instruction: "ship it", prompt: "p", response: "Spawned r/ship.", startedAt: now - 1000, finishedAt: now }]);

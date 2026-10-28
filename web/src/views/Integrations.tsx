@@ -27,7 +27,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Empty, Pill, SectionTitle, StatusDot, VCard } from "@/components/console";
 import {
   SUBSCRIPTION_PRESETS, connectOriginProblem, deadTargetLabel, filterText, healthLine, healthTone, identityLabel, identityProblem, instanceText, newPersonId as personId, integrationProblem, linkProblem, parseFilter, targetLabel,
-  type IntegrationCard, type InstanceOption, type IntegrationsOverview, type LinkRow, type Pairing, type PersonRow, type AgentOption, agentLabel, linkAgentValue,
+  type IntegrationCard, type InstanceOption, type IntegrationsOverview, type LinkRow, type Pairing, type PersonRow, type AgentOption, DEFAULT_AGENT_VALUE, agentLabel, linkAgentValue,
 } from "../../../shared/integrationSettings";
 import { ACCESS_LABEL, ACCESS_VALUES, AUTO_INSTANCE, apiKeyProblem, CATCH_ALL, EVENTS_LABEL, EVENTS_VALUES, LEVEL_LABEL, LINK_LEVELS as LEVELS, STORED_SECRET_PREFIX, effectiveNotify, isAutomatic, repoScoped, storedSecretName, type AdapterMeta, type EventsMode, type LinkLevel } from "../../../shared/integrations";
 
@@ -359,9 +359,12 @@ function LinkRowView({ link: l, events, agents, onEdit, onChange }: { link: Link
         {agents && agents.length > 0 && (
           <div data-slot="link-agent" className="mr-2 flex items-center gap-2">
             <Label htmlFor={`link-agent-${l.id}`} className="text-muted-foreground text-xs font-normal">Agent</Label>
-            <Select value={linkAgentValue(l)} onValueChange={(v) => void act(`Send ${name} to the ${agentLabel(v, agents)}`, "links/save", { ...l, agent: v === "assistant" ? "" : v }, onChange)}>
+            <Select value={linkAgentValue(l)} onValueChange={(v) => void act(`Send ${name} to the ${agentLabel(v, agents)}`, "links/save", { ...l, agent: v === DEFAULT_AGENT_VALUE ? "" : v }, onChange)}>
               <SelectTrigger id={`link-agent-${l.id}`} size="sm" aria-label={`Agent for ${name}`} className="w-36 max-sm:h-10"><SelectValue>{agentLabel(linkAgentValue(l), agents)}</SelectValue></SelectTrigger>
-              <SelectContent>{agents.map((a) => <SelectItem key={a.name} value={a.name}>{a.displayName}</SelectItem>)}</SelectContent>
+              <SelectContent>
+                <SelectItem value={DEFAULT_AGENT_VALUE}>Default agent</SelectItem>
+                {agents.map((a) => <SelectItem key={a.name} value={a.name}>{a.displayName}</SelectItem>)}
+              </SelectContent>
             </Select>
           </div>
         )}

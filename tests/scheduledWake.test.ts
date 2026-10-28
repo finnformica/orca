@@ -126,7 +126,7 @@ describe("the store", () => {
     await expect(wakes.wakeTool("chief", [], { at: "2h", note: "x", agent: "nobody" }, undefined, NOW, ["chief", "assistant"])).rejects.toThrow('there is no agent "nobody" (agents: chief, assistant)');
     // The Chief of Staff sets a wake for another agent; another agent may not (named agents).
     expect(await wakes.wakeTool("chief", [], { at: "2h", note: "x", agent: "assistant" }, undefined, NOW, ["chief", "assistant"])).toContain("for assistant");
-    await expect(wakes.wakeTool("assistant", [], { at: "2h", note: "x", agent: "chief" }, undefined, NOW, ["chief", "assistant"])).rejects.toThrow("only the Chief of Staff");
+    await expect(wakes.wakeTool("assistant", [], { at: "2h", note: "x", agent: "chief" }, undefined, NOW, ["chief", "assistant"], false)).rejects.toThrow("only an agent with every verb");
     const m = await memory.write({ owner: "chief", title: "Task: CI", body: "Watch CI." }, { kind: "user" });
     expect(await wakes.wakeTool("chief", [], { at: "2h", note: "x", memory: `m${m.id}` }, undefined, NOW)).toContain(`· memory m${m.id}`);
     WAKE_LIMITS.pendingMax = 1;

@@ -1,7 +1,8 @@
 // Settings > Agents (`/settings#agents`): every named agent's row (server/agents.ts, table `agent`).
-// The user edits each agent's display name, role text, model, shell flag and verbs here, and adds
-// and archives agents. This is the ONLY editor: no `orca` verb edits a row, so no agent widens its
-// own or another agent's tools. An edit applies at once (the server reads the row on every call).
+// The user edits each agent's display name, role text, model, shell flag and verbs here, adds and
+// archives agents (any agent but the last one), and picks the default agent: the one that gets what
+// names no agent. This is the ONLY editor: no `orca` verb edits a row, so no agent widens its own or
+// another agent's tools. An edit applies at once (the server reads the row on every call).
 import { useEffect, useState, type ReactNode } from "react";
 import { Bot, Plus } from "lucide-react";
 import { api } from "../api";
@@ -20,6 +21,8 @@ import { agentDraftOf, agentDraftPatch, agentToolsLabel, toggleAgentVerb, type A
 
 /** The Select's value for "no pin": the server's default model. */
 const DEFAULT_MODEL = "default";
+/** The default-agent Select's value for "no setting": the first active agent. */
+const FIRST = "+first";
 
 export function AgentsSettings() {
   const [defs, setDefs] = useState<AgentDef[] | null>(null);
@@ -27,7 +30,8 @@ export function AgentsSettings() {
   const [error, setError] = useState<string>();
   const [open, setOpen] = useState<string | null>(null); // the agent being edited, or "+new"
   const [archive, setArchive] = useState<AgentDef | null>(null);
-  const load = () => api.agentDefs().then((r) => { setDefs(r.agents); setVerbs(r.verbs); setError(undefined); })
+  const [def, setDef] = useState<{ current?: string; setting: string }>({ setting: "" });
+  const load = () => api.agentDefs().then((r) => { setDefs(r.agents); setVerbs(r.verbs); setDef({ current: r.defaultAgent, setting: r.defaultSetting ?? "" }); setError(undefined); })
     .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   useEffect(() => { void load(); }, []);
   return (
@@ -35,6 +39,24 @@ export function AgentsSettings() {
       <SectionTitle aside={<Button size="sm" variant="secondary" data-slot="agent-add" disabled={!defs || open === "+new"} onClick={() => setOpen("+new")}><Plus />Add agent</Button>}>Agents</SectionTitle>
       <VCard slot="agents-list">
         {error && <p className="text-geist-red px-4 py-3 text-sm">{error}</p>}
+        {defs && (
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3 text-sm" data-slot="agent-default">
+            <div>
+              <Label htmlFor="agent-default">Default agent</Label>
+              <p className="text-muted-foreground text-xs">Gets what names no agent: the main chat, problem worker reports, a link with no agent.</p>
+            </div>
+            <Select value={def.setting || FIRST} onValueChange={(v) => {
+              const name = v === FIRST ? "" : v;
+              api.setDefaultAgent(name).then(load).catch((e) => setError(e instanceof Error ? e.message : String(e)));
+            }}>
+              <SelectTrigger id="agent-default" data-slot="agent-default-select" size="sm" className="w-48"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value={FIRST}>First agent ({defs[0]?.displayName ?? "none"})</SelectItem>
+                {defs.map((d) => <SelectItem key={d.name} value={d.name}>{d.displayName}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
         {!defs ? <Empty>Loading agents…</Empty> : (
           <ul className="divide-y">
             {open === "+new" && (
@@ -49,13 +71,13 @@ export function AgentsSettings() {
                     <span className="text-muted-foreground block font-mono text-xs">{d.name}</span>
                   </span>
                   <span className="flex flex-wrap items-center gap-1.5">
-                    {d.builtin && <Pill>built in</Pill>}
+                    {d.name === def.current && <Pill tone="blue">default</Pill>}
                     <Pill>{d.model ? modelLabel(d.model) : "default model"}</Pill>
                     <Pill tone={d.tools.shell ? "amber" : "default"}>{d.tools.shell ? "shell" : "no shell"}</Pill>
                     <Pill tone={d.tools.verbs === "all" ? "amber" : "default"}>{agentToolsLabel(d.tools)}</Pill>
                   </span>
                   <span className="ml-auto flex items-center gap-1">
-                    {!d.builtin && <Button size="sm" variant="ghost" data-slot="agent-archive" onClick={() => setArchive(d)}>Archive</Button>}
+                    {defs.length > 1 && <Button size="sm" variant="ghost" data-slot="agent-archive" onClick={() => setArchive(d)}>Archive</Button>}
                     <Button size="sm" variant="secondary" data-slot="agent-edit" onClick={() => setOpen(open === d.name ? null : d.name)}>{open === d.name ? "Close" : "Edit"}</Button>
                   </span>
                 </div>

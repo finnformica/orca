@@ -157,23 +157,24 @@ export const WAKE_USAGE = [
   "orca wake cancel <id>",
 ].join("\n");
 
-/** `orca wake …` for an agent. Another agent's queue only for the Chief of Staff. `known` are the
- *  agents that exist (server/agents.ts); none given = the Chief of Staff alone. */
-export async function wakeTool(agent: string, words: string[], args: Record<string, unknown>, runId?: string, now = Date.now(), known: string[] = [CHIEF]): Promise<string> {
+/** `orca wake …` for an agent. Another agent's wakes only for an agent with every verb (`wide`, its
+ *  row's tools; no agent is special by name). `known` are the agents that exist (server/agents.ts);
+ *  none given = the Chief of Staff alone, with every verb. */
+export async function wakeTool(agent: string, words: string[], args: Record<string, unknown>, runId?: string, now = Date.now(), known: string[] = [CHIEF], wide = agent === CHIEF): Promise<string> {
   const [sub = ""] = words;
   if (sub === "list") {
-    const rows = await list({ ...(agent === CHIEF ? {} : { agent }), all: args.all !== undefined });
+    const rows = await list({ ...(wide ? {} : { agent }), all: args.all !== undefined });
     return rows.map(wakeLine).join("\n") || "No pending scheduled wakes.";
   }
   if (sub === "cancel") {
     const id = Number(String(words[1] ?? "").replace(/^w/, ""));
     if (!Number.isInteger(id) || id <= 0) throw new Error("orca wake cancel <id> (the w-number from orca wake list)");
-    const w = await cancel(id, agent === CHIEF ? undefined : agent);
+    const w = await cancel(id, wide ? undefined : agent);
     return w ? `Cancelled w${w.id}.` : `No pending scheduled wake w${id}.`;
   }
   if (sub) throw new Error(`unknown wake command "${sub}". Commands:\n${WAKE_USAGE}`);
   const target = typeof args.agent === "string" && args.agent ? args.agent : agent;
-  if (target !== agent && agent !== CHIEF) throw new Error("only the Chief of Staff sets a wake for another agent");
+  if (target !== agent && !wide) throw new Error("only an agent with every verb sets a wake for another agent");
   if (!known.includes(target)) throw new Error(`there is no agent "${target}" (agents: ${known.join(", ")})`);
   const at = typeof args.at === "string" && args.at ? parseWakeAt(args.at, now) : undefined;
   const on = typeof args.on === "string" && args.on ? parseWakeOn(args.on) : undefined;

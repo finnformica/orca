@@ -1237,10 +1237,10 @@ export const MIGRATIONS: MigrationStep[] = [
     name: "20261027-agent-definitions",
     idempotent: true,
     // Agents defined by rows only (server/agents.ts, docs/design/named-agents-and-memory.md §3, §7.3).
-    // `agent.builtin` marks the seeded agents, which cannot be archived. The step seeds the Chief of
-    // Staff and the Assistant with the role text, model and tools the code had (server/agentSeed.ts),
-    // so they behave the same on day one. From here on the code reads only the rows. A re-run changes
-    // no built-in row (the upsert's WHERE), so it never undoes an edit made in Settings > Agents.
+    // The step seeds the Chief of Staff, the Assistant and Research (server/agentSeed.ts), each with the
+    // Chief of Staff's tools (shell, every verb, full grant: Finn's call). `agent.seeded_at` marks a
+    // seeded row, so a re-run changes nothing a user edited. A channel link with no agent meant the
+    // Assistant; it names it now, because no agent now means the default agent.
     sql: seedAgentsSql(),
   },
 ];

@@ -35,8 +35,6 @@ export type AgentDef = {
   /** The state the agent set (`orca agent state`), and its note. */
   state: AgentStateName;
   stateNote?: string;
-  /** A seeded agent (the Chief of Staff, the Assistant): it cannot be archived. Nothing else. */
-  builtin: boolean;
 };
 
 /** Every `orca` verb the tool route knows (server/orchestrator.ts `tool`): the checklist of Settings >
@@ -48,11 +46,19 @@ export const AGENT_VERBS = [
   "read", "repo", "secret", "send", "slack", "spawn", "status", "stop", "sweep", "thread", "wake",
 ] as const;
 
-/** The ONLY definition in code, and only for when the database is down: the Chief of Staff's identity
- *  (its name, display name and branch, so its chat and queue still resolve) with no shell, no verbs
- *  and no role. A wake needs the database anyway, so this never widens what any agent may run. */
+/** The ONLY definition in code, and only for when the database is down (or has no agent row): the
+ *  Chief of Staff's identity (its name, display name and branch, so its old chat and queue still
+ *  resolve) with no shell, no verbs and no role. A wake needs the database anyway, so this never
+ *  widens what any agent may run. */
 export const FALLBACK_CHIEF: AgentDef = {
-  name: CHIEF, displayName: "Chief of Staff", branch: CHIEF_BRANCH, tools: { shell: false, verbs: [] }, maxGrant: "full", state: "idle", builtin: true,
+  name: CHIEF, displayName: "Chief of Staff", branch: CHIEF_BRANCH, tools: { shell: false, verbs: [] }, maxGrant: "full", state: "idle",
+};
+
+/** The agent that gets what names no agent: the `agents.default` setting when it names an active
+ *  agent, else the first active agent (`names` in list order). No agent is special in code. */
+export const defaultAgentName = (cfg: { agents?: { default?: string } }, names: readonly string[]): string => {
+  const set = cfg.agents?.default;
+  return set && names.includes(set) ? set : names[0] ?? CHIEF;
 };
 
 /** Why `tools` is not a valid tools value, or undefined: a shell flag and "all" or known verbs. */
@@ -71,26 +77,26 @@ export const AGENT_NAME_RE = /^[a-z][a-z0-9-]{1,30}$/;
 export const agentBranch = (name: string): string => (name === CHIEF ? CHIEF_BRANCH : name);
 
 /** Why `def` may not run `verb`, or undefined. Server-side, beside the grant check, and over the
- *  agent's ROW (`def.tools`), so an agent's limits do not depend on its prompt. `agent add` is the
- *  user's alone (`fromUser`: the Chief of Staff's wake with only the user's messages); no agent
- *  edits or archives an agent: that is Settings > Agents only. A limited agent (a verb list, not
+ *  agent's ROW (`def.tools`), so an agent's limits do not depend on its prompt. `agent add` runs only
+ *  on the user's word (`fromUser`: a wake, of ANY agent, whose every message is the user's); no agent
+ *  edits, deletes or archives an agent: that is Settings > Agents only. A limited agent (a verb list, not
  *  "all") gets only the read part of preview, slack, cloudflare, status and wake. */
 export function agentVerbRefusal(def: Pick<AgentDef, "name" | "displayName" | "tools">, verb: string, words: string[], args: Record<string, unknown>, ctx: { fromUser?: boolean } = {}): string | undefined {
   const sub = words[0] ?? "";
   if (verb === "agent" && sub !== "list" && sub !== "state") {
     if (sub !== "add") return `refused: "agent ${sub}" is the user's alone: Settings > Agents`;
-    if (def.name !== CHIEF || !ctx.fromUser) return `refused: "agent ${sub || "add"}" is the user's alone (Settings, or their own chat with the Chief of Staff)`;
+    if (!ctx.fromUser) return `refused: "agent ${sub || "add"}" is the user's alone (Settings, or the user's own message to an agent)`;
     return undefined;
   }
   if (def.tools.verbs === "all") return undefined;
   const no = `refused: the ${def.displayName} may not run "${verb}${sub ? ` ${sub}` : ""}"`;
-  if (!def.tools.verbs.includes(verb)) return `${no}. Ask the Chief of Staff: orca ask chief "<what and why>"`;
+  if (!def.tools.verbs.includes(verb)) return `${no}. Ask an agent that may (orca agent list): orca ask <agent> "<what and why>"`;
   // Inside an allowed verb, the reads only.
   if (verb === "preview" && args.status === undefined) return `${no}: only preview --status`;
-  if (verb === "slack" && sub === "post") return `${no}: it posts as the user. Ask the Chief of Staff, or answer with orca post --reply`;
-  if (verb === "cloudflare" && cloudflareWriteName(words)) return `${no}: a Cloudflare write is the Chief of Staff's, on the user's word`;
+  if (verb === "slack" && sub === "post") return `${no}: it posts as the user. Ask an agent with every verb (orca ask <agent>), or answer with orca post --reply`;
+  if (verb === "cloudflare" && cloudflareWriteName(words)) return `${no}: a Cloudflare write needs an agent with every verb, on the user's word`;
   if (verb === "status" && args["clear-grant"] !== undefined) return `${no}: status --clear-grant`;
-  if (verb === "wake" && typeof args.agent === "string" && args.agent && args.agent !== def.name) return `${no}: only the Chief of Staff sets a wake for another agent`;
+  if (verb === "wake" && typeof args.agent === "string" && args.agent && args.agent !== def.name) return `${no}: only an agent with every verb sets a wake for another agent`;
   return undefined;
 }
 
@@ -124,6 +130,9 @@ export function agentListText(rows: { def: AgentDef; state: AgentStateName; note
     `${def.name} · ${def.displayName} · ${state}${note ? ` (${note})` : ""}${queued ? ` · ${queued} queued` : ""}${def.tools.verbs === "all" ? "" : " · limited verbs"}`).join("\n");
 }
 
-/** Where clean worker reports go (§7.4, `agents.cleanReportsTo`): the Chief of Staff unless the user
- *  chose the Assistant. A problem report always goes to the Chief of Staff. */
-export const cleanReportsTo = (cfg: { agents?: { cleanReportsTo?: string } }): string => cfg.agents?.cleanReportsTo || CHIEF;
+/** Where clean worker reports go (§7.4, `agents.cleanReportsTo`): that agent while it is active, else
+ *  the default agent. A problem report always goes to the default agent. */
+export const cleanReportsTo = (cfg: { agents?: { default?: string; cleanReportsTo?: string } }, names: readonly string[]): string => {
+  const set = cfg.agents?.cleanReportsTo;
+  return set && names.includes(set) ? set : defaultAgentName(cfg, names);
+};

@@ -134,7 +134,7 @@ export const apiFake = {
   notificationCalls: [] as { verb: "read"; ids: number[] | "all" }[],
   notificationFetches: [] as (number | undefined)[],
   // The orchestrator's status (api.orchestrator) and what was typed to it (api.orchestratorMessage).
-  orchestratorState: { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" } as { key: string; running: boolean; paused: boolean; notes: string; model: string; contextPct?: number; lastWakeUsd?: number; hint?: string; startedAt?: number; queued?: number },
+  orchestratorState: { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" } as { key: string; running: boolean; paused: boolean; notes: string; model: string; agent?: string; displayName?: string; branch?: string; contextPct?: number; lastWakeUsd?: number; hint?: string; startedAt?: number; queued?: number },
   orchestratorMessages: [] as { text: string; attachments: string[]; agent?: string }[],
   // Named agents beside the Chief of Staff (api.orchestratorAgents): each one's status, by name.
   extraAgents: [] as { agent: string; displayName: string; branch: string; state?: "idle" | "working" | "waiting" | "blocked" | "done"; stateNote?: string; running: boolean; paused: boolean; notes: string; model: string; key: string; queued?: number }[],
@@ -561,15 +561,18 @@ mock.module("@/api", () => ({
     health: async (instance?: string) => apiFake.holdHealth ? new Promise<never>(() => {}) : apiFake.healthData ?? { instance: instance ?? "cloud", hostname: "orca-box", cores: 4, cpuPct: 12, load1: 0.5, load5: 0.4, memUsedGb: 3.1, memTotalGb: 15.3, disk: { usedGb: 11, totalGb: 145 }, uptimeS: 90000, rate: { hourlyUsd: 0.2331, source: "estimate", instanceType: "m7i.xlarge", region: "eu-west-2" }, month: { usd: 5.52, upHours: 23.68, since: 0 }, at: Date.now() },
     orchestrator: async (agent?: string) => (agent && agent !== "chief" ? apiFake.extraAgents.find((a) => a.agent === agent) ?? apiFake.orchestratorState : apiFake.orchestratorState),
     agentDefs: async () => ({
-      agents: (apiFake.agentDefsData ?? [{ name: "chief", displayName: "Chief of Staff", branch: "orchestrator", role: "You are Orca's orchestrator.", model: "claude-opus-5-5", tools: { shell: true, verbs: "all" }, maxGrant: "full", state: "idle", builtin: true }]) as never[],
+      agents: (apiFake.agentDefsData ?? [{ name: "chief", displayName: "Chief of Staff", branch: "orchestrator", role: "You are Orca's orchestrator.", model: "claude-opus-5-5", tools: { shell: true, verbs: "all" }, maxGrant: "full", state: "idle" }]) as never[],
       verbs: ["ask", "board", "chats", "spawn"],
+      defaultAgent: ((apiFake.agentDefsData?.[0]?.name as string | undefined) ?? "chief"), defaultSetting: "",
     }),
+    setDefaultAgent: async (name: string) => { apiFake.agentDefCalls.push(["default", name, null]); return { ok: true as const }; },
     addAgentDef: async (input: { name: string }) => { apiFake.agentDefCalls.push(["add", input.name, input]); return { agent: input as never }; },
     editAgentDef: async (name: string, edit: unknown) => { apiFake.agentDefCalls.push(["edit", name, edit]); return { agent: {} as never }; },
     archiveAgentDef: async (name: string) => { apiFake.agentDefCalls.push(["archive", name, null]); return { ok: true as const }; },
     // The Chief of Staff is the orchestrator's state; the rest are `extraAgents`.
     orchestratorAgents: async () => ({
-      agents: [{ ...apiFake.orchestratorState, agent: "chief", displayName: "Chief of Staff", branch: "orchestrator", state: apiFake.orchestratorState.running ? "working" as const : "idle" as const }, ...apiFake.extraAgents],
+      // The status with no agent is the default agent: the Chief of Staff unless the test names another.
+      agents: [{ agent: "chief", displayName: "Chief of Staff", branch: "orchestrator", ...apiFake.orchestratorState, state: apiFake.orchestratorState.running ? "working" as const : "idle" as const }, ...apiFake.extraAgents],
       cleanReportsTo: "chief",
     }),
     orchestratorModel: async (model: string) => { apiFake.orchestratorState = { ...apiFake.orchestratorState, model }; return { ok: true as const }; },

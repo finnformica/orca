@@ -94,9 +94,10 @@ describe("decisions (pure)", () => {
     expect(targetLabel({ targetKind: "agent", targetId: "assistant" }, [], [])).toBe("agent assistant");
   });
 
-  test("the link's Agent Select: the link's agent, else the Assistant", () => {
+  test("the link's Agent Select: the link's agent, else the default agent", () => {
     const agents = [{ name: "chief", displayName: "Chief of Staff" }, { name: "assistant", displayName: "Assistant" }];
-    expect(linkAgentValue({})).toBe("assistant");
+    expect(linkAgentValue({})).toBe("default");
+    expect(agentLabel("default", agents)).toBe("Default agent");
     expect(linkAgentValue({ agent: "chief" })).toBe("chief");
     expect(agentLabel("chief", agents)).toBe("Chief of Staff");
     expect(agentLabel("scout", agents)).toBe("scout");
@@ -146,8 +147,8 @@ describe("with Postgres", () => {
 
   test("a link's agent: saved, kept by an edit that omits it, cleared by \"\", refused when unknown; the overview lists the agents", async () => {
     await connect();
-    expect((await admin.overview("local")).agents).toEqual([{ name: "chief", displayName: "Chief of Staff" }, { name: "assistant", displayName: "Assistant" }]);
-    expect(await store.link("eng")).not.toHaveProperty("agent"); // the default: the Assistant
+    expect((await admin.overview("local")).agents).toEqual([{ name: "chief", displayName: "Chief of Staff" }, { name: "assistant", displayName: "Assistant" }, { name: "research", displayName: "Research" }]);
+    expect(await store.link("eng")).not.toHaveProperty("agent"); // the default agent
     const eng = { id: "eng", integrationId: "chat", externalId: "R1", label: "#eng", level: "work", repos: ["orca"], requireMention: true };
     await admin.route("/api/integrations/links/save", { ...eng, agent: "chief" });
     expect(await store.link("eng")).toMatchObject({ agent: "chief" });
