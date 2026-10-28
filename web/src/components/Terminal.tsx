@@ -1,15 +1,15 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { createPortal } from "react-dom";
-import { ArrowLeft, Bot, PictureInPicture2, PanelBottomClose, X } from "lucide-react";
+import { ArrowLeft, Bot, Check, ChevronDown, PictureInPicture2, PanelBottomClose, X } from "lucide-react";
 import { subscribeTurns, syncEvents } from "@/lib/events";
 import { ChatPanel } from "@/views/Chat";
 import type { ChatControlsProps, CompactControl } from "@/components/ChatControls";
 import { api, type AgentStatus } from "../api";
 import { useWorkstreams, type Row } from "../store";
 import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, agentStateTone, agentStatusText, orchestratorStatus, type AgentMention } from "../workstream";
-import { AgentAvatar } from "@/components/AgentAvatar";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { AgentPill } from "@/components/AgentPill";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { StatusDot } from "@/components/console";
 import { PanelHeader, SidePanel, usePanelWidth, useSlideSettled, type SwipeProps } from "@/components/SidePanel";
 import { PipContext, PortalContainer, cn } from "@/lib/utils";
@@ -328,9 +328,9 @@ export function OrchestratorPanel() {
   const header = (swipe?: SwipeProps) => (
     <PanelHeader
       slot="orchestrator-handle" swipe={swipe} touch={coarse && !pip}
-      icon={<Bot className="size-3.5" />} titleId="orchestrator-title"
-      // Paused = it has woken itself as many times as it may without hearing from you.
-      title={current ? current.displayName ?? current.agent! : state?.paused ? "Orca · paused until you reply" : "Orca"}
+      // With named agents the title IS the agent menu: its pill carries the avatar, so no icon.
+      icon={team.length > 1 ? undefined : <Bot className="size-3.5" />} titleId="orchestrator-title"
+      title={<AgentTitle team={team} tab={current ? current.agent! : "chief"} onTab={setTab} paused={!current && !!state?.paused} />}
       status={current ? <AgentStatusLine agent={current} /> : <OrchestratorStatusLine state={state} />}
       actions={<>
         {pip ? (
@@ -355,7 +355,6 @@ export function OrchestratorPanel() {
   // The conversation fills the panel edge to edge, in the chat styling that follows the page's theme.
   const chat = (
     <>
-      {team.length > 1 && <AgentTabs team={team} tab={current ? current.agent! : "chief"} onTab={setTab} />}
       <div className="min-h-0 flex-1" hidden={Boolean(current)}>
         {/* Mounted at once, not after the status read: the composer must exist to take focus in the
             same commit that opens the panel, or the first keystrokes go nowhere. */}
@@ -416,20 +415,44 @@ export function useAgentMentions(team: AgentStatus[]): AgentMention[] | undefine
 
 type MentionProps = { agents: AgentMention[]; sendTo: (agents: string[], text: string, images: File[]) => Promise<unknown>; onOpen: (name: string) => void };
 
-/** The tab row (shadcn Tabs): one tab per agent with its avatar and state dot, the Chief of Staff first. */
-function AgentTabs({ team, tab, onTab }: { team: AgentStatus[]; tab: string; onTab: (name: string) => void }) {
+/** The header's title: "Orca" with no named agents (an older bridge, or only the Chief of Staff);
+ *  else the agent menu. Paused = it has woken itself as many times as it may without hearing from you. */
+function AgentTitle({ team, tab, onTab, paused }: { team: AgentStatus[]; tab: string; onTab: (name: string) => void; paused: boolean }) {
+  if (team.length < 2) return <>{paused ? "Orca · paused until you reply" : "Orca"}</>;
   return (
-    <Tabs value={tab} onValueChange={onTab} className="shrink-0 gap-0 border-b px-2 py-1.5" data-slot="agent-tabs">
-      <TabsList className="h-7">
-        {team.map((a) => (
-          <TabsTrigger key={a.agent} value={a.agent ?? "chief"} className="h-7 flex-none px-2.5 text-xs" data-slot="agent-tab" data-agent={a.agent}>
-            <AgentAvatar name={a.agent ?? "chief"} size={16} />
-            {a.displayName ?? a.agent}
-            <StatusDot tone={agentStateTone(a.state)} className={cn("size-1.5", a.state === "working" && "animate-pulse")} />
-          </TabsTrigger>
-        ))}
-      </TabsList>
-    </Tabs>
+    <span className="flex min-w-0 items-center gap-1.5">
+      <AgentMenu team={team} tab={tab} onTab={onTab} />
+      {paused && <span className="text-muted-foreground truncate text-[12px] font-normal">paused until you reply</span>}
+    </span>
+  );
+}
+
+/** The agent menu (shadcn DropdownMenu): the chosen agent's pill opens a list of every agent's pill
+ *  with its state dot, the Chief of Staff first. It replaced a tab row under the header (Finn). */
+function AgentMenu({ team, tab, onTab }: { team: AgentStatus[]; tab: string; onTab: (name: string) => void }) {
+  const nameOf = (a: AgentStatus) => a.agent ?? "chief";
+  const chosen = team.find((a) => nameOf(a) === tab) ?? team[0]!;
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button type="button" variant="ghost" size="sm" data-slot="agent-menu" data-agent={nameOf(chosen)}
+          className="-ml-1 h-7 max-w-full min-w-0 gap-1 rounded-full px-1 focus-visible:ring-inset max-md:h-9">
+          <AgentPill name={nameOf(chosen)} label={chosen.displayName ?? nameOf(chosen)} size="md" />
+          <ChevronDown className="text-muted-foreground size-3.5 shrink-0" aria-hidden />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="min-w-52" data-slot="agent-menu-content">
+        <DropdownMenuRadioGroup value={tab} onValueChange={onTab}>
+          {team.map((a) => (
+            <DropdownMenuRadioItem key={nameOf(a)} value={nameOf(a)} data-slot="agent-option" data-agent={nameOf(a)}
+              indicator={<Check className="size-3.5" />} className="max-md:min-h-11">
+              <AgentPill name={nameOf(a)} label={a.displayName ?? nameOf(a)} />
+              <StatusDot tone={agentStateTone(a.state)} className={cn("ml-auto size-1.5", a.state === "working" && "animate-pulse")} />
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -489,6 +512,13 @@ const ORCHESTRATOR_PAGE_NARROW =
 export function OrchestratorPage() {
   const prefill = useAtomValue(orchestratorPrefillAtom);
   const { state, load, controls } = useOrchestratorState(true);
+  // The same agent menu as the side panel's header: the chosen agent's chat in this page.
+  const [tab, setTab] = useAtom(orchestratorTabAtom);
+  const team = useAgentList(true);
+  const current = team.find((a) => a.agent === tab && a.agent !== "chief");
+  // The `@` picker's agents, as in the side panel: a chip sends to that agent only, Open switches to it.
+  const agents = useAgentMentions(team);
+  const mention = useMemo(() => agents && { agents, sendTo: sendToAgents, onOpen: setTab }, [agents, setTab]);
   const row: Row = {
     repo: ORCHESTRATOR_REPO, hasRemote: false, branch: ORCHESTRATOR_BRANCH, title: "Orca", prompt: "", lane: "LOCAL",
     worktreePath: state?.key, agentStatus: state?.running ? "running" : "idle",
@@ -496,20 +526,27 @@ export function OrchestratorPage() {
   return (
     <div data-slot="orchestrator-page" data-keyboard-fill className={cn("flex flex-col", ORCHESTRATOR_PAGE_NARROW)}>
       {/* Narrow: the desktop's 48px row (it was 60px, padded 12px all round) with the conversation's
-          12px at the sides; it is the phone's ONLY header here, Back included. */}
-      <div data-slot="orchestrator-page-header" className="flex h-12 shrink-0 items-center gap-2 border-b max-md:px-3">
+          12px at the sides; it is the phone's ONLY header here, Back included. At least 48px: the
+          agent menu's 36px touch target and the status line under it may need a little more. */}
+      <div data-slot="orchestrator-page-header" className="flex min-h-12 shrink-0 items-center gap-2 border-b py-1 max-md:px-3">
         <Button size="icon" variant="ghost" className="-ml-2 size-9 shrink-0" aria-label="Back" onClick={() => history.back()}>
           <ArrowLeft className="size-4" />
         </Button>
         <div className="min-w-0">
-          {/* Paused = it has woken itself as many times as it may without hearing from you. */}
-          <div className="truncate text-sm font-medium">{state?.paused ? "Orca · paused until you reply" : "Orca"}</div>
-          <OrchestratorStatusLine state={state} />
+          <div className="truncate text-sm font-medium" data-slot="orchestrator-page-title">
+            <AgentTitle team={team} tab={current ? current.agent! : "chief"} onTab={setTab} paused={!current && !!state?.paused} />
+          </div>
+          {current ? <AgentStatusLine agent={current} /> : <OrchestratorStatusLine state={state} />}
         </div>
       </div>
-      <div className={cn("min-h-0 max-md:flex-1", ORCHESTRATOR_PAGE_HEIGHT)}>
-        <OrchestratorChat row={row} prefill={prefill} controls={controls} load={load} />
+      <div className={cn("min-h-0 max-md:flex-1", ORCHESTRATOR_PAGE_HEIGHT)} hidden={Boolean(current)}>
+        <OrchestratorChat row={row} prefill={prefill} controls={controls} load={load} mention={mention} />
       </div>
+      {current && (
+        <div key={current.agent} className={cn("min-h-0 max-md:flex-1", ORCHESTRATOR_PAGE_HEIGHT)} data-slot="agent-chat" data-agent={current.agent}>
+          <AgentChat agent={current.agent!} displayName={current.displayName ?? current.agent!} branch={current.branch ?? current.agent!} active win={window} mention={mention} />
+        </div>
+      )}
     </div>
   );
 }

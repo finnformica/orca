@@ -8,7 +8,7 @@
 // Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every board
 // action uses.
 import { createContext, memo, startTransition, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { AlarmClock, ArrowDown, ArrowLeft, Bot, Check, ChevronRight, CloudMoon, Cog, Copy, Loader2, Quote as QuoteIcon, X } from "lucide-react";
+import { AlarmClock, ArrowDown, ArrowLeft, ArrowLeftRight, Bot, Check, ChevronRight, CloudMoon, Cog, Copy, Loader2, Quote as QuoteIcon, X } from "lucide-react";
 import { isScheduledWake } from "../../../shared/scheduledWake";
 import { isReflection } from "../../../shared/memory";
 import { cn, PipContext } from "@/lib/utils";
@@ -18,7 +18,7 @@ import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import type { AgentStep, AgentTurn, OriginMessage, TurnOrigin } from "../../../shared/agent";
 import { agentMessageFrom, isAgentMessage } from "../../../shared/agents";
-import { agentSide, chatOwner, entryPill, entryTurn, inMainChat, mergePills, roomUnseen, roomsOf, routeLabel, routeOf, sameSide, sideLabel, stripAgentWrapper, type RoomEntry, type RoomPill, type Side } from "../../../shared/rooms";
+import { agentSide, chatOwner, entryPill, entryTurn, inMainChat, mergePills, roomUnseen, roomsOf, routeOf, sameSide, sideLabel, stripAgentWrapper, type RoomEntry, type RoomPill, type Side } from "../../../shared/rooms";
 import { persistedKey, usePersisted } from "@/lib/persisted";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, previewsEnabled, refresh, setCardModel, type Row } from "../store";
@@ -38,6 +38,7 @@ import { agentLabel, groupSteps, outcomeLead, withoutFinalEcho } from "../../../
 import { ChatComposer } from "@/components/ChatComposer";
 import { useSlashCommands } from "@/components/SlashCommands";
 import { ComposerAttachment } from "@/components/ComposerAttachment";
+import { AgentPill, type AgentPillSize } from "@/components/AgentPill";
 import { ExpandableImage } from "@/components/ExpandableImage";
 import { ShotThumbs } from "@/components/Screenshots";
 import { snippetPre } from "@/components/Snippet";
@@ -661,7 +662,7 @@ const clockOf = (ms?: number) => (ms ? CLOCK.format(ms) : "");
 // `saidBy` / `replyBy` are the speakers (shared/rooms.ts sideLabel): a room, or a turn that is not
 // the person's, names who sent the messages; `replyBy: null` draws no reply (a message the other side
 // has not answered). Primitive props, so the memo holds. Without them: you, and the agent (`author`).
-const ChatTurn = memo(function ChatTurn({ turn, loadStepsFor, compact, newestSaid, onQuote, author, owner, saidBy, replyBy, source }: { turn: AgentTurn; loadStepsFor?: (turn: AgentTurn) => Promise<AgentStep[]>; compact?: boolean; newestSaid?: boolean; onQuote?: (text: string) => void; author?: string; owner?: Side; saidBy?: string; replyBy?: string | null; source?: string }) {
+const ChatTurn = memo(function ChatTurn({ turn, loadStepsFor, compact, newestSaid, onQuote, author, owner, saidBy, replyBy, saidSide, replySide, source }: { turn: AgentTurn; loadStepsFor?: (turn: AgentTurn) => Promise<AgentStep[]>; compact?: boolean; newestSaid?: boolean; onQuote?: (text: string) => void; author?: string; owner?: Side; saidBy?: string; replyBy?: string | null; saidSide?: Side; replySide?: Side; source?: string }) {
   const loadSteps = loadStepsFor && (() => loadStepsFor(turn));
   const parts = splitMessages(turn.instruction ?? promptInstruction(turn.prompt));
   // A wake that carried your messages AND worker reports: your words in bubbles — one per message you
@@ -706,7 +707,11 @@ const ChatTurn = memo(function ChatTurn({ turn, loadStepsFor, compact, newestSai
           <IntegrationMessages messages={outside} />
         </IntegrationCard>
       )}
-      {saidBy && said.length > 0 && <div data-slot="chat-speaker" className="text-muted-foreground mb-0.5 text-right text-[11px]">{saidBy}</div>}
+      {saidBy && said.length > 0 && (
+        <div data-slot="chat-speaker" className="text-muted-foreground mb-1 flex justify-end text-[11px]">
+          {saidSide && isPillSide(saidSide) ? <SidePill side={saidSide} /> : saidBy}
+        </div>
+      )}
       {said.map((text, i) => {
         const clean = withoutAttachmentList(text);
         return (
@@ -722,12 +727,14 @@ const ChatTurn = memo(function ChatTurn({ turn, loadStepsFor, compact, newestSai
         );
       })}
       {replyBy !== null && <div className="group flex gap-2" data-slot="chat-reply">
-        <span className="bg-accent text-foreground inline-flex size-6 shrink-0 items-center justify-center rounded-full" aria-hidden="true"><Bot className="size-3.5" /></span>
+        {/* An agent's reply in a room: its pill heads the reply and carries the avatar. */}
+        {!(replySide && isPillSide(replySide)) && <span className="bg-accent text-foreground inline-flex size-6 shrink-0 items-center justify-center rounded-full" aria-hidden="true"><Bot className="size-3.5" /></span>}
         <div className="min-w-0 flex-1">
           {/* One line the avatar's height: the name, then Copy / Quote right beside it (not after the
               hover-only time, whose reserved width left them floating off on their own), then the time. */}
           <div data-slot="chat-reply-head" className="text-muted-foreground mb-0.5 flex h-6 items-center gap-2 text-[11px]">
-            <span className="text-foreground font-medium">{replyBy ?? author ?? agentLabel(turn.provider)}</span>
+            {replySide && isPillSide(replySide) ? <SidePill side={replySide} label={replyBy ?? undefined} />
+              : <span className="text-foreground font-medium">{replyBy ?? author ?? agentLabel(turn.provider)}</span>}
             {turn.failed ? <span className="text-red-400">failed</span> : turn.stopped ? <span className="text-amber-400">stopped by you</span> : null}
             {turn.finishedAt && turn.response && <MessageActions text={turn.response} onQuote={onQuote && (() => onQuote(turn.response))} className="-mx-1" />}
             <span className="opacity-0 transition-opacity group-hover:opacity-100" data-slot="turn-time">{clockOf(turn.finishedAt) || time}</span>
@@ -979,14 +986,18 @@ function IntegrationMessages({ messages }: { messages: IntegrationMessage[] }) {
  *  each message in full with a link to it, then the orchestrator's answer — its folded steps (the
  *  `orca post --reply` among them) and its reply — so the bulk stays out of your conversation, like
  *  worker reports. */
-const IntegrationBlock = memo(function IntegrationBlock({ turn, messages, loadStepsFor }: { turn: AgentTurn; messages: IntegrationMessage[]; loadStepsFor?: (turn: AgentTurn) => Promise<AgentStep[]> }) {
+/** Who answers in a named agent's chat: its side and name, for its Agent pill (none: "Orca"). */
+type Replier = { side: Side; label: string };
+
+const IntegrationBlock = memo(function IntegrationBlock({ turn, messages, loadStepsFor, replier }: { turn: AgentTurn; messages: IntegrationMessage[]; loadStepsFor?: (turn: AgentTurn) => Promise<AgentStep[]>; replier?: Replier }) {
   return (
     <IntegrationCard slot="integration-activity" messages={messages} time={clockOf(turn.startedAt)} state={integrationState(turn)}>
       <IntegrationMessages messages={messages} />
       <div className="flex gap-2" data-slot="integration-reply">
-        <span className="bg-accent text-foreground inline-flex size-5 shrink-0 items-center justify-center rounded-full" aria-hidden="true"><Bot className="size-3" /></span>
+        {!replier && <span className="bg-accent text-foreground inline-flex size-5 shrink-0 items-center justify-center rounded-full" aria-hidden="true"><Bot className="size-3" /></span>}
         <div className="min-w-0 flex-1">
-          <div className="text-foreground mb-0.5 text-[11px] font-medium">Orca</div>
+          {replier ? <div className="mb-1 flex" data-slot="agent-reply-head"><SidePill side={replier.side} label={replier.label} /></div>
+            : <div className="text-foreground mb-0.5 text-[11px] font-medium">Orca</div>}
           <Reply turn={turn} loadSteps={loadStepsFor && (() => loadStepsFor(turn))} />
         </div>
       </div>
@@ -998,7 +1009,7 @@ const IntegrationBlock = memo(function IntegrationBlock({ turn, messages, loadSt
  *  it: ONE collapsed activity row, never your bubble, like an outside message's. Open, it shows the
  *  full trigger text, then the orchestrator's answer. A reflection links to its pass on the Memory
  *  page's Reflection tab. */
-const FiredBlock = memo(function FiredBlock({ turn, messages, loadStepsFor }: { turn: AgentTurn; messages: string[]; loadStepsFor?: (turn: AgentTurn) => Promise<AgentStep[]> }) {
+const FiredBlock = memo(function FiredBlock({ turn, messages, loadStepsFor, replier }: { turn: AgentTurn; messages: string[]; loadStepsFor?: (turn: AgentTurn) => Promise<AgentStep[]>; replier?: Replier }) {
   const state = integrationState(turn);
   const reflection = messages.some(isReflection);
   return (
@@ -1012,9 +1023,10 @@ const FiredBlock = memo(function FiredBlock({ turn, messages, loadStepsFor }: { 
         </button>
       )}
       <div className="flex gap-2" data-slot="fired-reply">
-        <span className="bg-accent text-foreground inline-flex size-5 shrink-0 items-center justify-center rounded-full" aria-hidden="true"><Bot className="size-3" /></span>
+        {!replier && <span className="bg-accent text-foreground inline-flex size-5 shrink-0 items-center justify-center rounded-full" aria-hidden="true"><Bot className="size-3" /></span>}
         <div className="min-w-0 flex-1">
-          <div className="text-foreground mb-0.5 text-[11px] font-medium">Orca</div>
+          {replier ? <div className="mb-1 flex" data-slot="agent-reply-head"><SidePill side={replier.side} label={replier.label} /></div>
+            : <div className="text-foreground mb-0.5 text-[11px] font-medium">Orca</div>}
           <Reply turn={turn} loadSteps={loadStepsFor && (() => loadStepsFor(turn))} />
         </div>
       </div>
@@ -1067,9 +1079,10 @@ function AgentAsk({ text, to, time }: { text: string; to?: Side; time: string })
   const from = agentMessageFrom(text);
   return (
     <div data-slot="agent-ask" className="mb-2 rounded-md border px-2.5 py-1.5 text-[12px]">
-      <div className="text-muted-foreground mb-0.5 flex items-center gap-1.5 text-[11px]" data-slot="agent-ask-route">
-        <Bot className="size-3.5 shrink-0" aria-hidden />
-        <span className="truncate">{from && to ? routeLabel(agentSide(from), to) : "From another agent"}</span>
+      <div className="text-muted-foreground mb-1 flex min-w-0 items-center gap-1.5 text-[11px]" data-slot="agent-ask-route">
+        {from && to
+          ? <><SidePill side={agentSide(from)} /><span aria-hidden> → </span><SidePill side={to} /></>
+          : <span className="truncate">From another agent</span>}
         <span className="ml-auto shrink-0">{time}</span>
       </div>
       <ChatMarkdown tone="text-foreground" breaks>{stripAgentWrapper(text)}</ChatMarkdown>
@@ -1077,25 +1090,39 @@ function AgentAsk({ text, to, time }: { text: string; to?: Side; time: string })
   );
 }
 
-/** Where agents talked, in your chat: "N messages with <agent>", opening the room. A brief's origin —
- *  the words you said that caused it — sits above it in your own lane. */
+/** Sides drawn as the Agent pill: a named agent, and a worker (an agent on a branch). You and Orca's
+ *  own events stay plain text. */
+const isPillSide = (s: Side) => s.kind === "agent" || s.kind === "worker";
+
+/** A room's side as the Agent pill (components/AgentPill): its id seeds the identicon. */
+function SidePill({ side, size, className, label }: { side: Side; size?: AgentPillSize; className?: string; label?: string }) {
+  return <AgentPill name={side.id} label={label ?? sideLabel(side)} size={size} className={className} />;
+}
+
+const messagesLabel = (n: number) => `${n} message${n === 1 ? "" : "s"}`;
+
+/** Where agents talked, in your chat: "N messages with <agent pill>", one row in the tint of the
+ *  transcript's other activity rows (CollapsedCard). A click opens the room at once: there is nothing
+ *  to expand. A brief's origin — the words you said that caused it — sits above it in your own lane. */
 function RoomPillRow({ pill, unseen, onOpen }: { pill: RoomPill; unseen: boolean; onOpen: () => void }) {
   const peer = sideLabel(pill.peer);
+  const time = clockOf(pill.at);
   return (
     <div className="mb-4" data-slot="room-pill-row">
       {pill.person.map((m) => (
         <UserBubble key={m.id} text={m.text ?? ""} files={[]} clamp={longMessage(m.text ?? "")} slot="room-person" textSlot="room-person-text"
           footer={<div className="text-muted-foreground text-right text-[10px]">You · via {peer}</div>} />
       ))}
-      <div className="flex justify-center">
-        <Button type="button" variant="outline" size="sm" onClick={onOpen} data-slot="room-pill" data-room={pill.room}
-          className="h-7 gap-1.5 rounded-full px-3 text-[12px] font-normal">
-          <Bot className="size-3.5" aria-hidden />
-          {pill.count} message{pill.count === 1 ? "" : "s"} with {peer}
-          {unseen && <span data-slot="room-unseen" className="bg-geist-blue size-1.5 rounded-full" aria-label="new" />}
-          <ChevronRight className="size-3.5" aria-hidden />
-        </Button>
-      </div>
+      <button type="button" onClick={onOpen} data-slot="room-pill" data-room={pill.room} aria-label={`${messagesLabel(pill.count)} with ${peer}`}
+        className="border-geist-blue/20 bg-geist-blue/5 text-muted-foreground hover:text-foreground flex w-full min-w-0 items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-left text-[12px]">
+        <span className="shrink-0" data-slot="room-count">{messagesLabel(pill.count)} with</span>
+        {/* The one part that gives way on a narrow screen: the name truncates. */}
+        <SidePill side={pill.peer} className="shrink" />
+        <span className="flex-1" />
+        {unseen && <span data-slot="room-unseen" className="bg-geist-blue size-1.5 shrink-0 rounded-full" aria-label="new" />}
+        {time && <span className="shrink-0 text-[11px]">{time}</span>}
+        <ChevronRight className="size-3.5 shrink-0" aria-hidden />
+      </button>
     </div>
   );
 }
@@ -1507,14 +1534,19 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
   const loadStepsFor = useCallback((turn: AgentTurn) => api.turnSteps(row.repo, row.branch, turn.id, 0).then((r) => withoutFinalEcho(r.steps, turn.response)), [row.repo, row.branch]);
   // Each turn carries its source (shared/rooms.ts route: person, agent, worker, Orca); one that is not
   // the person's names its sender over its messages, so your own words are the only unnamed lane.
+  // A named agent's chat: its every reply is headed by its Agent pill (Finn). A built-in agent has
+  // its own name ("Chief of Staff"); another agent's name is the chat's author (its display name).
+  const ownerName = owner.kind === "agent" ? (sideLabel(owner) !== owner.id ? sideLabel(owner) : author ?? owner.id) : undefined;
+  const replier = useMemo(() => (ownerName ? { side: owner, label: ownerName } : undefined), [owner, ownerName]);
   const chatTurn = (turn: AgentTurn) => {
     const { sender } = routeOf(owner, turn);
     return <ChatTurn key={turn.id} turn={turn} loadStepsFor={loadStepsFor} compact={(position.get(turn.id) ?? 0) < compactBefore && turn !== newest.answer} newestSaid={turn === newest.said} onQuote={onQuote} author={author} owner={owner}
-      source={sender.kind} saidBy={sender.kind === "person" ? undefined : sideLabel(sender)} />;
+      source={sender.kind} saidBy={sender.kind === "person" ? undefined : sideLabel(sender)} saidSide={sender}
+      {...(ownerName ? { replyBy: ownerName, replySide: owner } : {})} />;
   };
   // A room's turns: the same transcript, each side named, read only (no Quote, no composer).
   const roomTurn = (e: RoomEntry) => <ChatTurn key={e.id} turn={entryTurn(e) as AgentTurn} owner={owner} source={e.sender.kind}
-    saidBy={sideLabel(e.sender)} replyBy={e.reply ? sideLabel(e.recipient) : null} />;
+    saidBy={sideLabel(e.sender)} replyBy={e.reply ? sideLabel(e.recipient) : null} saidSide={e.sender} replySide={e.reply ? e.recipient : undefined} />;
   const openRoomAt = (id: string) => {
     const r = rooms.find((x) => x.id === id);
     if (r) setSeen({ ...seen, [r.id]: Math.max(seen[r.id] ?? 0, r.lastAt) });
@@ -1552,8 +1584,8 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
               ? <RoomPillRow pill={item.notice.pill} unseen={roomUnseen(item.notice.pill.lastAt, seen[item.notice.pill.room])} onOpen={() => openRoomAt(item.notice.pill!.room)} />
               : <NoticeCard notice={item.notice.notice!} />)
             : item.kind === "turn" ? chatTurn(item.turn)
-            : item.kind === "integration" ? <IntegrationBlock turn={item.turn} messages={item.messages} loadStepsFor={loadStepsFor} />
-            : item.kind === "fired" ? <FiredBlock turn={item.turn} messages={item.messages} loadStepsFor={loadStepsFor} />
+            : item.kind === "integration" ? <IntegrationBlock turn={item.turn} messages={item.messages} loadStepsFor={loadStepsFor} replier={replier} />
+            : item.kind === "fired" ? <FiredBlock turn={item.turn} messages={item.messages} loadStepsFor={loadStepsFor} replier={replier} />
             : <AgentsMarker turns={item.turns} render={chatTurn} />}
         </LazyItem>
       );
@@ -1564,12 +1596,20 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
     <div className="log-themed flex h-full flex-col" data-slot="chat-panel" data-size={size}>
       {outbox && <NoticeWatch onNew={loadNotices} />}
       {room && (
-        <div data-slot="room-head" className={cn("flex items-center gap-2 border-b py-1.5", size === "page" ? "px-4 md:px-6" : "px-3")}>
-          <Button type="button" variant="ghost" size="sm" className="h-7 gap-1 px-2 text-[12px]" data-slot="room-back" onClick={() => setOpenRoom(null)}>
-            <ArrowLeft className="size-3.5" aria-hidden />Back
-          </Button>
-          <span className="min-w-0 truncate text-[12px] font-medium" data-slot="room-title">Messages with {sideLabel(room.peer)}</span>
-          <span className="text-muted-foreground ml-auto shrink-0 text-[11px]">{sideLabel(room.peer)} and {sideLabel(owner)} · read only</span>
+        // One short row: Back, then this chat's agent ⇄ the agent it talks with here.
+        <div data-slot="room-head" className={cn("flex h-10 shrink-0 items-center gap-1.5 border-b", size === "page" ? "px-4 md:px-6" : "px-2")}>
+          <Tip label="Back to the chat">
+            <Button type="button" variant="ghost" size="icon" className="size-7 shrink-0 max-md:size-9" aria-label="Back" data-slot="room-back" onClick={() => setOpenRoom(null)}>
+              <ArrowLeft className="size-4" aria-hidden />
+            </Button>
+          </Tip>
+          <div className="flex min-w-0 items-center gap-1.5" data-slot="room-title" aria-label={`Messages between ${sideLabel(owner)} and ${sideLabel(room.peer)}`}>
+            {/* On a phone the names give way (truncate), never the arrow or "read only". */}
+            <SidePill side={owner} className="shrink" />
+            <ArrowLeftRight className="text-muted-foreground size-3.5 shrink-0" aria-hidden data-slot="room-swap" />
+            <SidePill side={room.peer} className="shrink" />
+          </div>
+          <span className="text-muted-foreground ml-auto shrink-0 text-[11px]">read only</span>
         </div>
       )}
       {room && (

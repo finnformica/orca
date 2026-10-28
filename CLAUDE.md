@@ -933,8 +933,9 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   reports go to `agents.cleanReportsTo` (default `chief`, Finn's call); problems always to `chief`.
   The runtime is one module over an `AgentRef` (`orchestrator.ts`): each agent its own blob, chain and
   lease; no name = `chief`, so every old caller and route works. `/api/orchestrator*?agent=`,
-  `/api/orchestrator/agents`. The side panel has a shadcn Tabs row, one per agent; every open path
-  opens the Chief of Staff. `orca agent list|state`; `orca agent add` is the user's alone.
+  `/api/orchestrator/agents`. The side panel's header (and the phone's Orca page) holds a shadcn DropdownMenu of
+  the agents, each an Agent pill (`components/AgentPill.tsx`: identicon + name, the ONE look of an
+  agent everywhere); every open path opens the Chief of Staff. `orca agent list|state`; `orca agent add` is the user's alone.
 - **It is not a new runtime.** A wake is the same headless one-shot as every board action, recorded
   as turns under a reserved pointer (`ORCHESTRATOR_REPO` `@orca` / branch `orchestrator` — no git
   repo behind it), so the chat panel, the SSE stream, the queue and Stop all work on it unchanged.
