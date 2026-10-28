@@ -1155,7 +1155,8 @@ test("P4 deployment shape: preview links name a reachable host, and Done·today 
   // previous case's rows.
   const merged = await makeScratchRepo();
   await setPrListFixture([
-    { number: 1, title: "Merged an hour ago", headRefName: "recent", url: "u1", mergedAt: new Date(now - 3_600_000).toISOString() },
+    // An hour ago, but never before today's midnight: run just after midnight, it was yesterday's.
+    { number: 1, title: "Merged an hour ago", headRefName: "recent", url: "u1", mergedAt: new Date(Math.max(now - 3_600_000, new Date(now).setHours(0, 0, 1, 0))).toISOString() },
     { number: 2, title: "Merged three days ago", headRefName: "old", url: "u2", mergedAt: new Date(now - 3 * day).toISOString() },
   ]);
   // A boundary the client supplies is honoured...
