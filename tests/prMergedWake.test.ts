@@ -23,11 +23,15 @@ const delivered: string[] = [];
 const deliver = async (t: string) => { delivered.push(t); };
 const iso = (ms: number) => new Date(ms).toISOString();
 
+// bun runs every test file in one process, and a listener cannot be removed: it stays for the process.
+// Off after this file, or it claims the wakes of a later file's tests (scheduledWake.test.ts).
+let listening = false;
 beforeAll(async () => {
   await installFakeGh();
-  router.onNewEvent((e) => { void wakes.onEvent(e, deliver).catch(() => {}); }); // stays for the process
+  listening = true;
+  router.onNewEvent((e) => { if (listening) void wakes.onEvent(e, deliver).catch(() => {}); });
 });
-afterAll(() => restorePath());
+afterAll(() => { listening = false; restorePath(); });
 beforeEach(async () => {
   prevDb = process.env.ORCA_DATABASE_URL;
   pg = await freshSchema("prwake");

@@ -71,21 +71,24 @@ export async function prs(repo: string, list: Parameters<typeof prNotifications>
   for (const n of prNotifications(repo, list)) await emit(n);
 }
 
-/** Keys this process already handed to `emit` from the poller, so a pass every few seconds costs no
- *  query for a merge it announced. A restart forgets them; the row's key still dedupes. */
+/** Keys this process already wrote from the poller, so a pass every few seconds costs no query for a
+ *  merge it announced. Per database (`db.databaseKey`): another database has none of the rows. A key
+ *  is kept only while the database is up, so a write lost to an outage is tried again. A restart
+ *  forgets them; the row's key still dedupes. */
 const announced = new Set<string>();
 
 /** The merges the poller saw (gh.donePrs, read by the cleanup pass): each recent one is ONE `merged`
  *  event, the merge queue's own shape and key — so a PR merged in the GitHub UI or by another person
  *  fires a `pr:<repo>#<n>:merged` wake too. */
 export async function mergedSeen(repo: string, done: Map<string, { reason: string; at?: number; number?: number }>, now = Date.now()): Promise<void> {
-  const fresh = seenMergedNotifications(repo, done, {}, now).filter((n) => !announced.has(n.key));
+  const seen = (n: NotificationInput) => `${db.databaseKey()}\0${n.key}`;
+  const fresh = seenMergedNotifications(repo, done, {}, now).filter((n) => !announced.has(seen(n)));
   if (!fresh.length) return;
   const ench = await db.enrichment(repo).catch(() => ({}) as Record<string, db.Fields>);
   for (const n of fresh) {
     const t = ench[n.branch ?? ""]?.title;
-    await emit(typeof t === "string" && t.trim() ? { ...n, title: t.trim() } : n);
-    announced.add(n.key);
+    const row = await emit(typeof t === "string" && t.trim() ? { ...n, title: t.trim() } : n);
+    if (row || db.unavailableSince() === null) announced.add(seen(n));
   }
 }
 
