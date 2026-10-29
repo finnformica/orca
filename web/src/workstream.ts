@@ -1283,9 +1283,11 @@ export function sessionHint(input: { contextPct?: number; lastWakeUsd?: number; 
  *  advice are the tooltip, not the text; `warn` is the small amber dot that says the advice is there. Pure. */
 export function orchestratorStatus(input: {
   running: boolean; startedAt?: number; queued?: number; workers: number; lastWakeUsd?: number; hint?: string; now?: number;
+  /** A wake held after a usage limit: its line replaces Idle / Working. */
+  held?: string;
 }): { text: string; tooltip?: string; warn: boolean } {
   const now = input.now ?? Date.now();
-  const state = !input.running ? "Idle" : input.startedAt === undefined ? "Working" : `Working · ${formatDuration(now - input.startedAt)}`;
+  const state = input.held ? input.held : !input.running ? "Idle" : input.startedAt === undefined ? "Working" : `Working · ${formatDuration(now - input.startedAt)}`;
   const parts = [
     state,
     ...(input.queued ? [`${input.queued} queued`] : []),

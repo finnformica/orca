@@ -332,6 +332,9 @@ export function WorkstreamCard({ row }: { row: Row }) {
       {/* The run's error text, on the card itself — the Error badge alone only surfaced it on hover,
           so a failed run (e.g. a CLI arg error) looked like a bare red badge with no way to see why.
           Clamped like the prompt above. */}
+      {!isDone && row.agentStatus === "running" && row.agentNote && (
+        <p data-slot="card-note" className="text-geist-warning-fg text-xs">{row.agentNote}</p>
+      )}
       {!isDone && row.agentStatus === "error" && row.agentError && (
         <p className="text-destructive line-clamp-2 text-xs break-words whitespace-pre-wrap">
           {row.agentError}

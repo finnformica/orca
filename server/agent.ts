@@ -3,7 +3,7 @@
 // Keyed by an arbitrary string: worktree path for
 // feature/fix runs, `slack:…` for repo-level. The subprocess handle is kept so we can kill it.
 import { retryTitle } from "./title";
-import { autofixInstruction, backgroundResumeInstruction, handoffPrompt, idleExpired, isAutofix, isBackgroundResume, parseAgentOutcome, runStopLabel, type UnfinishedTask, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn, type RunStop, type StopReason, type TurnCheck, type TurnOrigin, type TurnSource } from "../shared/agent";
+import { autofixInstruction, backgroundResumeInstruction, handoffPrompt, hydraLogin, idleExpired, isAutofix, isBackgroundResume, LIMIT_CONTINUE_PROMPT, LIMIT_MIN_HOLD_MS, limitHeldLine, limitPlan, limitRetryLine, parseAgentOutcome, runStopLabel, usageLimitHit, withoutHydraLines, type LimitTried, type UsageLimitHit, type UnfinishedTask, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn, type RunStop, type StopReason, type TurnCheck, type TurnOrigin, type TurnSource } from "../shared/agent";
 import type { Side } from "../shared/rooms";
 import { runCheck } from "./check";
 import { run, runCmd } from "./run";
@@ -16,6 +16,7 @@ import * as primary from "./primary";
 import * as transcript from "./transcript";
 import * as outbox from "./outbox";
 import * as bus from "./bus";
+import * as usage from "./usage";
 import { resolvePrompt } from "./attachments";
 import * as cgroup from "./cgroup";
 import * as heavy from "./heavy";
@@ -102,6 +103,8 @@ export type RunState = {
   check?: TurnCheck; // Orca's verification of this run's commit, once it has run
   startedAt?: number;
   finishedAt?: number;
+  /** A turn held after a usage limit: the short line the card shows (`limitHeldLine`). */
+  note?: string;
 };
 type Run = RunState & { proc?: Bun.Subprocess; options?: LaunchOptions };
 export type LaunchReceipt = { status: "running"; provider: AgentProvider; runId: string; sessionId?: string };
@@ -154,6 +157,19 @@ export type LaunchOptions = {
   memoryMaxGb?: number;
   /** The app's `agentCpuWeight`; unset means the default (50, systemd's own neutral weight). */
   cpuWeight?: number;
+  /** Set by Orca only: this launch starts a turn again after a usage limit (`limitPlan`). */
+  limit?: LimitChain;
+};
+
+/** A turn that hit its login's usage limit and runs again with `--resume` on the same session: the
+ *  SAME run id and turn row, so one turn, one worker report, one wake. hydra picks the login. */
+export type LimitChain = {
+  runId: string; startedAt: number; prompt: string; headBefore?: string;
+  /** Logins this turn hit the limit on since its last hold, with their reset when known. */
+  tried: LimitTried[];
+  holds: number;
+  /** The login hydra picked for this attempt, when its stderr line is missing. */
+  expected?: string;
 };
 
 /** What a finished run looked like — handed to the onRunFinished hook. */
@@ -162,7 +178,7 @@ export type RunFinished = {
   status: db.TurnStatus; sessionId?: string; result?: string; structured?: AgentOutcome;
   check?: TurnCheck; meta?: RunMeta;
   /** How the process ended, uncollapsed: the orchestrator turns this into the reason a wake died. */
-  exit: { code: number; timedOut: boolean; budgetReached: boolean; stderr: string; stop?: RunStop };
+  exit: { code: number; timedOut: boolean; budgetReached: boolean; stderr: string; stop?: RunStop; usageLimit?: boolean };
   /** A queued follow-up (an autofix, a typed instruction) launched straight after: not idle yet. */
   continued: boolean;
 };
@@ -383,7 +399,8 @@ export function keepForOutcome(provider: AgentProvider, event: unknown): boolean
   }
   if (e.type === "result") return true;
   if (provider === "cursor") return e.type === "system" && e.subtype === "init";
-  return (e.type === "system" && (e.subtype === "init" || e.subtype === "compact_boundary")) || e.compact_result !== undefined;
+  return (e.type === "system" && (e.subtype === "init" || e.subtype === "compact_boundary")) || e.compact_result !== undefined
+    || e.type === "rate_limit_event"; // its reset time, for a usage-limit hold (usageLimitHit)
 }
 
 /** How much of a run's non-JSON stdout (and its stderr) is kept: the newest part only. */
@@ -827,7 +844,10 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
   if (db.previewBridge()) throw new Error("this is a branch preview's bridge: it launches no agent runs");
   // Reject an overlap whether we remember the run in-process OR a durable lease from before a restart
   // says one is still live in this worktree.
-  if (runs.get(key)?.status === "running" || lease.leased(key)) throw new Error("an agent is already running for this worktree");
+  // A usage-limit retry IS the running turn (`options.limit`): its own run id does not block it.
+  const chain = options.limit;
+  const current = runs.get(key);
+  if ((current?.status === "running" && !(chain && current.runId === chain.runId)) || lease.leased(key)) throw new Error("an agent is already running for this worktree");
   // The same guard for the SESSION: a resume while another live run is on that session would have
   // two processes appending to one transcript, and both end with the same reply.
   if (options.resume && lease.sessionBusy(options.resume)) throw new Error("an agent is already running on this session");
@@ -840,10 +860,12 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
   const effectivePrompt = await resolvePrompt(!options.resume && (options.handoffFrom || options.history?.length)
     ? handoffPrompt(options.history ?? [], prompt, options.handoffFrom, provider)
     : prompt);
-  const runId = crypto.randomUUID();
-  const startedAt = Date.now();
+  const runId = chain?.runId ?? crypto.randomUUID();
+  const startedAt = chain?.startedAt ?? Date.now(); // the TURN's start: a retry continues it
+  const launchedAt = Date.now();
+  const turnPrompt = chain?.prompt ?? prompt; // what the turn row holds: the first attempt's prompt
   // HEAD before the run, so "did it commit?" is a comparison, not a guess from the outcome text.
-  const headBefore = options.check ? await headOf(cwd) : undefined;
+  const headBefore = chain ? chain.headBefore : options.check ? await headOf(cwd) : undefined;
   // Every run gets its own memory/CPU-limited scope when one is available (server/cgroup.ts) — so
   // THIS worker's runaway build or browser gets killed by the kernel alone, not the box. No-op on
   // darwin or an unprovisioned Linux box (no systemd-run, or no reachable user bus).
@@ -876,7 +898,8 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
       { available: scoped, memoryMaxGb, cpuWeight, unit: scopeUnit, slice: cgroup.AGENTS_SLICE, oomScoreAdj: linux ? cgroup.oomScoreAdj() : undefined },
     ),
     // ORCA_RUN_ID / ORCA_REPO / ORCA_BRANCH: `orca-run` (server/heavy.ts) ties its slot to this run.
-    { cwd, env: { ...agentEnv(githubEnv(cwd)), ...(scoped ? scopedEnv : {}), ...runIdentity(runId, options), ...options.env }, stdout: "pipe", stderr: "pipe" },
+    // HYDRA_QUIET=0: hydra names the login it picked on stderr (hydraLogin), for a usage-limit retry.
+    { cwd, env: { ...agentEnv(githubEnv(cwd)), ...(scoped ? scopedEnv : {}), ...runIdentity(runId, options), ...(provider === "claude" ? { HYDRA_QUIET: "0" } : {}), ...options.env }, stdout: "pipe", stderr: "pipe" },
   );
   // Why Orca stopped the run itself, if it did: no progress for `idleMs`, or the hard ceiling.
   let stop: RunStop | undefined;
@@ -893,7 +916,7 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
   let waitCapped = false;
   // The idle watch: every stream event is progress, and so is a heavy-queue job of this run (queued
   // or running) or a wait on the CLI's own background task (`backgroundWait` caps that).
-  let lastProgressAt = startedAt;
+  let lastProgressAt = launchedAt;
   const idleMs = options.idleMs;
   const idleTimer = idleMs ? setInterval(() => {
     const now = Date.now();
@@ -916,13 +939,14 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
       leftAtPause = undefined;
     }
   };
-  runs.set(key, { status: "running", provider, runId, prompt, sessionId, proc, startedAt, options });
-  lease.acquire({ key, worktreePath: cwd, branch: options.branch, provider, runId, sessionId, pid: proc.pid, startedAt, timeoutMs: options.timeoutMs });
+  runs.set(key, { status: "running", provider, runId, prompt: turnPrompt, sessionId, proc, startedAt, options });
+  lease.acquire({ key, worktreePath: cwd, branch: options.branch, provider, runId, sessionId, pid: proc.pid, startedAt: launchedAt, timeoutMs: options.timeoutMs });
   // Record the turn NOW, not at exit: a run whose bridge dies then survives as an interrupted turn
   // instead of vanishing. Keyed by runId, so a fast follow-up can't clobber the previous turn.
   // Awaited, not fire-and-forget: "the turn exists before the run can produce output" is the whole
   // reason it is written at launch, and an async database must not quietly weaken it.
-  const started = recordTurn(options, () => outbox.startTurn({
+  // A usage-limit retry continues the turn its first attempt wrote.
+  const started = chain ? Promise.resolve() : recordTurn(options, () => outbox.startTurn({
     repo: options.repo!, branch: options.branch!, runId, provider, instruction: options.instruction, prompt, sessionId, startedAt, source: options.source,
     ...(options.origin ? { origin: options.origin } : {}), ...(options.sender ? { sender: options.sender } : {}),
   }));
@@ -946,7 +970,8 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
     heavy.slots().releaseRun(runId);
     await Promise.race([reads, new Promise((r) => setTimeout(r, DRAIN_GRACE_MS))]);
     const out = outHolder.raw;
-    const err = errHolder.raw;
+    const login = hydraLogin(errHolder.raw);
+    const err = withoutHydraLines(errHolder.raw); // the CLI's own error, never hydra's routing line
     if (timeout) clearTimeout(timeout);
     if (waitTimer) clearTimeout(waitTimer);
     if (idleTimer) clearInterval(idleTimer);
@@ -1003,6 +1028,13 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
     // (17:55 on 2026-10-19: a finished worker's nest, vite and backend held 1.7 GB for 14 minutes).
     // After the OOM read above, which needs the scope: stop it, and every process in it.
     if (scoped) await stopRunScope(runId, { ...process.env, ...scopedEnv });
+    // The login hit its usage limit: start the SAME turn again on another login, or hold it until a
+    // reset. Nothing below runs for this attempt: no finish write, no queue, no run-finished hook.
+    const limitHit = provider === "claude" && !ok && !wasStopped && !stop && !oomKilled && !superseded ? usageLimitHit(out) : undefined;
+    if (limitHit && await continueAfterLimit({
+      key, cwd, options, provider, runId, startedAt, prompt: turnPrompt, headBefore, sessionId: resolvedSessionId, login, hit: limitHit,
+      current: () => runs.get(key)?.proc === proc && !stoppedRuns.has(runId), attemptMs: finishedAt - launchedAt,
+    })) return;
     if (leftBehind.length) {
       const names = leftBehind.map((t) => `\`${(t.command ?? t.description ?? t.id).slice(0, 120)}\``).join(", ");
       const why = waitCapped ? `still ran ${waitMinutes} minutes after the turn ended, and Orca stopped ${leftBehind.length === 1 ? "it" : "them"}` : "did not finish before the run ended";
@@ -1021,7 +1053,7 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
     if (ok && scopeOom && oomCause) {
       result = `${result ?? ""}\n\n> Orca: a process of this run was killed — ${oomCause}. A build or a git push hook may not have finished; check that the push happened.`;
     }
-    const common = { provider, runId, prompt, sessionId: resolvedSessionId, result, structured, meta, startedAt, finishedAt };
+    const common = { provider, runId, prompt: turnPrompt, sessionId: resolvedSessionId, result, structured, meta, startedAt, finishedAt };
     const stopReason: StopReason = wasStopped ? "interrupted" : budgetReached ? "budget_reached" : ok ? "end_turn" : "error";
     await started; // finish can never overtake start, however fast the run was
     recordTurn(options, () => outbox.finishTurn(runId, {
@@ -1033,7 +1065,7 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
       response: wasStopped ? (result ?? "Stopped. The work so far stands; reply to redirect.") : (result ?? error),
       structured, sessionId: resolvedSessionId, finishedAt,
       // Everything needed to write the turn from scratch if its start write was lost.
-      identity: { repo: options.repo!, branch: options.branch!, provider, instruction: options.instruction, prompt, startedAt, source: options.source },
+      identity: { repo: options.repo!, branch: options.branch!, provider, instruction: options.instruction, prompt: turnPrompt, startedAt, source: options.source },
     }));
     if (superseded) return;
     lease.release(key, runId); // this run is done — free the worktree (no-op if a re-run already took the lease)
@@ -1043,7 +1075,7 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
       inputTokens: meta?.inputTokens, outputTokens: meta?.outputTokens,
       cacheReadTokens: meta?.cacheReadTokens, cacheCreationTokens: meta?.cacheCreationTokens,
       evidenceChars: options.evidenceChars, costUsd: meta?.costUsd,
-      errorKind: ok ? undefined : oomKilled ? "oom" : capFailed ? "background-wait" : budgetReached ? "budget" : stop?.kind === "idle" ? "idle" : stop ? "timeout" : code !== 0 ? "nonzero-exit" : "agent-error",
+      errorKind: ok ? undefined : limitHit ? "usage-limit" : oomKilled ? "oom" : capFailed ? "background-wait" : budgetReached ? "budget" : stop?.kind === "idle" ? "idle" : stop ? "timeout" : code !== 0 ? "nonzero-exit" : "agent-error",
       repo: options.repo,
     });
     // The verification gate: a run that committed gets the repo's check command run over it, and
@@ -1086,7 +1118,7 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
       await runFinished?.({
         key, cwd, runId, options, status: wasStopped ? "stopped" : ok ? "done" : "error",
         sessionId: resolvedSessionId, result: result ?? error, structured, check, meta, continued,
-        exit: { code, timedOut: stop !== undefined, budgetReached, stderr: err.trim().slice(-300), ...(stop && !wasStopped ? { stop } : {}) },
+        exit: { code, timedOut: stop !== undefined, budgetReached, stderr: err.trim().slice(-300), ...(stop && !wasStopped ? { stop } : {}), ...(limitHit ? { usageLimit: true } : {}) },
       });
     } catch (e) {
       db.logUnlessDown("orca: run-finished hook failed")(e); // a listener must never break the run it heard about
@@ -1094,6 +1126,89 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
     handled();
   })();
   return { status: "running", provider, runId, sessionId };
+}
+
+// Turns held after a usage limit, until the earliest reset: the timer starts the turn again; a Stop
+// clears it and finishes the turn. In memory: a bridge restart ends a held worker turn as
+// interrupted (boot reconcile); the orchestrator's `recover` queues its wake's messages again.
+/** The shortest hold (`limitPlan`); mutable so a test need not wait a minute. */
+export const limitWait = { minMs: LIMIT_MIN_HOLD_MS };
+const limitHolds = new Map<string, { runId: string; timer: ReturnType<typeof setTimeout>; stopped: () => Promise<void> }>();
+
+/** The line a held turn shows, while it is held. */
+export const heldNote = (key: string): string | undefined => limitHolds.has(key) ? runs.get(key)?.note : undefined;
+
+/** The short line in the chat, as a step of the turn (the chat draws it under `working…`). */
+async function noteStep(runId: string, options: LaunchOptions, text: string): Promise<void> {
+  const written = await transcript.append(runId, [{ at: Date.now(), kind: "text", text: `> Orca: ${text}.` }]).catch(() => []);
+  transcript.forget(runId); // the next attempt reads its sequence from the database
+  if (written.length && options.repo && options.branch) bus.publish({ kind: "step", runId, repo: options.repo, branch: options.branch, steps: written });
+}
+
+/** After a Claude run hit its login's usage limit: ask hydra (read only) which login its next launch
+ *  takes, then start the SAME turn again on it with `--resume`, or hold the turn until the earliest
+ *  reset (`limitPlan`). Returns false when the turn must fail as before (the hold cap, a Stop). */
+async function continueAfterLimit(c: {
+  key: string; cwd: string; options: LaunchOptions; provider: AgentProvider; runId: string; startedAt: number; prompt: string;
+  headBefore?: string; sessionId?: string; login?: string; hit: UsageLimitHit; current: () => boolean; attemptMs: number;
+}): Promise<boolean> {
+  const { key, cwd, options, runId } = c;
+  const prev = options.limit;
+  const failed = c.login ?? prev?.expected ?? "claude"; // "claude": no hydra, the one login
+  const tried: LimitTried[] = [...(prev?.tried ?? []).filter((t) => t.name !== failed), { name: failed, ...(c.hit.resetsAt ? { resetsAt: c.hit.resetsAt } : {}) }];
+  const reading = await usage.limitReading(c.login ?? prev?.expected, options.model);
+  const holds = prev?.holds ?? 0;
+  const plan = limitPlan({ tried, pick: reading.pick, logins: reading.logins, holds, now: Date.now(), minHoldMs: limitWait.minMs });
+  if (plan.kind === "fail" || !c.sessionId || !c.current()) return false;
+  const line = plan.kind === "retry" ? limitRetryLine(c.login ?? prev?.expected, plan.login) : limitHeldLine(plan.until);
+  console.log(`orca: ${c.hit.message} (run ${runId}${c.login ? `, login ${c.login}` : ""}) — ${line}`);
+  lease.release(key, runId); // the next attempt takes the lease again; a hold has no process
+  // The next attempt's scope has the same name (the run id): a unit left failed must not block it.
+  if (cgroup.available()) {
+    await runCmd(["systemctl", "--user", "reset-failed", `${cgroup.runScopeUnit(runId)}.scope`], { env: { ...process.env, ...cgroup.runtimeEnv() }, allowFail: true, timeoutMs: 10_000 }).catch(() => undefined);
+  }
+  ledger.record({
+    kind: "run", provider: c.provider, action: options.action, mode: runMode(options), status: "error",
+    durationMs: c.attemptMs, errorKind: "usage-limit", repo: options.repo,
+  });
+  const next: LimitChain = {
+    runId, startedAt: c.startedAt, prompt: c.prompt, headBefore: c.headBefore,
+    // After a hold the resets have passed: every login may be tried again.
+    tried: plan.kind === "hold" ? [] : tried,
+    holds: holds + (plan.kind === "hold" ? 1 : 0),
+    ...(plan.kind === "retry" ? { expected: plan.login } : {}),
+  };
+  const sessionId = c.sessionId;
+  const opts: LaunchOptions = { ...options, resume: c.sessionId, history: undefined, handoffFrom: undefined, limit: next };
+  // Still "running": a send queues behind the turn, and no other run takes the worktree.
+  runs.set(key, { status: "running", provider: c.provider, runId, prompt: c.prompt, sessionId, startedAt: c.startedAt, options: opts, note: line });
+  await noteStep(runId, options, line);
+  const identity = { repo: options.repo!, branch: options.branch!, provider: c.provider, instruction: options.instruction, prompt: c.prompt, startedAt: c.startedAt, source: options.source };
+  const start = () => launch(key, cwd, LIMIT_CONTINUE_PROMPT, opts).catch(async (e) => {
+    // The retry could not start: the turn fails here, as the run it continues did.
+    const message = `${c.hit.message} — Orca could not start the turn again: ${e instanceof Error ? e.message : e}`;
+    if (runs.get(key)?.runId === runId && !runs.get(key)?.proc) runs.set(key, { status: "error", provider: c.provider, runId, prompt: c.prompt, sessionId, startedAt: c.startedAt, finishedAt: Date.now(), error: message });
+    await recordTurn(options, () => outbox.finishTurn(runId, { status: "error", stopReason: "error", response: message, sessionId, finishedAt: Date.now(), identity }));
+    if (options.repo && options.branch && options.queue !== false) await dispatchQueued(options.repo, options.branch, options).catch(() => false);
+    await runFinished?.({
+      key, cwd, runId, options, status: "error", sessionId, result: message, continued: false,
+      exit: { code: 1, timedOut: false, budgetReached: false, stderr: message.slice(-300), usageLimit: true },
+    }).catch(db.logUnlessDown("orca: run-finished hook failed"));
+  });
+  if (plan.kind === "retry") { void start(); return true; }
+  const timer = setTimeout(() => { limitHolds.delete(key); void start(); }, Math.max(0, plan.until - Date.now()));
+  limitHolds.set(key, {
+    runId, timer,
+    // Stop during a hold: the turn ends as a stopped turn, resumable like any other.
+    stopped: async () => {
+      stoppedRuns.delete(runId);
+      await recordTurn(options, () => outbox.finishTurn(runId, {
+        status: "stopped", stopReason: "interrupted", response: `Stopped while the turn waited for a usage limit reset (${c.hit.message}). Reply to continue.`,
+        sessionId, finishedAt: Date.now(), identity,
+      }));
+    },
+  });
+  return true;
 }
 
 /** The worktree's HEAD, or undefined when it isn't a git checkout. */
@@ -1322,12 +1437,14 @@ export const runCount = (): number => runs.size;
 export function stop(key: string): string | undefined {
   const r = runs.get(key);
   if (r?.runId && r.status === "running") stoppedRuns.add(r.runId);
+  const held = limitHolds.get(key); // a turn held for a usage limit has no process: end it here
+  if (held) { clearTimeout(held.timer); limitHolds.delete(key); void held.stopped(); }
   try { r?.proc?.kill(); } catch { /* already gone */ }
   // A run adopted after a restart has no handle: its lease names the process. Without this, Stop
   // left it running and the next run resumed a session it was still writing to.
-  const held = !r?.proc ? lease.current(key) : undefined;
-  if (held && (!r?.runId || held.runId === r.runId) && lease.leased(key)) {
-    try { process.kill(held.pid); } catch { /* already gone */ }
+  const leased = !r?.proc ? lease.current(key) : undefined;
+  if (leased && (!r?.runId || leased.runId === r.runId) && lease.leased(key)) {
+    try { process.kill(leased.pid); } catch { /* already gone */ }
   }
   runs.delete(key);
   lease.release(key); // discard/stop frees the worktree even if the run was recovered from a lease
@@ -1387,5 +1504,6 @@ export const status = (key: string): RunState => {
   return r ? {
     status: r.status, error: r.error, provider: r.provider, runId: r.runId, prompt: r.prompt,
     sessionId: r.sessionId, result: r.result, structured: r.structured, meta: r.meta, check: r.check, startedAt: r.startedAt, finishedAt: r.finishedAt,
+    ...(heldNote(key) ? { note: heldNote(key) } : {}),
   } : { status: "idle" };
 };

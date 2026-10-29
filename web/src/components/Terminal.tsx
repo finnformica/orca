@@ -162,7 +162,7 @@ const ORCHESTRATOR_DEFAULT_MODEL = "claude-opus-5-5";
  *  with the wake's elapsed time, plus what's queued for it and how many of its workers are running
  *  (the board's own rows — orchestrated and running — so no endpoint of its own). The last wake's
  *  cost and the large-session advice are its tooltip; a large session shows only an amber dot. */
-function OrchestratorStatusLine({ state }: { state: { running: boolean; startedAt?: number; queued?: number; lastWakeUsd?: number; hint?: string } | null }) {
+function OrchestratorStatusLine({ state }: { state: { running: boolean; startedAt?: number; queued?: number; lastWakeUsd?: number; hint?: string; held?: string } | null }) {
   const workers = useWorkstreams().filter((r) => r.orchestrated && r.agentStatus === "running").length;
   // Ticks once a second while a wake runs, so the elapsed time counts up between polls.
   const [now, setNow] = useState(() => Date.now());

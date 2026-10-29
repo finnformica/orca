@@ -7,6 +7,7 @@ import { join } from "path";
 import { markDown, reachable } from "./peer";
 import { scrubbedEnv } from "./env";
 import { runCmd, withTimeout } from "./run";
+import type { LimitLogin } from "../shared/agent";
 
 /** A binary on the LIVE PATH, not Bun's startup snapshot — the test PATH shim (a fake `hydra`,
  *  `codex`) relies on it, the same way run.ts passes the live env for the fake `gh`. */
@@ -228,6 +229,40 @@ export async function hydraUsage(): Promise<ProfileUsage[] | null> {
   } catch (error) {
     console.error("[usage] hydra status failed:", error instanceof Error ? error.message : error);
     return lastGoodHydra;
+  }
+}
+
+/** The logins as a usage-limit retry reads them (`shared/agent.ts` `limitPlan`): enabled = signed
+ *  in and not disabled; each window's percent and reset (epoch ms). Pure. */
+export function limitLogins(raw: any): LimitLogin[] {
+  const profiles = Array.isArray(raw?.profiles) ? raw.profiles : [];
+  const win = (b: any) => b && typeof b === "object"
+    ? [{ pct: Number(b.pct) || 0, resetsAt: Number(b.resets) > 0 ? Number(b.resets) * 1000 : null }] : [];
+  return profiles.filter((p: any) => p && typeof p.name === "string").map((p: any): LimitLogin => ({
+    name: p.name, enabled: p.disabled !== true && p.signed_in !== false,
+    windows: [...win(p.session), ...win(p.weekly), ...win(p.fable)],
+  }));
+}
+
+/** What hydra says after a run hit its login's limit: the login its next launch takes (`hydra pick`,
+ *  for the run's model) and every login's resets. The failed login's reading is refreshed first, so
+ *  hydra sees the limit. Read only: hydra keeps the choice of login. No hydra: no pick, no logins. */
+export async function limitReading(failed: string | undefined, model?: string): Promise<{ pick?: string; logins: LimitLogin[] }> {
+  const hydra = which("hydra");
+  if (!hydra) return { logins: [] };
+  const read = async (args: string[]) => {
+    const { stdout, code } = await runCmd([hydra, ...args], { timeoutMs: 20_000, allowFail: true });
+    if (code !== 0) return undefined;
+    try { return JSON.parse(stdout); } catch { return undefined; }
+  };
+  try {
+    if (failed) await runCmd([hydra, "refresh", "--force", failed], { timeoutMs: 20_000, allowFail: true });
+    const logins = limitLogins(await read(["status", "--json"]));
+    const pick = await read(["pick", "--json", ...(model ? ["--model", model] : [])]);
+    return { ...(typeof pick?.name === "string" ? { pick: pick.name } : {}), logins };
+  } catch (error) {
+    console.error("[usage] hydra limit reading failed:", error instanceof Error ? error.message : error);
+    return { logins: [] };
   }
 }
 
