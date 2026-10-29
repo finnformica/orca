@@ -155,7 +155,7 @@ export async function createWorkstream(
 ): Promise<{ branch: string; worktreePath: string; title: string; runId: string }> {
   const model = input.model ?? modelFor(cfg, repo);
   const provider = providerOfModel(model) ?? "claude";
-  if (!providerAllowed(repo, provider)) throw new Error(`the ${provider} agent is not enabled for ${repo.name}`);
+  if (!providerAllowed(repo, provider)) throw new Error(`the ${provider} agent is not enabled for ${repo.name} — enable an agent for ${repo.name} in Settings > Repos`);
   const title = input.title?.trim() || titleFromPrompt(input.prompt);
   const created = await newWorktree(repo, title);
   // The path as `git worktree list` reports it — the key every other caller tracks this run under.
