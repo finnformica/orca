@@ -756,6 +756,32 @@ context between turns.
    (`renewToken`: `hydra exec <name> -p` on haiku, no tools, empty temp cwd, output discarded); still
    stale after that means the refresh token is gone — `hydra login` — and a 429 is reported as
    rate-limited, not stale.
+   **A turn that hits a usage limit runs again on this rung** (2026-10-29: Finn's session limit
+   ended a turn although a second login was enabled; hydra chooses a login only at launch). The CLI
+   (2.1.302, read from its bundle) ends such a run with `{"type":"result","subtype":"success",
+   "is_error":true,"api_error_status":429,"result":"You've hit your session limit · resets …"}`
+   (labels: session, weekly, Opus, Sonnet, Fable, usage limit), after a `rate_limit_event` whose
+   `rate_limit_info.status` is `rejected` with `resetsAt` (epoch s). `usageLimitHit`
+   (`shared/agent.ts`) reads both; a transient 429 ("not your usage limit") is not a hit. Orca sets
+   `HYDRA_QUIET=0`, so hydra names the login on stderr (`hydra → <login>`, `hydraLogin`; the line
+   is cut from the error). In the exit handler (`agent.continueAfterLimit`), Orca asks hydra READ
+   ONLY (`usage.limitReading`: `hydra refresh --force <login>`, `status --json`, `pick --json
+   --model M`), and `limitPlan` decides:
+   - hydra picks a login this turn has not hit the limit on: start the SAME turn again at once,
+     `--resume <session>` with the CLI's own continue prompt (`LIMIT_CONTINUE_PROMPT`).
+   - hydra picks a tried login (all at their limit): HOLD the turn until the earliest reset of an
+     enabled login (a tried login at the later of its CLI and hydra reset; at least
+     `limitWait.minMs`), then start it again. At most `LIMIT_MAX_HOLDS` holds, then it fails.
+   It is the same turn: the same run id and turn row (`LaunchOptions.limit`, a `LimitChain`), no
+   finish write, no queue drain and no run-finished hook for the attempt that hit the limit. So
+   the queued message, the worker report and the orchestrator's wake happen once, for the final
+   attempt, and the Model ladder never counts a limit (`exit.usageLimit`). The chat shows a step
+   (`> Orca: All Claude logins at their limit; resumes at 17:40 UTC.` or `Usage limit on a; Orca
+   starts this turn again on b.`). The card and the Agents row show the held line (`agentNote`); the
+   orchestrator's header shows it (`held`) and reads not running, so autodeploy does not wait
+   hours. A held turn stays running for sends (they queue). Stop ends it as a stopped turn. The
+   hold is in memory: a restart ends a held worker turn as interrupted (boot reconcile), and
+   `orchestrator.recover` queues a held wake's messages again. Orca never picks the login.
 3. **Portable transcript** (lossy, bounded). Used for a provider switch, a Claude session at ≥80%
    context, a Codex/Cursor session past 12 turns or three straight failures, a session the provider
    can't find, or a login switch whose session file is missing. `handoffPrompt` (`shared/agent.ts`)

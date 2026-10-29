@@ -523,6 +523,7 @@ export function AgentRow({ row, fold = NO_FOLD, stacked = false }: { row: Row; f
   const to = detailPath(row);
   const model = modelBadge(row.agentMeta?.model, row.worktreePath || row.prNumber ? modelFor(row) : undefined);
   const error = row.agentStatus === "error" ? row.agentError : undefined;
+  const note = row.agentStatus === "running" ? row.agentNote : undefined; // a turn held for a usage limit
   const hasMenu = !isDone;
   // A PR's own diffstat (gh, free) when there is one; otherwise the worktree's `git diff` against
   // base (useSummary — shared with the card, cached/polled there already).
@@ -627,6 +628,7 @@ export function AgentRow({ row, fold = NO_FOLD, stacked = false }: { row: Row; f
         </div>
         {reasons.length > 0 && <div role="cell" data-slot="row-reasons" className="text-geist-warning-fg text-xs">{reasons.join(" · ")}</div>}
         {error && <div role="cell" data-slot="row-error" className="text-geist-red line-clamp-3 text-xs break-words">{error}</div>}
+        {note && <div role="cell" data-slot="row-note" className="text-geist-warning-fg text-xs">{note}</div>}
       </div>
       {!isDone && <TerminalDialog row={row} open={terminalOpen} onClose={() => setTerminalOpen(false)} />}
     </div>
@@ -655,6 +657,7 @@ export function AgentRow({ row, fold = NO_FOLD, stacked = false }: { row: Row; f
           !isDone && { key: "preview", sep: "none", node: <PrPreviewInline row={row} /> },
           diffstat && { key: "diffstat", node: diffstat },
           error && { key: "error", node: <span data-slot="row-error" className="text-geist-red">{error}</span> },
+          note && { key: "note", node: <span data-slot="row-note" className="text-geist-warning-fg">{note}</span> },
         ]} />
       </div>
       {!fold.status && <div role="cell" className="min-w-0"><RunStatus row={row} tone={tone} reasons={reasons} /></div>}

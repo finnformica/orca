@@ -183,6 +183,8 @@ const serial = <T>(ag: AgentRef, fn: () => Promise<T>): Promise<T> => {
 
 export type AgentStatus = {
   key: string; running: boolean; paused: boolean; notes: string; model: string; contextPct?: number; shell: boolean; lastWakeUsd?: number; hint?: string; startedAt?: number; queued: number;
+  /** A wake held after a usage limit (agent.heldNote): the line the header shows. */
+  held?: string;
   /** Which agent (§7.2): its name, display name, branch, and the state the panel shows. */
   agent: string; displayName: string; branch: string; state: AgentStateName; stateNote?: string;
 };
@@ -191,7 +193,10 @@ export type AgentStatus = {
 export async function status(cfg: OrcaConfig, name?: string): Promise<AgentStatus> {
   const ag = await agentRef(name, cfg);
   const b = await blob(ag);
-  const running = agent.isRunning(ag.dir);
+  // A wake held for a usage limit has no process: not "running", so a deploy need not wait hours for
+  // it (recover queues its messages again after a restart). A send still queues: wake() asks isRunning.
+  const held = agent.heldNote(ag.dir);
+  const running = agent.isRunning(ag.dir) && !held;
   const paused = (b.wakes ?? 0) >= MAX_WAKES;
   const def = ag.def; // its row: the state it set lives there too
   const visible = agentState({ running, paused, stored: def.state, ...(def.stateNote ? { note: def.stateNote } : {}) });
@@ -205,6 +210,7 @@ export async function status(cfg: OrcaConfig, name?: string): Promise<AgentStatu
     lastWakeUsd: b.lastWakeUsd,
     hint: sessionHint({ contextPct: b.contextPct, lastWakeUsd: b.lastWakeUsd, budgetUsd: budgetOf(cfg) }),
     agent: ag.name, displayName: ag.def.displayName, branch: ag.branch, state: visible.state, ...(visible.note ? { stateNote: visible.note } : {}),
+    ...(held ? { held } : {}),
   };
 }
 
@@ -371,7 +377,8 @@ async function ladder(cfg: OrcaConfig, repoName: string, branch: string, e: db.F
   const prev = e.failStreak as FailStreak | undefined;
   const failed = run.status === "error" || run.check?.ok === false;
   // A run you stopped, or one Orca stopped (no progress, the hard ceiling), is not a model failure.
-  const streak = run.status === "stopped" || run.exit.stop ? prev : nextFailStreak(prev, run.options.model ?? (e.preferredModel as string | undefined), failed);
+  // A stop, Orca's own stop or a usage limit says nothing about the model.
+  const streak = run.status === "stopped" || run.exit.stop || run.exit.usageLimit ? prev : nextFailStreak(prev, run.options.model ?? (e.preferredModel as string | undefined), failed);
   if (JSON.stringify(streak) !== JSON.stringify(prev)) await db.patchEnrichment(repoName, branch, { failStreak: streak ?? null });
   if (run.continued) return undefined;
   const repo = cfg.repos.find((r) => r.name === repoName);

@@ -493,6 +493,8 @@ export type Row = {
   worktreePath?: string;
   agentStatus?: LiveAgent["agentStatus"];
   agentError?: string;
+  /** A turn held after a usage limit: the short line the card shows. */
+  agentNote?: string;
   agentResult?: string;
   agentOutcome?: AgentOutcome;
   agentMeta?: LiveAgent["agentMeta"];
@@ -753,7 +755,7 @@ export function assembleRows(): Row[] {
         title: rowTitle(e.title, pr?.title, branch),
         prTitle: pr?.title,
         prompt: e.prompt ?? "",
-        worktreePath: wt?.worktreePath, agentStatus: wt?.agentStatus, agentError: wt?.agentError,
+        worktreePath: wt?.worktreePath, agentStatus: wt?.agentStatus, agentError: wt?.agentError, agentNote: wt?.agentNote,
         agentResult: wt?.agentResult, agentOutcome: wt?.agentOutcome, agentMeta: wt?.agentMeta, agentCheck: wt?.agentCheck, queued: wt?.queued, agentStartedAt: wt?.agentStartedAt,
         agentProvider: e.agentProvider ?? wt?.agentProvider,
         preferredProvider: e.preferredProvider,

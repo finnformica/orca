@@ -405,3 +405,102 @@ export function attachCommand(input: { worktreePath: string; provider?: AgentPro
   if (seed) return `${cd}claude ${seed}--permission-mode auto`;
   return `${cd}claude ${input.fresh ? "" : "--continue "}--permission-mode auto`;
 }
+
+// ── Usage limits (a Claude login at its 5-hour, weekly or model window) ──────────────────────────
+// What Claude Code 2.1.302 prints, read from its bundle (not a guess): the turn ends on an assistant
+// message with `error: "rate_limit"` whose text is `You've hit your <label>[ · resets <time>][ ·
+// progress saved]` (labels: session limit, weekly limit, Opus limit, Sonnet limit, Fable limit, usage
+// limit), and `-p` ends with `{"type":"result","subtype":"success","is_error":true,"result":"<that
+// text>","api_error_status":429}`. Before it, stream-json emits `{"type":"rate_limit_event",
+// "rate_limit_info":{"status":"rejected","resetsAt":<epoch s>,"rateLimitType":"five_hour",…}}`.
+// "Server is temporarily limiting requests (not your usage limit)" is a transient 429, NOT a limit.
+
+/** The text the CLI gives a run that hit its login's limit. Pure. */
+export const USAGE_LIMIT_TEXT = /^You[’']ve hit your (?:session|weekly|Opus|Sonnet|Fable|usage)? ?limit\b/;
+
+/** The prompt of a run started again after a limit: the CLI's own words for its auto-continue. */
+export const LIMIT_CONTINUE_PROMPT = "You can continue now. Continue the task you were working on when the usage limit was reached; do not repeat work that is already complete.";
+
+export type UsageLimitHit = { message: string; resetsAt?: number; window?: string };
+
+/** Did this Claude run end on its login's usage limit? Reads the stream-json lines the exit parse
+ *  keeps: the final result (is_error + the limit text) and a rejected `rate_limit_event` (its reset,
+ *  epoch ms). A transient 429 or any other error is not a hit. Pure. */
+export function usageLimitHit(raw: string): UsageLimitHit | undefined {
+  let result: { is_error?: unknown; result?: unknown } | undefined;
+  let rejected: { resetsAt?: unknown; rateLimitType?: unknown } | undefined;
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const e = JSON.parse(line);
+      if (e?.type === "result") result = e;
+      if (e?.type === "rate_limit_event" && e.rate_limit_info?.status === "rejected") rejected = e.rate_limit_info;
+    } catch { /* not JSON */ }
+  }
+  const message = typeof result?.result === "string" ? result.result.trim() : "";
+  if (!result?.is_error || !USAGE_LIMIT_TEXT.test(message)) return undefined;
+  const resetsAt = Number(rejected?.resetsAt);
+  return {
+    message: message.split("\n")[0]!,
+    ...(Number.isFinite(resetsAt) && resetsAt > 0 ? { resetsAt: resetsAt * 1000 } : {}),
+    ...(typeof rejected?.rateLimitType === "string" ? { window: rejected.rateLimitType } : {}),
+  };
+}
+
+/** The login hydra sent the run to: its routing line on stderr (`hydra → <login>   5h …`), printed
+ *  because Orca sets HYDRA_QUIET=0. Pure. */
+export function hydraLogin(stderr: string): string | undefined {
+  return /^hydra → (\S+)/m.exec(stderr)?.[1];
+}
+
+/** stderr without hydra's routing lines, so a failed run's error is the CLI's own. Pure. */
+export const withoutHydraLines = (stderr: string): string => stderr.split("\n").filter((l) => !l.startsWith("hydra → ")).join("\n");
+
+/** One login as the decision reads it: hydra's verdict and when each window resets. */
+export type LimitLogin = { name: string; enabled: boolean; windows: { pct: number; resetsAt: number | null }[] };
+/** The logins one turn hit the limit on so far, each with its reset when known (epoch ms). */
+export type LimitTried = { name: string; resetsAt?: number };
+export type LimitPlan = { kind: "retry"; login: string } | { kind: "hold"; until: number } | { kind: "fail" };
+
+/** Most holds for one turn: each waits for a reset, so this bounds a turn that never gets through. */
+export const LIMIT_MAX_HOLDS = 6;
+/** A hold waits at least this long: a reset already past (a stale reading) must not spin. */
+export const LIMIT_MIN_HOLD_MS = 60_000;
+/** A hold with no reset time known (no hydra, no rate_limit_event) waits this long. */
+export const LIMIT_UNKNOWN_HOLD_MS = 30 * 60_000;
+
+/** After a limit hit: start the turn again now on another login, hold it until a reset, or fail it.
+ *  hydra keeps the choice of login (`pick`, what its next launch takes): Orca only checks that it is
+ *  a login the turn has not hit the limit on yet. So it retries once per login switch, and a pick of
+ *  the same login is a hold, never a loop. The hold ends at the earliest time an enabled login is
+ *  free: a tried login at its recorded reset, any login at the latest reset of its windows at 100%.
+ *  Pure. */
+export function limitPlan(o: { tried: LimitTried[]; pick?: string; logins: LimitLogin[]; holds: number; now: number; minHoldMs?: number }): LimitPlan {
+  const tried = new Set(o.tried.map((t) => t.name));
+  if (o.pick && !tried.has(o.pick)) return { kind: "retry", login: o.pick };
+  if (o.holds >= LIMIT_MAX_HOLDS) return { kind: "fail" };
+  const freeAt = (l: LimitLogin): number | undefined => {
+    const full = l.windows.filter((w) => w.pct >= 100 && w.resetsAt).map((w) => w.resetsAt!);
+    const recorded = o.tried.find((t) => t.name === l.name)?.resetsAt;
+    const times = [...full, ...(recorded ? [recorded] : [])];
+    if (times.length) return Math.max(...times);
+    return tried.has(l.name) ? undefined : o.now; // a tried login with no reset known: no time to wait for
+  };
+  const times = o.logins.filter((l) => l.enabled).map(freeAt).filter((t): t is number => t !== undefined);
+  // No hydra (one login): the reset the CLI reported for the run.
+  if (!o.logins.length) times.push(...o.tried.map((t) => t.resetsAt).filter((t): t is number => t !== undefined));
+  const until = times.length ? Math.min(...times) : o.now + LIMIT_UNKNOWN_HOLD_MS;
+  return { kind: "hold", until: Math.max(until, o.now + (o.minHoldMs ?? LIMIT_MIN_HOLD_MS)) };
+}
+
+/** The short line the card and the chat show while a turn is held. Pure. */
+export function limitHeldLine(until: number, now = Date.now()): string {
+  const d = new Date(until);
+  const hhmm = `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
+  const sameDay = new Date(now).toISOString().slice(0, 10) === d.toISOString().slice(0, 10);
+  return `All Claude logins at their limit; resumes at ${hhmm} UTC${sameDay ? "" : ` on ${d.toISOString().slice(0, 10)}`}`;
+}
+
+/** The short line the chat shows when the turn starts again on another login. Pure. */
+export const limitRetryLine = (from: string | undefined, to: string): string =>
+  `Usage limit${from ? ` on ${from}` : ""}; Orca starts this turn again on ${to}`;

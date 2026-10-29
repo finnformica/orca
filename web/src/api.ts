@@ -28,6 +28,8 @@ export type LiveAgent = {
   head?: string;
   agentStatus: "idle" | "running" | "done" | "error";
   agentError?: string;
+  /** A turn held after a usage limit: "All Claude logins at their limit; resumes at …". */
+  agentNote?: string;
   agentResult?: string;
   agentOutcome?: AgentOutcome;
   agentMeta?: RunMeta;
@@ -125,6 +127,8 @@ const q = (repo: string, extra = "") => `?repo=${encodeURIComponent(repo)}${extr
 /** One named agent's status (`GET /api/orchestrator[?agent=]`, server/orchestrator.ts AgentStatus). */
 export type AgentStatus = {
   key: string; running: boolean; paused: boolean; notes: string; model: string; contextPct?: number; shell?: boolean; lastWakeUsd?: number; hint?: string; startedAt?: number; queued?: number;
+  /** A wake held after a usage limit: "All Claude logins at their limit; resumes at …". */
+  held?: string;
   agent?: string; displayName?: string; branch?: string; state?: "idle" | "working" | "waiting" | "blocked" | "done"; stateNote?: string;
 };
 

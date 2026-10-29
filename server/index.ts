@@ -565,6 +565,7 @@ async function agentRows(repo: RepoConfig): Promise<unknown[]> {
       ...w,
       agentStatus,
       agentError: run.error,
+      ...(run.note ? { agentNote: run.note } : {}), // a turn held for a usage limit
       agentResult: run.result,
       agentOutcome: run.structured,
       agentMeta: run.meta,
