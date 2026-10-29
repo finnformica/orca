@@ -9,13 +9,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as db from "../server/db";
 import * as agent from "../server/agent";
+import * as agents from "../server/agents";
 import * as git from "../server/git";
 import * as orchestrator from "../server/orchestrator";
 import * as verbs from "../server/verbs";
 import type { OrcaConfig } from "../server/config";
 import { AUTOFIX_MARKER, type AgentTurn } from "../shared/agent";
 import { grantRefusal } from "../shared/integrations";
-import { PERSON, agentSide, orcaSide, queueListText, queuedSender } from "../shared/rooms";
+import { PERSON, agentSide, orcaSide, queueCancelRefusal, queueListText, queuedSender } from "../shared/rooms";
 import { commandsFor, orchestratorPrompt } from "../web/src/workstream";
 import { installFakeGh, makeScratchRepo, setPrListFixture } from "./helpers";
 import { freshSchema, type TestDb } from "./pg";
@@ -130,16 +131,40 @@ test("Q2: queue cancel deletes the agent's own undispatched message and refuses 
   expect(await orchestrator.tool(cfg(), "queue", { repo: "r", branch })).toBe(`Nothing is queued for r/${branch}.`);
 }, 30_000);
 
-test("Q3: queue cancel never touches another sender's message", async () => {
+test("Q3: an agent with every verb cancels another agent's or Orca's message, never a user's or a dispatched one", async () => {
   const { branch, worktreePath } = await busyWorkstream();
   const base = { repo: "r", branch, worktreePath, attachments: [] };
   const user = await db.queueMessage({ ...base, instruction: "typed in the chat" });
   const other = await db.queueMessage({ ...base, instruction: "from the assistant", sender: agentSide("assistant") });
   const autofix = await db.queueMessage({ ...base, instruction: `${AUTOFIX_MARKER} fix the check` });
-  await expect(orchestrator.tool(cfg(), "queue", { _: ["cancel", String(user.id)] })).rejects.toThrow("was queued by the user; you cancel only your own");
-  await expect(orchestrator.tool(cfg(), "queue", { _: ["cancel", String(other.id)] })).rejects.toThrow("was queued by agent assistant; you cancel only your own");
-  await expect(orchestrator.tool(cfg(), "queue", { _: ["cancel", String(autofix.id)] })).rejects.toThrow("was queued by Orca (autofix)");
-  expect((await queued(branch)).map((m) => m.id)).toEqual([user.id, other.id, autofix.id]);
+  // The Chief of Staff's row has every verb ("all"): it is the rule, not the name.
+  expect((await agents.get("chief"))?.tools.verbs).toBe("all");
+  await expect(orchestrator.tool(cfg(), "queue", { _: ["cancel", String(user.id)] })).rejects.toThrow(`refused: message #${user.id} on r/${branch} was queued by the user; an agent never cancels a user's message`);
+  expect(await orchestrator.tool(cfg(), "queue", { _: ["cancel", String(other.id)] })).toBe(`Cancelled queued message #${other.id} on r/${branch} (queued by agent assistant). Nothing else changed.`);
+  expect(await orchestrator.tool(cfg(), "queue", { _: ["cancel", String(autofix.id)] })).toBe(`Cancelled queued message #${autofix.id} on r/${branch} (queued by Orca (autofix)). Nothing else changed.`);
+  expect((await queued(branch)).map((m) => m.id)).toEqual([user.id]);
+  // A dispatched Orca message stays: a run took it.
+  const taken = await db.queueMessage({ ...base, branch: "elsewhere", instruction: `${AUTOFIX_MARKER} again` });
+  expect((await db.claimQueuedMessage("r", "elsewhere"))?.id).toBe(taken.id);
+  await expect(orchestrator.tool(cfg(), "queue", { _: ["cancel", String(taken.id)] })).rejects.toThrow(`refused: message #${taken.id} on r/elsewhere was already dispatched`);
+  expect((await db.queuedMessageById(taken.id))?.dispatchedAt).toBeNumber();
+  await rm(hold, { force: true });
+});
+
+test("Q3b: an agent with limited verbs cancels only its own message", async () => {
+  const { branch, worktreePath } = await busyWorkstream();
+  await agents.edit("assistant", { tools: { shell: false, verbs: ["board", "queue"] } });
+  const base = { repo: "r", branch, worktreePath, attachments: [] };
+  const chief = await db.queueMessage({ ...base, instruction: "from the chief", sender: agentSide("chief") });
+  const autofix = await db.queueMessage({ ...base, instruction: `${AUTOFIX_MARKER} fix the check` });
+  const mine = await db.queueMessage({ ...base, instruction: "from the assistant", sender: agentSide("assistant") });
+  const user = await db.queueMessage({ ...base, instruction: "typed in the chat" });
+  const as = { _agent: "assistant" };
+  await expect(orchestrator.tool(cfg(), "queue", { ...as, _: ["cancel", String(chief.id)] })).rejects.toThrow("was queued by agent chief; you cancel only your own (only an agent with every verb cancels another agent's or Orca's message)");
+  await expect(orchestrator.tool(cfg(), "queue", { ...as, _: ["cancel", String(autofix.id)] })).rejects.toThrow("was queued by Orca (autofix); you cancel only your own");
+  await expect(orchestrator.tool(cfg(), "queue", { ...as, _: ["cancel", String(user.id)] })).rejects.toThrow("was queued by the user; an agent never cancels a user's message");
+  expect(await orchestrator.tool(cfg(), "queue", { ...as, _: ["cancel", String(mine.id)] })).toBe(`Cancelled queued message #${mine.id} on r/${branch}. Nothing else changed.`);
+  expect((await queued(branch)).map((m) => m.id)).toEqual([chief.id, autofix.id, user.id]);
   await rm(hold, { force: true });
 });
 
@@ -204,6 +229,10 @@ test("Q6: the sender rule, the list text, the grant check and the prompt", () =>
   expect(prompt).toContain("so each send must hold the whole");
   expect(prompt).toContain("Do not queue extra follow-ups that patch it.");
   expect(prompt).toContain("  orca queue cancel <id>");
+  expect(prompt).toContain("With every verb, also another");
+  expect(queueCancelRefusal(orcaSide("autofix"), agentSide("chief"), true)).toBeUndefined();
+  expect(queueCancelRefusal(PERSON, agentSide("chief"), true)).toBe("was queued by the user; an agent never cancels a user's message");
+  expect(queueCancelRefusal(agentSide("assistant"), agentSide("assistant"), false)).toBeUndefined();
   // An agent with limited verbs gets the guidance with send, and the queue verbs only when it has them.
   expect(commandsFor(["send"])).toContain("ONE queued message per agent");
   expect(commandsFor(["send"])).not.toContain("  orca queue --repo");

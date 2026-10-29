@@ -1005,7 +1005,9 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   `~/.claude` config loads as in any session.
 - **`orca`** (`bin/orca` → `POST /api/orchestrator/tool` → `orchestrator.tool`): `board`, `spawn`,
   `send` (a queued send prints its id), `queue` (`--repo r --branch b` lists the undispatched messages;
-  `cancel <id>` deletes one the caller queued, never a dispatched one or another sender's — the
+  `cancel <id>` deletes one the caller queued; an agent with every verb (`tools.verbs` "all", the
+  row's rule, never a name) may also cancel another agent's or Orca's own (autofix, address, upkeep)
+  — never a dispatched one or a user's (`queueCancelRefusal`, which names the sender); the
   sender rides `reply_to.sender`, else `queuedSender` reads it off the row). **One queued message
   per non-user sender** (Finn 2026-10-29): `db.queueMessage(…, { replace: true })` — `verbs.followUp`
   (`orca send`, `orca address`, upkeep), autofix and the background resume — replaces that sender's

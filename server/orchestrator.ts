@@ -61,7 +61,7 @@ import {
   SET_STATES, agentListText, defaultAgentName, agentMessage, agentMessageFrom, agentState, agentVerbRefusal, authoredPost, clearsOnUserMessage, cleanReportsTo,
   type AgentDef, type AgentStateName,
 } from "../shared/agents";
-import { agentSide, queueListText, queuedSender, queuedSenderText, sameSide, type Side } from "../shared/rooms";
+import { agentSide, queueCancelRefusal, queueListText, queuedSender, queuedSenderText, sameSide, type Side } from "../shared/rooms";
 import { attachmentIdOf, attachmentRefusal, catchAllPostRefusal, deleteRefusal, grantAllowsRepo, grantKey, grantRefusal, outboundRefusal, postsAsUser, repoScoped, type Grant, type ReplyTo } from "../shared/integrations";
 import * as integrationStore from "./integrations/store";
 import * as integrationRouter from "./integrations/router";
@@ -1056,11 +1056,11 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
         const at = `${m.repo}/${m.branch}`;
         if (m.replacedBy !== undefined) throw new Error(`refused: message #${id} on ${at} was replaced by message #${m.replacedBy}; cancel that one instead.`);
         if (m.dispatchedAt !== undefined) throw new Error(`refused: message #${id} on ${at} was already dispatched (${new Date(m.dispatchedAt).toISOString()}); a run took it, so it can't be cancelled. Send a correction with orca send.`);
-        const me = agentSide(ag.name);
         const from = queuedSender(m);
-        if (!sameSide(from, me)) throw new Error(`refused: message #${id} on ${at} was queued by ${queuedSenderText(from)}; you cancel only your own`);
+        const refusal = queueCancelRefusal(from, agentSide(ag.name), ag.def.tools.verbs === "all");
+        if (refusal) throw new Error(`refused: message #${id} on ${at} ${refusal}`);
         if (!(await db.cancelQueuedMessage(id))) throw new Error(`refused: message #${id} on ${at} was dispatched just now; a run took it, so it can't be cancelled. Send a correction with orca send.`);
-        return `Cancelled queued message #${id} on ${at}. Nothing else changed.`;
+        return `Cancelled queued message #${id} on ${at}${sameSide(from, agentSide(ag.name)) ? "" : ` (queued by ${queuedSenderText(from)})`}. Nothing else changed.`;
       }
       if (words[0]) throw new Error("usage: orca queue --repo <repo> --branch <branch> | orca queue cancel <id>");
       const repo = repoNamed(cfg, args.repo);
