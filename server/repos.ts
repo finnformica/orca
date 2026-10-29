@@ -10,6 +10,7 @@ import { githubIdentity, githubToken, type Env } from "./env";
 import { runCmd } from "./run";
 import { graphql, request, tokenForUser } from "./github";
 import { saveConfigDocument, type OrcaConfig, type RepoConfig } from "./config";
+import type { AgentProvider } from "../shared/agent";
 
 /** The `gh` logins signed in on this host, active one first. Parsed from `gh auth status` — it has no
  *  JSON form; the line is "Logged in to github.com account <login> (keyring)". */
@@ -141,8 +142,10 @@ async function assertCloneTarget(repoPath: string): Promise<void> {
   catch { throw new Error(`Cannot clone to ${repoPath}: ${parent} is not writable by this process. Create ${parent} (or ${repoPath}) owned by the user Orca runs as, then retry.`); }
 }
 
-/** Clone `owner/name` here and add it to the config. Returns the new RepoConfig. */
-export async function add(cfg: OrcaConfig, nameWithOwner: string, opts: { name?: string } = {}): Promise<RepoConfig> {
+/** Clone `owner/name` here and add it to the config. Returns the new RepoConfig. Defaults to the
+ *  Claude provider — every other repo has one, and an added repo with none can never spawn an
+ *  agent (`providerAllowed`), only error "the claude agent is not enabled for <repo>". */
+export async function add(cfg: OrcaConfig, nameWithOwner: string, opts: { name?: string; providers?: AgentProvider[] } = {}): Promise<RepoConfig> {
   const m = /^([\w.-]+)\/([\w.-]+)$/.exec(nameWithOwner);
   if (!m) throw new Error(`"${nameWithOwner}" is not owner/name`);
   const [, owner, repoName] = m;
@@ -164,6 +167,7 @@ export async function add(cfg: OrcaConfig, nameWithOwner: string, opts: { name?:
   }
   const repo: RepoConfig = {
     name, repoPath, worktreeRoot: join(repoPath, ".worktrees"), baseBranch: view.defaultBranchRef?.name ?? "main", previewServices: [],
+    providers: opts.providers?.length ? opts.providers : ["claude"],
     ...(cfg.instances ? { runsOn: db.instanceName() } : {}),
     ...(user && user !== logins[0] ? { githubUser: user } : {}),
   };

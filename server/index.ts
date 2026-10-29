@@ -1137,7 +1137,8 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   if (req.method === "POST" && p === "/api/repos/add") {
     // `orca repo add --on <this instance>`: clone here, append to the shared config.
-    return json(await repos.add(cfg, String(body.nameWithOwner ?? ""), { name: typeof body.name === "string" ? body.name : undefined }));
+    const providers = Array.isArray(body.providers) ? body.providers.filter(isAgentProvider) : undefined;
+    return json(await repos.add(cfg, String(body.nameWithOwner ?? ""), { name: typeof body.name === "string" ? body.name : undefined, providers }));
   }
   if (req.method === "POST" && p === "/api/orchestrator/tool") {
     // What `bin/orca` calls. A refusal is a 400 with a message written for the model to act on.
