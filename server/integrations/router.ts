@@ -5,7 +5,6 @@ import { randomUUID } from "crypto";
 import { CATCH_ALL, CATCH_ALL_SEND_ERROR, effectiveGrant, effectiveNotify, integrationAccessRefusal, sendsToCatchAll, INBOUND_LIMIT, paceWait, planDeliveries, replyToOf, type ConversationRef, type Envelope, type Grant, type InboundEnvelope, type PlannedDelivery, type ReplyTo } from "../../shared/integrations";
 import { replyRefusal } from "../../shared/inbox";
 import * as store from "./store";
-import { loadConfig } from "../config";
 import type { IngestVerdict } from "./adapter";
 
 /** Orca's own id: time-ordered, so `ORDER BY id` is arrival order. */
@@ -138,9 +137,7 @@ export async function ingest(integrationId: string, e: InboundEnvelope, now = Da
   // A sender with no person behind it (a webhook, a poller) is authenticated by its integration and
   // takes the link's level.
   const principal = e.actor ? await store.principalFor(e.actor.external.adapter, e.actor.external.id) : undefined;
-  // The owner's own person (Settings > People) acts with the full grant; nobody else is widened.
-  const owner = principal ? (await loadConfig()).ownerPrincipal : undefined;
-  const grant: Grant = e.actor ? effectiveGrant(link, principal, owner) : { level: link.level, repos: link.repos, linkId: link.id };
+  const grant: Grant = e.actor ? effectiveGrant(link, principal) : { level: link.level, repos: link.repos, linkId: link.id };
   // A notify link takes no machine event in — except, when its integration says so
   // (`config.machineEventsOnNotify`): recorded and fanned out to its subscriptions with the grant
   // "notify", so no agent acts on it (shared/integrations.ts agentMay).

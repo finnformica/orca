@@ -275,9 +275,9 @@ describe("with Postgres", () => {
     expect(ana).toEqual({ id: "ana", name: "Ana", maxLevel: "admin", identities: [
       { adapter: "fakechat", externalId: "U5", name: "ana" }, { adapter: "gmail", externalId: "ana@example.com" }, { adapter: "slack", externalId: "US1", name: "ana.s" },
     ] });
-    // The gate trusts the hand-added identity: min(work link, admin person) = work.
+    // The gate trusts the hand-added identity: an admin person gets full even on a work link (the admin rule).
     expect(await router.ingest("chat", { key: "fakechat:a1", topic: "ext.fakechat.message", at: Date.now(), source: { adapter: "fakechat", channel: "R1" }, actor: { external: { adapter: "fakechat", id: "U5" } }, mentioned: true, text: "status?" })).toBe("new");
-    expect((await store.event("fakechat:a1"))!.grant).toMatchObject({ level: "work", principalId: "ana" });
+    expect((await store.event("fakechat:a1"))!.grant).toMatchObject({ level: "full", principalId: "ana" });
     // A pairing approval with no name keeps the name added by hand.
     await admin.route("/api/integrations/identities/add", { principal: "ana", adapter: "fakechat", externalId: "U5" });
     expect((await admin.overview("local")).people[0]!.identities[0]).toEqual({ adapter: "fakechat", externalId: "U5", name: "ana" });

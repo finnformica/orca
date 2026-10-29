@@ -1,5 +1,5 @@
 import {
-  API_PORT, configDocument, featuresOf, invalidateConfig, loadConfig, setInstanceTerminal, setServerIdentity, setUiOptions, setDefaultAgent, setOwnerPrincipal, modelFor, parseConfigDocument,
+  API_PORT, configDocument, featuresOf, invalidateConfig, loadConfig, setInstanceTerminal, setServerIdentity, setUiOptions, setDefaultAgent, modelFor, parseConfigDocument,
   providerAllowed, providersFor, repoOf, runsHere, saveConfigDocument, type OrcaConfig, type RepoConfig,
 } from "./config";
 import * as git from "./git";
@@ -452,7 +452,7 @@ const DATABASE_ONLY = new Set([
   // what that merge fetches from a PEER — always this host's own, unmerged, never forwarded (a repo's
   // placement must not send it chasing a worktree that has nothing to do with hydra).
   "/api/usage", "/api/usage/local", "/api/diagnostics", "/api/turns/steps", "/api/queued", "/api/queued/cancel", "/api/health",
-  "/api/health/history", "/api/health/live", "/api/machine", "/api/config/instance-rate", "/api/config/terminal", "/api/config/identity", "/api/config/ui", "/api/config/owner",
+  "/api/health/history", "/api/health/live", "/api/machine", "/api/config/instance-rate", "/api/config/terminal", "/api/config/identity", "/api/config/ui",
   // A workstream's reported screenshots, read off its turns (the files are served per shot).
   "/api/shots",
   // Answered by EVERY instance: its own worktrees (if the repo is checked out here) plus what the
@@ -881,7 +881,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     const ids = [...Object.keys(cfg.instances ?? {}), db.instanceName()];
     const hosts = await instanceHosts(cfg.instances ?? {}, cfg.serverSwitcher ?? {}).catch(() => ({}));
     const options = instanceOptions(ids, hosts, cfg.serverIdentity?.name, cfg.orchestratorOn ?? db.instanceName());
-    return json({ ...(await integrationAdmin.overview()), instanceOptions: options, running: await integrations.health(), ...(cfg.ownerPrincipal ? { ownerPrincipal: cfg.ownerPrincipal } : {}) });
+    return json({ ...(await integrationAdmin.overview()), instanceOptions: options, running: await integrations.health() });
   }
   if (req.method === "POST" && p === "/api/integrations/test") {
     // The card's Test: the adapter's own health check, on the instance that runs it.
@@ -1271,9 +1271,8 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (!config) return json({ errors }, 400);
     // The web terminal's flag is NOT part of a pasted document: only Settings' own route sets it.
     // Nor is the server identity: a document copied from another server must not rename this one.
-    // Nor is the owner's person: only Settings > People names who acts with full power from a channel.
-    const { serverIdentity: _pasted, ownerPrincipal: _owner, ...pasted } = config;
-    await saveConfigDocument({ ...pasted, ...(cfg.terminal ? { terminal: cfg.terminal } : {}), ...(cfg.serverIdentity ? { serverIdentity: cfg.serverIdentity } : {}), ...(cfg.ownerPrincipal ? { ownerPrincipal: cfg.ownerPrincipal } : {}) });
+    const { serverIdentity: _pasted, ...pasted } = config;
+    await saveConfigDocument({ ...pasted, ...(cfg.terminal ? { terminal: cfg.terminal } : {}), ...(cfg.serverIdentity ? { serverIdentity: cfg.serverIdentity } : {}) });
     return json({ ok: true, repos: config.repos.map((r) => r.name) });
   }
   if (req.method === "POST" && p === "/api/config/instance-rate") {
@@ -1296,18 +1295,6 @@ async function api(req: Request, url: URL): Promise<Response> {
     // Settings' Board view row: show or hide the Board view for every browser.
     if (typeof body.showBoard !== "boolean") return json({ error: "showBoard (true or false) is required" }, 400);
     await setUiOptions({ showBoard: body.showBoard });
-    return json({ ok: true });
-  }
-  if (req.method === "POST" && p === "/api/config/owner") {
-    // Settings > People: which person is the owner of this Orca (null clears). Their channel messages
-    // get the full grant, so it is gated like the terminal: the owner only, never a cross-origin page.
-    const gate = await terminalOwner(req, cfg);
-    if (gate) return gate;
-    const id = typeof body.principal === "string" ? body.principal.trim() : body.principal === null ? null : undefined;
-    if (id === undefined) return json({ error: "principal (a person id, or null) is required" }, 400);
-    if (id && !(await integrationStore.principal(id))) return json({ error: `no person ${id}` }, 404);
-    await setOwnerPrincipal(id || null);
-    console.log(`orca: owner person ${id ? `set to ${id}` : "cleared"} at=${new Date().toISOString()}`);
     return json({ ok: true });
   }
   if (req.method === "POST" && p === "/api/config/terminal") {

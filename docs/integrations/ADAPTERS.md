@@ -317,7 +317,7 @@ no public address, because the browser makes both redirects.
 | `notify` | Nothing inbound. The gate drops the message. | Post to the link. |
 | `ask` | Ask questions. | `orca board`, `chats`, `read`, `notes`, `channels`, `ask-user`, `preview --status`, `repo list`, and `post` on the link the message came from. |
 | `work` (Editor) | Ask, and start, steer, stop or archive work on the link's repos. | Also `spawn`, `send`, `address`, `status`, `pr-shots`, `preview`, `thread link`, `stop`, `archive` and `merge --when-green` on those repos. `archive` and `stop` act only on orchestrated workstreams. The repo's `mergePolicy` decides a merge. |
-| `admin` (Admin) | A trusted person. | Every verb on the link's repos (`merge --cancel` too), plus `move`, `sweep [--confirm]`, `repo add` and `handoff list`. |
+| `admin` (Admin) | A trusted person. | As a link level: every verb on the link's repos (`merge --cancel` too), plus `move`, `sweep [--confirm]`, `repo add` and `handoff list`. A PERSON at Admin gets the full grant on any link: every repo and every verb, as in the owner's own Orca chat. |
 | `full` | Your own chat in Orca. | Every verb. |
 
 - The grant is min(link level, person's max level). The link's repos limit `work` and `admin`.

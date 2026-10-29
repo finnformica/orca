@@ -194,11 +194,6 @@ export type OrcaConfig = {
   /** Console options shared by every browser. `showBoard`: the Board view's nav entry and route
    *  (on unless false). Settings sets it (`/api/config/ui`). */
   ui?: UiOptions;
-  /** The person (Settings > People, a `principal` id) who IS the owner of this Orca. A channel
-   *  message from one of their identities gets the full grant: every repo, every verb, as in their
-   *  own Orca chat (shared/integrations.ts effectiveGrant). ONLY Settings > People sets it
-   *  (`/api/config/owner`): a pasted config document keeps the stored value. */
-  ownerPrincipal?: string;
   /** Repos Orca manages; the first is the default. */
   repos: RepoConfig[];
   /** Inclusive [min, max] port range for preview services (shared across repos). */
@@ -451,9 +446,6 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
     const ok = ui && typeof ui === "object" && !Array.isArray(ui) && (ui.showBoard === undefined || typeof ui.showBoard === "boolean");
     if (!ok) errors.push("ui must be { showBoard?: true | false }");
   }
-  if (d.ownerPrincipal !== undefined && (typeof d.ownerPrincipal !== "string" || !d.ownerPrincipal.trim())) {
-    errors.push("ownerPrincipal must be a person id");
-  }
   // d.googleOAuth (RETIRED_GOOGLE_OAUTH_KEY) is accepted and ignored: an old document must still load.
   errors.push(...heavyQueueProblems(d.heavyQueue));
   errors.push(...serverSwitcherProblems(d.serverSwitcher));
@@ -483,7 +475,6 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
       serverSwitcher: d.serverSwitcher as ServerSwitcherConfig | undefined,
       serverIdentity: d.serverIdentity as ServerIdentityConfig | undefined,
       ui: d.ui as UiOptions | undefined,
-      ownerPrincipal: d.ownerPrincipal as string | undefined,
     },
   };
 }
@@ -632,7 +623,6 @@ async function loadFromDb(): Promise<OrcaConfig> {
     serverSwitcher: app.serverSwitcher as ServerSwitcherConfig | undefined,
     serverIdentity: app.serverIdentity as ServerIdentityConfig | undefined,
     ui: app.ui as UiOptions | undefined,
-    ownerPrincipal: typeof app.ownerPrincipal === "string" && app.ownerPrincipal ? app.ownerPrincipal : undefined,
   };
   cached = config;
   cachedAt = Date.now();
@@ -678,7 +668,6 @@ export async function saveConfigDocument(config: OrcaConfig): Promise<void> {
       ...(config.serverSwitcher === undefined ? {} : { serverSwitcher: config.serverSwitcher as unknown as db.Fields }),
       ...(config.serverIdentity === undefined ? {} : { serverIdentity: config.serverIdentity as unknown as db.Fields }),
       ...(config.ui === undefined ? {} : { ui: config.ui as unknown as db.Fields }),
-      ...(config.ownerPrincipal === undefined ? {} : { ownerPrincipal: config.ownerPrincipal }),
     },
   });
   invalidateConfig();
@@ -716,17 +705,6 @@ export async function setUiOptions(ui: UiOptions): Promise<void> {
   const { config, errors } = parseConfigDocument(await configDocument());
   if (!config) throw new Error(`the stored config does not parse: ${errors.join("; ")}`);
   await saveConfigDocument({ ...config, ...(current.terminal ? { terminal: current.terminal } : {}), ui: { ...config.ui, ...ui } });
-}
-
-/** Set (or, with null, clear) the owner's person — Settings > People, the ONLY writer of
- *  `ownerPrincipal`. Same path as `setServerIdentity`, so nothing else in the document changes. */
-export async function setOwnerPrincipal(id: string | null): Promise<void> {
-  invalidateConfig();
-  const current = await loadConfig();
-  const { config, errors } = parseConfigDocument(await configDocument());
-  if (!config) throw new Error(`the stored config does not parse: ${errors.join("; ")}`);
-  const { ownerPrincipal: _old, ...rest } = config;
-  await saveConfigDocument({ ...rest, ...(current.terminal ? { terminal: current.terminal } : {}), ...(id ? { ownerPrincipal: id } : {}) });
 }
 
 /** Set the default agent (Settings > Agents): one key of `agents`, the rest of the document unchanged.
