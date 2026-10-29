@@ -230,3 +230,31 @@ export const entryTurn = (e: RoomEntry) => ({
   ...(e.failed ? { failed: true } : {}), ...(e.stopped ? { stopped: true } : {}),
   ...(e.origin ? { origin: e.origin, originMessages: e.originMessages ?? e.origin.messageIds.map((id) => ({ id, missing: true as const })) } : {}),
 });
+
+/** Who queued a workstream message: its recorded sender (`orca send` names its agent), else
+ *  `turnRoute`'s rule for the turn it becomes (an origin's agent, Orca for an autofix or a background
+ *  resume, else the person). So `orca send --replace` and `orca queue cancel` never take a message
+ *  the person typed, or another agent's, as the caller's own. */
+export const queuedSender = (m: { repo: string; branch: string; instruction: string; origin?: TurnOrigin; sender?: Side }): Side =>
+  turnRoute(workerSide(m.repo, m.branch), { instruction: m.instruction, origin: m.origin, sender: m.sender }).sender;
+
+/** A queued message's sender as an agent reads it in `orca queue`; `me` is the caller. */
+export function queuedSenderText(s: Side, me?: Side): string {
+  const self = me && sameSide(s, me) ? " (you)" : "";
+  if (s.kind === "person") return "the user";
+  if (s.kind === "agent") return `agent ${s.id}${self}`;
+  if (s.kind === "worker") return `worker ${s.id}`;
+  return `Orca (${s.id})`;
+}
+
+/** `orca queue`'s answer: one line per undispatched message, oldest first (the order they are sent
+ *  in): id, queued time (UTC), sender and the first line of the text. Pure. */
+export function queueListText(at: string, rows: { id: number; createdAt: number; repo: string; branch: string; instruction: string; origin?: TurnOrigin; sender?: Side }[], me?: Side): string {
+  if (!rows.length) return `Nothing is queued for ${at}.`;
+  const line = (m: (typeof rows)[number]): string => {
+    const when = new Date(m.createdAt).toISOString().slice(0, 16).replace("T", " ");
+    const first = m.instruction.trim().split("\n")[0]!.trim();
+    return `  #${m.id}  ${when} UTC  ${queuedSenderText(queuedSender(m), me)}  ${first.length > 100 ? `${first.slice(0, 99)}…` : first}`;
+  };
+  return [`Queued for ${at}, oldest first (each is sent in turn when the run in flight ends):`, ...rows.map(line)].join("\n");
+}
