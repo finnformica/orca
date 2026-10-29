@@ -139,10 +139,11 @@ describe("decisions (pure)", () => {
     expect(grantRefusal(adminGrant, "handoff", { _: ["create"], to: "x", title: "t" })).toContain("full grant");
     expect(grantRefusal(adminGrant, "post", { link: "elsewhere" })).toContain("only on its own link");
     expect(grantRefusal(adminGrant, "made-up")).toContain("full grant");
-    // admin is a link level and a person level, below full: min(link, person) still holds.
+    // A person below admin: min(link, person) still holds. An admin PERSON gets full on any link
+    // (Finn 2026-10-29: "ALL admins should have the same power"; tests/adminGrant.test.ts).
     expect(effectiveGrant({ level: "admin", repos: ["r"] }, { id: "p", maxLevel: "work" }).level).toBe("work");
-    expect(effectiveGrant({ level: "work", repos: ["r"] }, { id: "p", maxLevel: "admin" }).level).toBe("work");
-    expect(effectiveGrant({ level: "admin", repos: ["r"] }, { id: "p", maxLevel: "admin" }).level).toBe("admin");
+    expect(effectiveGrant({ level: "work", repos: ["r"] }, { id: "p", maxLevel: "admin" }).level).toBe("full");
+    expect(effectiveGrant({ level: "admin", repos: ["r"] }, { id: "p", maxLevel: "admin" }).level).toBe("full");
     // An admin sender reaches a linked workstream like work does.
     const links = new Map([["L1", { integrationId: "d", adapter: "discord", externalId: "C1" }]]);
     expect(planDeliveries({ topic: "ext.discord.message", source: { adapter: "discord", linkId: "L1" }, grant: adminGrant }, [], links, new Map(), { repo: "r", branch: "feat" }))

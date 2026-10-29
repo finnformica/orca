@@ -674,6 +674,10 @@ function PeopleCard({ data, onChange }: { data: Overview; onChange: () => void }
   return (
     <div>
       <SectionTitle aside={<Button variant="ghost" size="sm" onClick={() => setAdding(true)} data-slot="person-add"><Plus />Add person</Button>}>People</SectionTitle>
+      <p data-slot="people-scope" className="text-muted-foreground mb-2 text-xs">
+        Admin = full power on every repo: every verb, as in your own Orca chat, from any channel.
+        Editor, Viewer and Notify keep the link's level and repos.
+      </p>
       <VCard slot="integration-people" bodyClass="divide-y">
         {data.pairings.map((p) => (
           <div key={p.code} data-slot="pairing" className="bg-geist-amber/5 flex flex-col gap-2 px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">

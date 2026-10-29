@@ -89,6 +89,13 @@ describe("the Integrations page", () => {
     expect(apiFake.integrationPosts).toContainEqual({ path: "identities/add", body: { principal: "ana", adapter: "discord", externalId: "D9", name: "ana2" } });
   });
 
+  test("People says admin is full power on every repo, and lower levels keep the link's repos", async () => {
+    apiFake.integrationsData = overview();
+    await open("/integrations");
+    expect(all("people-scope")[0]!.textContent).toContain("Admin = full power on every repo");
+    expect(all("people-scope")[0]!.textContent).toContain("keep the link's level and repos");
+  });
+
   test("a pairing from another platform preselects the person of the same name", async () => {
     apiFake.integrationsData = overview();
     await open("/integrations");

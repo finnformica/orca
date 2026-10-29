@@ -275,7 +275,7 @@ Settings shows each level by a name. The database keeps the value in the first c
 | `notify` | Notify | Nothing inbound. Orca only posts. |
 | `ask` | Viewer | Ask questions. Orca reads the board and past chats. |
 | `work` | Editor | Also start, continue, stop and archive workstreams on the link's repos, and queue a merge with `merge --when-green`. |
-| `admin` | Admin | Every `orca` verb on the link's repos, plus `move`, `sweep` and `repo add`. Not `notes set`, `status --clear-grant`, `preview --push-to-template --confirm`, `handoff create` or settings. |
+| `admin` | Admin | A person at Admin: full power on every repo, as in the owner's own Orca chat, on any link. A link at Admin with a person below it: the person's level. |
 
 Only your own chat in Orca has the `full` grant. Pairing approval gives at most `work`. To make a
 person Admin, set their level in Settings after you approve them.

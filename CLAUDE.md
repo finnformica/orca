@@ -206,7 +206,11 @@ archive, hide, unhide and `merge --when-green` on the link's repos), `admin` (Ad
 plus `move`, `sweep`, `repo add`; named step `20261020-principal-link-admin-level` widened the
 CHECKs), `full` (your own chat only). `status --clear-grant`, `notes set`, `preview
 --push-to-template --confirm` and `handoff create` stay `full` at every level. Pairing approval
-still gives at most `work`. A workstream it spawns or steers
+still gives at most `work`. **The admin rule** (Finn 2026-10-29: "ALL admins should have the same power"): a person whose
+max level is `admin` gets `full` on any link (`effectiveGrant`): the wake is the owner's own chat (every repo
+and verb, shell, `orca secret` too, no scoped mode) and keeps its reply target; `fenceExternal` says so in the
+header. The dispatcher scrubs stored secret values from every channel post. A person below admin keeps the
+link's level and repos; no owner flag. A workstream it spawns or steers
 gets `grantScope` and runs in SCOPED mode (`agent.scopedRules`: `claude -p --permission-mode dontAsk`
 plus allow and deny rules — files in the worktree, git and the toolchain, no secrets, no
 `--no-verify`, no push to the base branch; never `bypassPermissions`, which approves everything).
