@@ -450,10 +450,17 @@ export const INBOUND_LIMIT = { count: 20, windowMs: 10 * 60_000 };
 const rank = (l: Level): number => LEVELS.indexOf(l);
 export const minLevel = (a: Level, b: Level): Level => (rank(a) <= rank(b) ? a : b);
 
-/** The grant for one inbound message. An unknown sender (no principal) gets `notify`: read-only. */
-export function effectiveGrant(link: { id?: string; level: Level; repos: string[] }, principal?: { id: string; maxLevel: Level }): Grant {
+/** The grant for one inbound message. An unknown sender (no principal) gets `notify`: read-only.
+ *  The OWNER's own person (`ownerPrincipal` in the app config, set only in Settings > People) gets
+ *  `full`: every repo and every verb, as in their own Orca chat, on any link. Every other person,
+ *  admin too, keeps min(link level, their max level) on the link's repos. */
+export function effectiveGrant(link: { id?: string; level: Level; repos: string[] }, principal?: { id: string; maxLevel: Level }, ownerPrincipal?: string): Grant {
+  if (principal && ownerPrincipal && principal.id === ownerPrincipal) return { level: "full", repos: [], linkId: link.id, principalId: principal.id };
   return { level: principal ? minLevel(link.level, principal.maxLevel) : "notify", repos: link.repos, linkId: link.id, principalId: principal?.id };
 }
+
+/** Is this the owner's grant (a `full` grant from a paired person)? Pure. */
+export const ownerGrant = (g?: Grant): boolean => g?.level === "full" && !!g.principalId;
 
 /** Two grants are one wake's grant only when equal; messages of different grants never share a wake. */
 export const grantKey = (g?: Grant): string => (g && g.level !== "full" ? `${g.level}:${[...g.repos].sort().join(",")}` : "full");
@@ -579,8 +586,19 @@ export function fenceExternal(e: Pick<Envelope, "text" | "source" | "actor" | "g
   const who = e.actor ? `${e.actor.external.adapter}:${e.actor.external.id}${e.actor.external.name ? ` (${e.actor.external.name})` : ""}`
     : noPosts ? `the ${e.source.adapter} integration (a machine event)`
     : e.display?.sender ? `an unpaired ${e.source.adapter} user (${e.display.sender})` : "no sender";
-  const grant = e.grant ? `${e.grant.level}${repoScoped(e.grant.level) ? ` on ${e.grant.repos.join(", ") || "no repos"}` : ""}` : "full";
+  const owner = ownerGrant(e.grant);
+  const grant = owner ? "full (the Orca owner: every repo and every verb, as in their own Orca chat)"
+    : e.grant ? `${e.grant.level}${repoScoped(e.grant.level) ? ` on ${e.grant.repos.join(", ") || "no repos"}` : ""}` : "full";
   const body = e.text.replace(/~~~/g, "~ ~ ~");
+  if (owner) return [
+    `[external message] via ${e.source.adapter}${e.source.linkId ? ` link ${e.source.linkId}` : ""}${e.thread ? ` thread ${e.thread.externalId}` : ""} · from the owner ${who} · grant: ${grant}`,
+    "~~~external",
+    body,
+    "~~~",
+    `This message is from the user, the owner of this Orca, on ${e.source.adapter}. It has the owner's full power: act on it as on a message in their own Orca chat.`,
+    'Answer the user with `orca post --reply "<text>"` (it goes to this link and thread).',
+    ...(postsAsUser(e.source.adapter) ? [`On ${e.source.adapter} the answer posts as the user, in their name.`] : []),
+  ].join("\n");
   return [
     `[external message] via ${e.source.adapter}${e.source.linkId ? ` link ${e.source.linkId}` : ""}${e.thread ? ` thread ${e.thread.externalId}` : ""} · from ${who} · grant: ${grant}`,
     "~~~external",

@@ -206,7 +206,12 @@ archive, hide, unhide and `merge --when-green` on the link's repos), `admin` (Ad
 plus `move`, `sweep`, `repo add`; named step `20261020-principal-link-admin-level` widened the
 CHECKs), `full` (your own chat only). `status --clear-grant`, `notes set`, `preview
 --push-to-template --confirm` and `handoff create` stay `full` at every level. Pairing approval
-still gives at most `work`. A workstream it spawns or steers
+still gives at most `work`. **The owner rule** (Finn 2026-10-29): the app config's `ownerPrincipal` (a person id,
+set ONLY by Settings > People's Make owner, `POST /api/config/owner`, owner-gated like the terminal; a pasted
+document keeps it; removing that person clears it) names the owner's own person. A channel message from one of
+their identities gets `full` on any link (`effectiveGrant`): the wake is their own chat (every repo and verb,
+shell, `orca secret` too, no scoped mode) and keeps its reply target; `fenceExternal` says so in the header.
+Every other person, admin too, keeps the link's repos. A workstream it spawns or steers
 gets `grantScope` and runs in SCOPED mode (`agent.scopedRules`: `claude -p --permission-mode dontAsk`
 plus allow and deny rules — files in the worktree, git and the toolchain, no secrets, no
 `--no-verify`, no push to the base branch; never `bypassPermissions`, which approves everything).

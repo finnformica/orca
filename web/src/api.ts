@@ -134,6 +134,8 @@ export const api = {
   setInstanceRate: (instance: string, hourlyUsd: number | null): Promise<{ ok: true }> => post("/api/config/instance-rate", { instance, hourlyUsd }),
   setInstanceTerminal: (instance: string, on: boolean): Promise<{ ok: true }> => post("/api/config/terminal", { instance, on }),
   setShowBoard: (showBoard: boolean): Promise<{ ok: true }> => post("/api/config/ui", { showBoard }),
+  /** Settings > People: the owner's person (null clears). Their channel messages get the full grant. */
+  setOwnerPrincipal: (principal: string | null): Promise<{ ok: true }> => post("/api/config/owner", { principal }),
   setServerIdentity: (name: string, color: string): Promise<{ ok: true }> => post("/api/config/identity", { name, color }),
   usage: (): Promise<Usage | null> => get("/api/usage").then(res),
   /** The unified inbox (shared/inbox.ts): one window of rows, newest first, with the filter facets. */

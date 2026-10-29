@@ -15,6 +15,7 @@ import * as router from "./router";
 import * as store from "./store";
 import * as dispatcher from "./dispatcher";
 import * as agents from "../agents";
+import { loadConfig, setOwnerPrincipal } from "../config";
 import * as secretRefs from "./secretRefs";
 import type { Connection } from "./adapter";
 import { featureState, SERVER_KEY_KINDS, serverKeyRefusal } from "../../shared/serverKeys";
@@ -265,6 +266,8 @@ export async function removePerson(id: string): Promise<void> {
       await tx`DELETE FROM principal WHERE user_id = ${user()} AND id = ${id}`;
     });
   });
+  // The owner's person is gone: nobody is the owner, so a later person with the same id is not.
+  if ((await loadConfig()).ownerPrincipal === id) await setOwnerPrincipal(null);
 }
 
 /** Add identity: bind a platform id to a person by hand, as an approved pairing does. */

@@ -674,6 +674,10 @@ function PeopleCard({ data, onChange }: { data: Overview; onChange: () => void }
   return (
     <div>
       <SectionTitle aside={<Button variant="ghost" size="sm" onClick={() => setAdding(true)} data-slot="person-add"><Plus />Add person</Button>}>People</SectionTitle>
+      <p data-slot="people-scope" className="text-muted-foreground mb-2 text-xs">
+        A person acts in a channel at the lower of the link's level and their own, on the link's repos only. Admins too.
+        Only the owner acts with full power from a channel: every repo and every verb, as in this Orca.
+      </p>
       <VCard slot="integration-people" bodyClass="divide-y">
         {data.pairings.map((p) => (
           <div key={p.code} data-slot="pairing" className="bg-geist-amber/5 flex flex-col gap-2 px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
@@ -691,7 +695,7 @@ function PeopleCard({ data, onChange }: { data: Overview; onChange: () => void }
           </div>
         ))}
         {data.people.length === 0 && data.pairings.length === 0 && <Empty>No people yet. Add one here, or use Add to person on a message in the Inbox or the chat.</Empty>}
-        {data.people.map((p) => <PersonRowView key={p.id} person={p} kinds={data.kinds} onChange={onChange} />)}
+        {data.people.map((p) => <PersonRowView key={p.id} person={p} kinds={data.kinds} owner={data.ownerPrincipal === p.id} onChange={onChange} />)}
       </VCard>
       {approve && <ApproveDialog pairing={approve} people={data.people} onClose={() => setApprove(null)} onSaved={onChange} />}
       {adding && <PersonDialog people={data.people} onClose={() => setAdding(false)} onSaved={onChange} />}
@@ -699,13 +703,23 @@ function PeopleCard({ data, onChange }: { data: Overview; onChange: () => void }
   );
 }
 
-function PersonRowView({ person: p, kinds, onChange }: { person: PersonRow; kinds: AdapterMeta[]; onChange: () => void }) {
+/** Set or clear the owner's person (`/api/config/owner`, not an integrations route: it is app config). */
+async function setOwner(label: string, principal: string | null, done: () => void): Promise<void> {
+  try { await api.setOwnerPrincipal(principal); done(); }
+  catch (e) {
+    const error = e instanceof Error ? e.message : String(e);
+    notifyLocal({ kind: "action_failed", repo: "", title: "Integrations", label: `${label} failed`, body: error, copy: `Action: ${label}\nError:\n${error}`, ask: `Integrations: ${label} failed: ${error}. Please investigate and fix.` });
+  }
+}
+
+function PersonRowView({ person: p, kinds, owner, onChange }: { person: PersonRow; kinds: AdapterMeta[]; owner: boolean; onChange: () => void }) {
   const [ask, confirmNode] = useConfirm();
+  const [askOwner, ownerConfirmNode] = useConfirm(owner ? "Clear owner" : "Make owner");
   const [adding, setAdding] = useState(false);
   return (
     <div data-slot="person" className="flex flex-col gap-2 px-4 py-3 text-sm sm:flex-row sm:items-center sm:gap-4">
       <div className="min-w-0 flex-1">
-        <div className="font-medium">{p.name}</div>
+        <div className="flex items-center gap-2 font-medium">{p.name}{owner && <Pill tone="blue" slot="person-owner">Owner</Pill>}</div>
         <div className="mt-1 flex flex-wrap items-center gap-1.5">
           {p.identities.length === 0 && <span className="text-muted-foreground text-xs">no identities</span>}
           {p.identities.map((i) => (
@@ -719,6 +733,12 @@ function PersonRowView({ person: p, kinds, onChange }: { person: PersonRow; kind
         </div>
       </div>
       <div className="flex items-center gap-2">
+        <Button variant="ghost" size="sm" data-slot="person-owner-toggle" className="max-sm:h-10"
+          onClick={() => owner
+            ? askOwner(`Clear ${p.name} as the owner?`, "Their channel messages keep the link's level and repos again.", () => void setOwner("Clear owner", null, onChange))
+            : askOwner(`Make ${p.name} the owner?`, "Messages from their identities in every channel act with your full power: every repo and every verb, with a shell. Make only yourself the owner.", () => void setOwner(`Make ${p.name} the owner`, p.id, onChange))}>
+          {owner ? "Clear owner" : "Make owner"}
+        </Button>
         <Select value={p.maxLevel} onValueChange={(v) => void act(`Set ${p.name}'s level`, "people/save", { ...p, maxLevel: v }, onChange)}>
           <SelectTrigger aria-label={`${p.name} max level`} size="sm" className="w-28 max-sm:h-10 max-sm:flex-1"><SelectValue /></SelectTrigger>
           <SelectContent>{LINK_LEVELS.map((l) => <SelectItem key={l.value} value={l.value}>{l.label}</SelectItem>)}</SelectContent>
@@ -728,6 +748,7 @@ function PersonRowView({ person: p, kinds, onChange }: { person: PersonRow; kind
       </div>
       {adding && <IdentityDialog person={p} kinds={kinds} onClose={() => setAdding(false)} onSaved={onChange} />}
       {confirmNode}
+      {ownerConfirmNode}
     </div>
   );
 }

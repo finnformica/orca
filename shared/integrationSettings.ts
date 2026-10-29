@@ -73,6 +73,9 @@ export type IntegrationsOverview = {
   dead: DeadRow[];
   /** The named agents (server/agents.ts), for the Agent Select. An older server sends none. */
   agents?: AgentOption[];
+  /** The owner's person (the app config's `ownerPrincipal`): their channel messages get the full
+   *  grant. Absent = nobody. */
+  ownerPrincipal?: string;
 };
 
 /** The page's names for the instances. The server identity (`serverIdentity.name`, e.g. "Flow")

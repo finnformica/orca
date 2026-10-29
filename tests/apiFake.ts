@@ -341,6 +341,7 @@ mock.module("@/api", () => ({
     setServerIdentity: async (name: string, color: string) => { apiFake.setServerIdentityCalls.push({ name, color }); if (apiFake.setServerIdentityError) throw new Error(apiFake.setServerIdentityError); return { ok: true as const }; },
     setInstanceTerminal: async (instance: string, on: boolean) => { apiFake.setInstanceTerminalCalls.push({ instance, on }); return { ok: true as const }; },
     setShowBoard: async (showBoard: boolean) => { apiFake.setShowBoardCalls.push(showBoard); return { ok: true as const }; },
+    setOwnerPrincipal: async (principal: string | null) => { apiFake.calls.push(`setOwner:${principal}`); return { ok: true as const }; },
     setInstanceRate: async (instance: string, hourlyUsd: number | null) => {
       apiFake.setInstanceRateCalls.push({ instance, hourlyUsd });
       if (hourlyUsd === null) delete apiFake.instanceRates[instance]; else apiFake.instanceRates[instance] = hourlyUsd;

@@ -89,6 +89,23 @@ describe("the Integrations page", () => {
     expect(apiFake.integrationPosts).toContainEqual({ path: "identities/add", body: { principal: "ana", adapter: "discord", externalId: "D9", name: "ana2" } });
   });
 
+  test("People says the link's repos bind everyone but the owner; Make owner asks first, the owner shows a pill", async () => {
+    apiFake.integrationsData = overview();
+    await open("/integrations");
+    expect(all("people-scope")[0]!.textContent).toContain("on the link's repos only. Admins too.");
+    expect(all("person-owner")).toHaveLength(0);
+    await click(all("person-owner-toggle")[0]!);
+    expect(document.body.textContent).toContain("Make Ana the owner?");
+    await click([...document.querySelectorAll<HTMLElement>("[role=alertdialog] button")].find((b) => b.textContent === "Make owner")!);
+    expect(apiFake.calls).toContain("setOwner:ana");
+    act(() => root?.unmount());
+    container?.remove();
+    apiFake.integrationsData = { ...overview(), ownerPrincipal: "ana" };
+    await open("/integrations");
+    expect(all("person-owner")[0]!.textContent).toBe("Owner");
+    expect(all("person-owner-toggle")[0]!.textContent).toBe("Clear owner");
+  });
+
   test("a pairing from another platform preselects the person of the same name", async () => {
     apiFake.integrationsData = overview();
     await open("/integrations");
