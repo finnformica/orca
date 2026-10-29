@@ -974,7 +974,10 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   project-scope MCP servers, and Claude Code's own auto-memory accrues under that cwd; user-level
   `~/.claude` config loads as in any session.
 - **`orca`** (`bin/orca` → `POST /api/orchestrator/tool` → `orchestrator.tool`): `board`, `spawn`,
-  `send`, `address`, `archive`, `sweep [--confirm]`, `preview` (`--status`; and `--push-to-template [--confirm]`,
+  `send` (a queued send prints its id; `--replace` cancels the caller's newest undispatched message
+  on that workstream first), `queue` (`--repo r --branch b` lists the undispatched messages;
+  `cancel <id>` deletes one the caller queued, never a dispatched one or another sender's — the
+  sender rides `reply_to.sender`, else `queuedSender` reads it off the row), `address`, `archive`, `sweep [--confirm]`, `preview` (`--status`; and `--push-to-template [--confirm]`,
   `server/pushTemplate.ts`, which makes a preview's whole database the repo's `PREVIEW_TEMPLATE_DB`
   — old one kept as `<template>_bak_<ts>` — and writes its integration env vars back to the main
   checkout's copied `.env`; dry run without `--confirm`, values masked — README), `merge`

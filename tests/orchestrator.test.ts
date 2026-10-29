@@ -547,7 +547,7 @@ test("O7: send continues a workstream on its native session, queues behind a liv
 
   await writeFile(hold, "");
   expect(await orchestrator.tool(cfg(), "send", { repo: "r", branch, _: ["Also", "handle", "the", "empty", "case"] })).toContain(`Sent to r/${branch}`);
-  expect(await orchestrator.tool(cfg(), "send", { repo: "r", branch, _: ["And add a test"] })).toContain("Queued behind the run in flight");
+  expect(await orchestrator.tool(cfg(), "send", { repo: "r", branch, _: ["And add a test"] })).toMatch(/^Queued as message #\d+ behind the run in flight/);
   expect((await db.queuedMessages("r", branch)).map((m) => m.instruction)).toEqual(["And add a test"]);
   expect((await db.enrichment("r"))[branch]!.orchestrated).toBe(true);
   await rm(hold);
@@ -972,7 +972,7 @@ test("O19: archive stops a running worker first and drops anything queued for it
   await writeFile(hold, ""); // the next run blocks until released
   expect(await orchestrator.tool(cfg(), "send", { repo: "r", branch, _: ["keep", "going"] })).toContain(`Sent to r/${branch}`);
   expect(agent.isRunning(worktreePath)).toBe(true);
-  expect(await orchestrator.tool(cfg(), "send", { repo: "r", branch, _: ["and", "then", "this"] })).toContain("Queued behind the run in flight");
+  expect(await orchestrator.tool(cfg(), "send", { repo: "r", branch, _: ["and", "then", "this"] })).toMatch(/^Queued as message #\d+ behind the run in flight/);
   expect((await db.queuedMessages("r", branch)).map((m) => m.instruction)).toEqual(["and then this"]);
 
   expect(await orchestrator.tool(cfg(), "archive", { repo: "r", branch })).toContain(`Archived r/${branch}`);

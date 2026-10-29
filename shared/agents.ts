@@ -43,7 +43,7 @@ export type AgentDef = {
 export const AGENT_VERBS = [
   "address", "agent", "archive", "ask", "ask-form", "ask-user", "board", "channels", "chats", "cloudflare",
   "gmail", "granola", "handoff", "hide", "machine", "memory", "merge", "move", "notes", "post", "pr-shots", "preview",
-  "read", "repo", "secret", "send", "slack", "spawn", "status", "stop", "sweep", "thread", "unhide", "wake",
+  "queue", "read", "repo", "secret", "send", "slack", "spawn", "status", "stop", "sweep", "thread", "unhide", "wake",
 ] as const;
 
 /** The ONLY definition in code, and only for when the database is down (or has no agent row): the
