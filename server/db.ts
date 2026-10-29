@@ -2294,13 +2294,16 @@ export type QueuedMessage = {
   /** A workstream message the orchestrator sent: its wake's origin, for the turn it becomes. It rides
    *  in the `reply_to` JSONB under `origin` (no column of its own; a workstream's queue has no replyTo). */
   origin?: TurnOrigin;
+  /** Who queued it, when the caller says (`orca send` names its agent). Also in the `reply_to` JSONB,
+   *  under `sender`. Absent: read off the row by `queuedSender` (shared/rooms.ts). */
+  sender?: Side;
 };
 
-/** The `reply_to` JSONB back into the message's `replyTo` and the `origin` packed beside it. */
-const replyAndOrigin = (v: unknown): { replyTo?: ReplyTo; origin?: TurnOrigin } => {
+/** The `reply_to` JSONB back into the message's `replyTo` and the `origin` and `sender` packed beside it. */
+const replyAndOrigin = (v: unknown): { replyTo?: ReplyTo; origin?: TurnOrigin; sender?: Side } => {
   if (!v || typeof v !== "object") return {};
-  const { origin, ...reply } = v as ReplyTo & { origin?: TurnOrigin };
-  return { ...(Object.keys(reply).length ? { replyTo: reply as ReplyTo } : {}), ...(origin ? { origin } : {}) };
+  const { origin, sender, ...reply } = v as ReplyTo & { origin?: TurnOrigin; sender?: Side };
+  return { ...(Object.keys(reply).length ? { replyTo: reply as ReplyTo } : {}), ...(origin ? { origin } : {}), ...(sender ? { sender } : {}) };
 };
 const grantScope = (g?: Grant) => (g && g.level !== "full" ? { ...g, key: grantKey(g) } : null);
 const grantOf = (v: unknown): Grant | undefined => {
@@ -2315,7 +2318,7 @@ export async function queueMessage(input: Omit<QueuedMessage, "id" | "createdAt"
     const rows = await sql`
       INSERT INTO queued_message (user_id, repo, branch, worktree_path, instruction, attachments, provider, created_at, grant_scope, reply_to)
       VALUES (${currentUser()}, ${input.repo}, ${input.branch}, ${input.worktreePath}, ${input.instruction},
-              ${input.attachments}, ${input.provider ?? null}, ${Date.now()}, ${grantScope(input.grant)}, ${input.replyTo || input.origin ? { ...input.replyTo, ...(input.origin ? { origin: input.origin } : {}) } : null})
+              ${input.attachments}, ${input.provider ?? null}, ${Date.now()}, ${grantScope(input.grant)}, ${input.replyTo || input.origin || input.sender ? { ...input.replyTo, ...(input.origin ? { origin: input.origin } : {}), ...(input.sender ? { sender: input.sender } : {}) } : null})
       RETURNING id, created_at`;
     return { ...input, id: Number(rows[0].id), createdAt: Number(rows[0].created_at) };
   });
@@ -2398,10 +2401,32 @@ export async function releaseQueuedMessage(id: number): Promise<void> {
 }
 
 /** Drop a queued message before it is sent (the user changed their mind). Undispatched only: a
- *  dispatched row may be referenced by a turn's origin and must stay (see "queued messages" above). */
-export async function cancelQueuedMessage(id: number): Promise<void> {
+ *  dispatched row may be referenced by a turn's origin and must stay (see "queued messages" above).
+ *  True when it deleted the row; false when there was none or a dispatch claimed it first. */
+export async function cancelQueuedMessage(id: number): Promise<boolean> {
   return withRetry(async (sql) => {
-    await sql`DELETE FROM queued_message WHERE id = ${id} AND user_id = ${currentUser()} AND dispatched_at IS NULL`;
+    const rows = await sql`DELETE FROM queued_message WHERE id = ${id} AND user_id = ${currentUser()} AND dispatched_at IS NULL RETURNING id`;
+    return rows.length > 0;
+  });
+}
+
+/** One queued message by id, dispatched or not (`dispatchedAt`), for `orca queue cancel` to say why
+ *  it refuses. Undefined when there is no such row. */
+export async function queuedMessageById(id: number): Promise<(QueuedMessage & { dispatchedAt?: number }) | undefined> {
+  if (!Number.isSafeInteger(id) || id <= 0) return undefined;
+  return withRetry(async (sql) => {
+    const rows = await sql`
+      SELECT id, repo, branch, worktree_path, instruction, attachments, provider, created_at, dispatched_at, grant_scope, reply_to
+      FROM queued_message WHERE id = ${id} AND user_id = ${currentUser()}`;
+    const r = rows[0] as Record<string, unknown> | undefined;
+    return r && {
+      id: Number(r.id), repo: String(r.repo), branch: String(r.branch), worktreePath: String(r.worktree_path),
+      instruction: String(r.instruction), attachments: (r.attachments as string[]) ?? [],
+      provider: (r.provider as string) ?? undefined, createdAt: Number(r.created_at),
+      ...(r.dispatched_at != null ? { dispatchedAt: Number(r.dispatched_at) } : {}),
+      ...(grantOf(r.grant_scope) ? { grant: grantOf(r.grant_scope) } : {}),
+      ...replyAndOrigin(r.reply_to),
+    };
   });
 }
 

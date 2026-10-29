@@ -73,6 +73,7 @@ import * as handoff from "./handoff";
 import * as forms from "./forms";
 import * as secrets from "./secrets";
 import { serverFeatures } from "../shared/serverKeys";
+import type { Side } from "../shared/rooms";
 
 /** Resume the implementation agent to write a template-exact PR body from its full context and the
  *  final git state. A self-contained fresh call is the fallback when the native session is missing
@@ -1136,7 +1137,8 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   if (req.method === "POST" && p === "/api/repos/add") {
     // `orca repo add --on <this instance>`: clone here, append to the shared config.
-    return json(await repos.add(cfg, String(body.nameWithOwner ?? ""), { name: typeof body.name === "string" ? body.name : undefined }));
+    const providers = Array.isArray(body.providers) ? body.providers.filter(isAgentProvider) : undefined;
+    return json(await repos.add(cfg, String(body.nameWithOwner ?? ""), { name: typeof body.name === "string" ? body.name : undefined, providers }));
   }
   if (req.method === "POST" && p === "/api/orchestrator/tool") {
     // What `bin/orca` calls. A refusal is a 400 with a message written for the model to act on.
@@ -1388,7 +1390,9 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (typeof body.model === "string") await db.patchEnrichment(repo.name, String(body.branch), { preferredModel: body.model, preferredProvider: providerOfModel(body.model) });
     // The orchestrator's own GitHub-free lookup (server/orchestrator.ts's `send`), carried across
     // the instance hop so a cross-instance send still gets the PR-sync instruction.
-    const r = await verbs.followUp(cfg, repo, String(body.branch), { instruction: String(body.instruction ?? ""), origin: body.origin, prNumber: typeof body.prNumber === "number" ? body.prNumber : undefined });
+    // `sender`: the agent whose `orca send` this is, recorded on a queued row (`orca send --replace`).
+    const sender = body.sender && typeof body.sender === "object" && typeof body.sender.kind === "string" && typeof body.sender.id === "string" ? { kind: body.sender.kind, id: body.sender.id } as Side : undefined;
+    const r = await verbs.followUp(cfg, repo, String(body.branch), { instruction: String(body.instruction ?? ""), origin: body.origin, prNumber: typeof body.prNumber === "number" ? body.prNumber : undefined, ...(sender ? { sender } : {}) });
     await db.patchEnrichment(repo.name, String(body.branch), { orchestrated: true });
     return json({ ...r, instance: db.instanceName() });
   }

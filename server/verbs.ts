@@ -155,7 +155,7 @@ export async function createWorkstream(
 ): Promise<{ branch: string; worktreePath: string; title: string; runId: string }> {
   const model = input.model ?? modelFor(cfg, repo);
   const provider = providerOfModel(model) ?? "claude";
-  if (!providerAllowed(repo, provider)) throw new Error(`the ${provider} agent is not enabled for ${repo.name}`);
+  if (!providerAllowed(repo, provider)) throw new Error(`the ${provider} agent is not enabled for ${repo.name} — enable an agent for ${repo.name} in Settings > Repos`);
   const title = input.title?.trim() || titleFromPrompt(input.prompt);
   const created = await newWorktree(repo, title);
   // The path as `git worktree list` reports it — the key every other caller tracks this run under.
@@ -176,7 +176,7 @@ export async function createWorkstream(
 export async function followUp(
   cfg: OrcaConfig, repo: RepoConfig, branch: string,
   input: { instruction: string; prompt?: string; action?: string; evidenceChars?: number; origin?: TurnOrigin; sender?: Side; prNumber?: number },
-): Promise<{ status: "running" | "queued"; worktreePath: string }> {
+): Promise<{ status: "running" | "queued"; worktreePath: string; queuedId?: number }> {
   const worktreePath = await ensureWorktree(repo, branch);
   const e = (await db.enrichment(repo.name))[branch] ?? {};
   const provider = providerFor(repo, e);
@@ -184,9 +184,9 @@ export async function followUp(
   // queues behind them and the queue drains in order, instead of jumping ahead and leaving them.
   const behind = !agent.isRunning(worktreePath) && (await db.queuedMessages(repo.name, branch).catch(() => [])).length > 0;
   if (agent.isRunning(worktreePath) || behind) {
-    await db.queueMessage({ repo: repo.name, branch, worktreePath, instruction: input.instruction, attachments: [], provider, ...(input.origin ? { origin: input.origin } : {}) });
+    const queued = await db.queueMessage({ repo: repo.name, branch, worktreePath, instruction: input.instruction, attachments: [], provider, ...(input.origin ? { origin: input.origin } : {}), ...(input.sender ? { sender: input.sender } : {}) });
     if (behind) await agent.drainQueue(worktreePath, repo.name, branch);
-    return { status: "queued", worktreePath };
+    return { status: "queued", worktreePath, queuedId: queued.id };
   }
   const next = continuation({
     provider, from: isAgentProvider(e.agentProvider) ? e.agentProvider : undefined,
@@ -229,6 +229,7 @@ export async function launchQueued(cfg: OrcaConfig, repo: RepoConfig, message: d
   const receipt = await agent.runAgent(message.worktreePath, withAttachments(followUpPrompt(message.instruction, { mergeWhenGreen: Boolean(e.mergeWhenGreen) }), message.attachments), {
     ...launchOptions(cfg, repo, provider, typeof pinned === "string" ? pinned : undefined, e), ...next,
     branch: message.branch, action: "followup", instruction: message.instruction, origin: message.origin,
+    ...(message.sender ? { sender: message.sender } : {}),
   });
   await db.patchEnrichment(repo.name, message.branch, { agentProvider: provider, sessionId: receipt.sessionId });
 }

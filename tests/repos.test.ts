@@ -6,20 +6,31 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as db from "../server/db";
+import * as agent from "../server/agent";
+import * as verbs from "../server/verbs";
 import { add, list } from "../server/repos";
 import type { OrcaConfig } from "../server/config";
 import { installFakeGh, makeScratchRepo, restorePath } from "./helpers";
 import { freshSchema, type TestDb } from "./pg";
 
-let root: string, scratch: string;
+let root: string, scratch: string, state: string;
 let pg: TestDb;
 const ENV_KEYS = [
   "ORCA_DEV_ROOT", "ORCA_GH_ACCOUNTS", "ORCA_GH_CLONE_SRC", "ORCA_GH_REPO_FIXTURE", "ORCA_GH_VIEW_DENY",
   "ORCA_GH_REPOLIST_FIXTURE", "ORCA_GH_ORGS_FIXTURE", "ORCA_GH_ORGREPOLIST_FIXTURE", "ORCA_DATABASE_URL",
+  "ORCA_STATE_DIR",
 ] as const;
 let prev: Record<string, string | undefined> = {};
 
 const cfg = (): OrcaConfig => ({ repos: [], portRange: [30000, 40000], staleHours: 24 });
+
+/** A fake `claude` ahead of PATH, answering with a plain successful one-shot result. */
+async function fakeClaude(): Promise<void> {
+  const shim = await mkdtemp(join(tmpdir(), "orca-repos-claude-"));
+  await writeFile(join(shim, "claude"), `#!/bin/sh\nprintf '%s' '{"type":"result","subtype":"success","result":"done","is_error":false}'\n`);
+  await chmod(join(shim, "claude"), 0o755);
+  process.env.PATH = `${shim}:${process.env.PATH}`;
+}
 
 async function fixture(prefix: string, value: unknown): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), `orca-${prefix}-`));
@@ -54,6 +65,34 @@ test("account choice: the owner's own signed-in login is tried first and used wh
   const repo = await add(cfg(), "owner-login/widgets");
   expect(repo.githubUser).toBe("owner-login"); // not the active account
   expect(existsSync(join(root, "widgets", ".git"))).toBe(true);
+});
+
+test("a repo added this way can be spawned on: it gets the claude provider by default", async () => {
+  process.env.ORCA_GH_ACCOUNTS = "active-login";
+  await setViewFixture({ nameWithOwner: "active-login/widgets", defaultBranchRef: { name: "main" } });
+  const repo = await add(cfg(), "active-login/widgets");
+  expect(repo.providers).toEqual(["claude"]); // the default every other repo has, not none
+
+  await fakeClaude();
+  state = await mkdtemp(join(tmpdir(), "orca-repos-state-"));
+  process.env.ORCA_STATE_DIR = state;
+  try {
+    const { branch, worktreePath } = await verbs.createWorkstream(cfg(), repo, { prompt: "add a feature" });
+    for (let i = 0; i < 400 && agent.isRunning(worktreePath); i++) await new Promise((r) => setTimeout(r, 25));
+    const turns = await db.turns(repo.name, branch);
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.response).toBe("done"); // never refused as "the claude agent is not enabled"
+  } finally {
+    agent.onRunFinished(undefined);
+    await agent.flushHistory();
+  }
+});
+
+test("an explicit providers choice is kept instead of the claude default", async () => {
+  process.env.ORCA_GH_ACCOUNTS = "active-login";
+  await setViewFixture({ nameWithOwner: "active-login/widgets", defaultBranchRef: { name: "main" } });
+  const repo = await add(cfg(), "active-login/widgets", { providers: ["codex"] });
+  expect(repo.providers).toEqual(["codex"]);
 });
 
 test("account choice: an org repo the active login can't see is picked up from the second login", async () => {

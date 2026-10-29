@@ -61,7 +61,8 @@ import {
   SET_STATES, agentListText, defaultAgentName, agentMessage, agentMessageFrom, agentState, agentVerbRefusal, authoredPost, clearsOnUserMessage, cleanReportsTo,
   type AgentDef, type AgentStateName,
 } from "../shared/agents";
-import { attachmentIdOf, attachmentRefusal, catchAllPostRefusal, deleteRefusal, grantKey, grantRefusal, outboundRefusal, postsAsUser, repoScoped, type Grant, type ReplyTo } from "../shared/integrations";
+import { agentSide, queueListText, queuedSender, queuedSenderText, sameSide, type Side } from "../shared/rooms";
+import { attachmentIdOf, attachmentRefusal, catchAllPostRefusal, deleteRefusal, grantAllowsRepo, grantKey, grantRefusal, outboundRefusal, postsAsUser, repoScoped, type Grant, type ReplyTo } from "../shared/integrations";
 import * as integrationStore from "./integrations/store";
 import * as integrationRouter from "./integrations/router";
 import * as integrationRegistry from "./integrations/registry";
@@ -810,6 +811,14 @@ async function wakeOrigin(b: Blob, agent: string): Promise<TurnOrigin | undefine
   return turnOrigin({ runId: h.runId, messages: h.messages, ids: h.ids ?? [], agent });
 }
 
+/** `orca send --replace`: delete `sender`'s newest undispatched message on the branch, and return
+ *  it. Undefined when it has none, or a dispatch claimed it first. Another sender's message (the
+ *  user's, another agent's, Orca's) is never touched. */
+async function cancelNewestFrom(repo: string, branch: string, sender: Side): Promise<db.QueuedMessage | undefined> {
+  const mine = (await db.queuedMessages(repo, branch)).filter((m) => sameSide(queuedSender(m), sender)).at(-1);
+  return mine && (await db.cancelQueuedMessage(mine.id)) ? mine : undefined;
+}
+
 /** Run one `orca <verb>` and return what it prints. Throws with a message the model can act on. */
 export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): Promise<string> {
   // Who calls (bin/orca sends the run's ORCA_AGENT; none = the Chief of Staff): its own wake's blob
@@ -996,8 +1005,10 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
     case "send": {
       const repo = repoNamed(cfg, args.repo);
       const branch = required(args, "branch");
-      const typed = words.join(" ").trim();
-      if (!typed) throw new Error('the message is required: orca send --repo <repo> --branch <branch> "<message>"');
+      // `--replace "<text>"`: bin/orca reads the text as the flag's value, so it is the message's start.
+      const replace = "replace" in args;
+      const typed = [typeof args.replace === "string" ? args.replace : "", ...words].join(" ").trim();
+      if (!typed) throw new Error('the message is required: orca send --repo <repo> --branch <branch> [--replace] "<message>"');
       const text = withAttachments(typed, await attachArgs(args));
       // A new pin is read by followUp, so the move happens on this message (the ladder decides
       // resume vs handoff from the pinned provider as it does for the card's own picker).
@@ -1013,12 +1024,51 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       const prNumber = verbs.repoHere(repo)
         ? (await gh.listPrs(repo.repoPath).catch(() => [])).find((p) => p.branch === branch)?.number
         : undefined;
-      const home = await verbs.placement(repo, { branch });
-      const { status } = home !== db.instanceName()
-        ? (await viaInstance(cfg, home, "/api/workstreams/followup", { repo: repo.name, branch, instruction: text, origin: await wakeOrigin(b, ag.name), prNumber }) as { status: string })
-        : await verbs.followUp(cfg, repo, branch, { instruction: text, origin: await wakeOrigin(b, ag.name), prNumber });
+      // --replace: cancel this agent's newest undispatched message first (the queue is in the shared
+      // database, so any instance cancels it), then send as usual. Only undispatched rows: a message a
+      // run already took stays, and nothing running is touched.
+      const me = agentSide(ag.name);
+      const replaced = replace ? await cancelNewestFrom(repo.name, branch, me) : undefined;
+      let status: string, queuedId: number | undefined;
+      try {
+        const home = await verbs.placement(repo, { branch });
+        ({ status, queuedId } = home !== db.instanceName()
+          ? (await viaInstance(cfg, home, "/api/workstreams/followup", { repo: repo.name, branch, instruction: text, origin: await wakeOrigin(b, ag.name), prNumber, sender: me }) as { status: string; queuedId?: number })
+          : await verbs.followUp(cfg, repo, branch, { instruction: text, origin: await wakeOrigin(b, ag.name), prNumber, sender: me }));
+      } catch (e) {
+        // The new text did not go: put the cancelled one back, so a failed send loses nothing.
+        if (replaced) { const { id: _id, createdAt: _at, ...again } = replaced; await db.queueMessage(again); }
+        throw e;
+      }
       await db.patchEnrichment(repo.name, branch, { orchestrated: true }); // now yours to hear back from
-      return status === "queued" ? "Queued behind the run in flight; it is sent when that finishes." : `Sent to ${repo.name}/${branch}. End your turn; you are woken when it finishes.`;
+      const sent = status === "queued"
+        ? `Queued as message #${queuedId ?? "?"} behind the run in flight; it is sent when that finishes. To correct it before then: orca send --replace.`
+        : `Sent to ${repo.name}/${branch}. End your turn; you are woken when it finishes.`;
+      if (!replace) return sent;
+      if (replaced) return `Cancelled your queued message #${replaced.id}. ${sent}`;
+      return `Nothing of yours was still queued on ${repo.name}/${branch} (it was sent already, or there was none), so this went as a normal message. ${sent}`;
+    }
+    case "queue": {
+      // `orca queue --repo r --branch b`: the workstream's undispatched messages. `orca queue cancel
+      // <id>`: delete one this agent queued, while it is still undispatched (db.cancelQueuedMessage).
+      if (words[0] === "cancel") {
+        const id = Number(words[1]);
+        if (!words[1] || !Number.isSafeInteger(id) || id <= 0) throw new Error("usage: orca queue cancel <id> (the id from orca queue)");
+        const m = await db.queuedMessageById(id);
+        if (!m) throw new Error(`No queued message #${id}.`);
+        if (wakeGrant && !grantAllowsRepo(wakeGrant, m.repo, "work")) throw new Error(`refused: message #${id} is on ${m.repo}, outside this wake's grant`);
+        const at = `${m.repo}/${m.branch}`;
+        if (m.dispatchedAt !== undefined) throw new Error(`refused: message #${id} on ${at} was already dispatched (${new Date(m.dispatchedAt).toISOString()}); a run took it, so it can't be cancelled. Send a correction with orca send.`);
+        const me = agentSide(ag.name);
+        const from = queuedSender(m);
+        if (!sameSide(from, me)) throw new Error(`refused: message #${id} on ${at} was queued by ${queuedSenderText(from)}; you cancel only your own`);
+        if (!(await db.cancelQueuedMessage(id))) throw new Error(`refused: message #${id} on ${at} was dispatched just now; a run took it, so it can't be cancelled. Send a correction with orca send.`);
+        return `Cancelled queued message #${id} on ${at}. Nothing else changed.`;
+      }
+      if (words[0]) throw new Error("usage: orca queue --repo <repo> --branch <branch> | orca queue cancel <id>");
+      const repo = repoNamed(cfg, args.repo);
+      const branch = required(args, "branch");
+      return queueListText(`${repo.name}/${branch}`, await db.queuedMessages(repo.name, branch), agentSide(ag.name));
     }
     case "address": {
       const repo = repoNamed(cfg, args.repo);
@@ -1238,7 +1288,7 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
     }
     case "ask": return askVerb(cfg, ag, b, words, args);
     case "agent": return agentVerb(cfg, ag, words, args);
-    default: throw new Error(`unknown command "${verb}". Commands: board, machine, spawn, send, address, archive, stop [--drop-queue], sweep [--confirm], merge --when-green, preview [--status | --push-to-template [--confirm]], status, chats, read, notes, memory, wake, ask, agent, handoff, cloudflare, slack, gmail, granola`);
+    default: throw new Error(`unknown command "${verb}". Commands: board, machine, spawn, send [--replace], queue [cancel <id>], address, archive, stop [--drop-queue], sweep [--confirm], merge --when-green, preview [--status | --push-to-template [--confirm]], status, chats, read, notes, memory, wake, ask, agent, handoff, cloudflare, slack, gmail, granola`);
   }
 }
 
