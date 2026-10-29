@@ -1004,10 +1004,16 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   project-scope MCP servers, and Claude Code's own auto-memory accrues under that cwd; user-level
   `~/.claude` config loads as in any session.
 - **`orca`** (`bin/orca` → `POST /api/orchestrator/tool` → `orchestrator.tool`): `board`, `spawn`,
-  `send` (a queued send prints its id; `--replace` cancels the caller's newest undispatched message
-  on that workstream first), `queue` (`--repo r --branch b` lists the undispatched messages;
+  `send` (a queued send prints its id), `queue` (`--repo r --branch b` lists the undispatched messages;
   `cancel <id>` deletes one the caller queued, never a dispatched one or another sender's — the
-  sender rides `reply_to.sender`, else `queuedSender` reads it off the row), `address`, `archive`, `sweep [--confirm]`, `preview` (`--status`; and `--push-to-template [--confirm]`,
+  sender rides `reply_to.sender`, else `queuedSender` reads it off the row). **One queued message
+  per non-user sender** (Finn 2026-10-29): `db.queueMessage(…, { replace: true })` — `verbs.followUp`
+  (`orca send`, `orca address`, upkeep), autofix and the background resume — replaces that sender's
+  undispatched message in ONE transaction under a per-branch advisory lock (`claimQueuedMessage`
+  takes it too). The old row is kept, marked dispatched with `reply_to.replacedBy`; the new one
+  keeps its place (`reply_to.slot`, the queue orders by `COALESCE(slot, id)`) and shows "replaced
+  #<old>". A person's message never replaces nor is replaced; the browser routes do not opt in.
+  `send --replace` is the same, said explicitly. `address`, `archive`, `sweep [--confirm]`, `preview` (`--status`; and `--push-to-template [--confirm]`,
   `server/pushTemplate.ts`, which makes a preview's whole database the repo's `PREVIEW_TEMPLATE_DB`
   — old one kept as `<template>_bak_<ts>` — and writes its integration env vars back to the main
   checkout's copied `.env`; dry run without `--confirm`, values masked — README), `merge`

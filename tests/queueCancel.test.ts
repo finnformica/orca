@@ -96,7 +96,7 @@ test("Q1: a queued send prints its id, and orca queue lists id, time, sender and
   const { branch } = await busyWorkstream();
   const out = await orchestrator.tool(cfg(), "send", { repo: "r", branch, _: ["Add the TTL\nand the tests"] });
   const [mine] = await queued(branch);
-  expect(out).toBe(`Queued as message #${mine!.id} behind the run in flight; it is sent when that finishes. To correct it before then: orca send --replace.`);
+  expect(out).toBe(`Queued as message #${mine!.id} behind the run in flight; it is sent when that finishes. To correct it before then: send again with the whole message.`);
   // The sender is recorded on the row, so it is the agent's even with no wake origin.
   expect(mine!.sender).toEqual(agentSide("chief"));
   await db.queueMessage({ repo: "r", branch, worktreePath: mine!.worktreePath, instruction: "the user's own words", attachments: [] });
@@ -110,9 +110,10 @@ test("Q1: a queued send prints its id, and orca queue lists id, time, sender and
 });
 
 test("Q2: queue cancel deletes the agent's own undispatched message and refuses a dispatched one", async () => {
-  const { branch } = await busyWorkstream();
+  const { branch, worktreePath } = await busyWorkstream();
   await orchestrator.tool(cfg(), "send", { repo: "r", branch, _: ["first", "fix"] });
-  await orchestrator.tool(cfg(), "send", { repo: "r", branch, _: ["second", "fix"] });
+  // The user's message: an agent sends at most one queued message, so the second is the user's.
+  await db.queueMessage({ repo: "r", branch, worktreePath, attachments: [], instruction: "second fix" });
   const [a, b] = await queued(branch);
   expect(await orchestrator.tool(cfg(), "queue", { _: ["cancel", String(a!.id)] })).toBe(`Cancelled queued message #${a!.id} on r/${branch}. Nothing else changed.`);
   expect((await queued(branch)).map((m) => m.id)).toEqual([b!.id]);
@@ -142,25 +143,27 @@ test("Q3: queue cancel never touches another sender's message", async () => {
   await rm(hold, { force: true });
 });
 
-test("Q4: send --replace swaps the sender's newest queued message and leaves the others", async () => {
+test("Q4: send --replace swaps the sender's queued message in its place and leaves the others", async () => {
   const { branch, worktreePath } = await busyWorkstream();
-  await orchestrator.tool(cfg(), "send", { repo: "r", branch, _: ["older", "note"] });
+  await orchestrator.tool(cfg(), "send", { repo: "r", branch, _: ["Add", "the", "TTL"] });
   const user = await db.queueMessage({ repo: "r", branch, worktreePath, attachments: [], instruction: "typed in the chat" });
-  await orchestrator.tool(cfg(), "send", { repo: "r", branch, _: ["Add the TTL"] });
   const other = await db.queueMessage({ repo: "r", branch, worktreePath, attachments: [], instruction: "from the assistant", sender: agentSide("assistant") });
-  const [older, , wrong] = await queued(branch);
+  const [wrong] = await queued(branch);
 
   // bin/orca reads the text after --replace as the flag's value.
   const out = await orchestrator.tool(cfg(), "send", { repo: "r", branch, replace: "Add the TTL and its tests", _: [] });
   const after = await queued(branch);
-  const fixed = after.at(-1)!;
-  expect(out).toBe(`Cancelled your queued message #${wrong!.id}. Queued as message #${fixed.id} behind the run in flight; it is sent when that finishes. To correct it before then: orca send --replace.`);
-  expect(after.map((m) => m.id)).toEqual([older!.id, user.id, other.id, fixed.id]);
-  expect(fixed.instruction).toBe("Add the TTL and its tests");
+  const fixed = after[0]!;
+  expect(out).toBe(`Replaced #${wrong!.id}: your earlier queued message is retired, and this one takes its place in the queue. Queued as message #${fixed.id} behind the run in flight; it is sent when that finishes. To correct it before then: send again with the whole message.`);
+  expect(after.map((m) => m.id)).toEqual([fixed.id, user.id, other.id]);
+  expect(fixed).toMatchObject({ instruction: "Add the TTL and its tests", replaces: wrong!.id });
   // A bare --replace with the text as words works the same.
   const again = await orchestrator.tool(cfg(), "send", { repo: "r", branch, replace: "", _: ["Add", "the", "TTL,", "tests", "and", "docs"] });
-  expect(again).toStartWith(`Cancelled your queued message #${fixed.id}.`);
-  expect((await queued(branch)).map((m) => m.instruction)).toEqual(["older note", "typed in the chat", "from the assistant", "Add the TTL, tests and docs"]);
+  expect(again).toStartWith(`Replaced #${fixed.id}:`);
+  expect((await queued(branch)).map((m) => m.instruction)).toEqual(["Add the TTL, tests and docs", "typed in the chat", "from the assistant"]);
+  // The replaced row is kept as a trace, and cancel names the message that replaced it.
+  expect((await db.queuedMessageById(wrong!.id))?.replacedBy).toBe(fixed.id);
+  await expect(orchestrator.tool(cfg(), "queue", { _: ["cancel", String(wrong!.id)] })).rejects.toThrow(`refused: message #${wrong!.id} on r/${branch} was replaced by message #${fixed.id}`);
   await rm(hold, { force: true });
 });
 
@@ -170,7 +173,7 @@ test("Q5: send --replace with nothing of the sender's queued sends a normal mess
   const user = await db.queueMessage({ repo: "r", branch, worktreePath, attachments: [], instruction: "typed in the chat" });
   const out = await orchestrator.tool(cfg(), "send", { repo: "r", branch, replace: "", _: ["the", "whole", "message"] });
   const [, mine] = await queued(branch);
-  expect(out).toBe(`Nothing of yours was still queued on r/${branch} (it was sent already, or there was none), so this went as a normal message. Queued as message #${mine!.id} behind the run in flight; it is sent when that finishes. To correct it before then: orca send --replace.`);
+  expect(out).toBe(`Nothing of yours was still queued on r/${branch} (it was sent already, or there was none), so this went as a normal message. Queued as message #${mine!.id} behind the run in flight; it is sent when that finishes. To correct it before then: send again with the whole message.`);
   expect((await queued(branch)).map((m) => m.id)).toEqual([user.id, mine!.id]);
 
   // Idle, with nothing queued (both were dispatched): it is sent at once.
@@ -197,11 +200,12 @@ test("Q6: the sender rule, the list text, the grant check and the prompt", () =>
   expect(grantRefusal(g("work"), "queue", { _: ["cancel", "1"] })).toBeUndefined();
 
   const prompt = orchestratorPrompt({ fresh: false, board: "", messages: ["hi"] });
-  expect(prompt).toContain("use orca send --replace (or orca queue cancel + a new send)");
-  expect(prompt).toContain("with the whole corrected message. Do not queue extra follow-ups that patch it.");
+  expect(prompt).toContain("ONE queued message per agent: a second send (or orca address) while your earlier one is still queued for");
+  expect(prompt).toContain("so each send must hold the whole");
+  expect(prompt).toContain("Do not queue extra follow-ups that patch it.");
   expect(prompt).toContain("  orca queue cancel <id>");
   // An agent with limited verbs gets the guidance with send, and the queue verbs only when it has them.
-  expect(commandsFor(["send"])).toContain("--replace cancels your newest message");
+  expect(commandsFor(["send"])).toContain("ONE queued message per agent");
   expect(commandsFor(["send"])).not.toContain("  orca queue --repo");
   expect(commandsFor(["send", "queue"])).toContain("orca queue --repo <repo> --branch <branch>");
 });

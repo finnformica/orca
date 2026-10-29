@@ -249,12 +249,13 @@ export function queuedSenderText(s: Side, me?: Side): string {
 
 /** `orca queue`'s answer: one line per undispatched message, oldest first (the order they are sent
  *  in): id, queued time (UTC), sender and the first line of the text. Pure. */
-export function queueListText(at: string, rows: { id: number; createdAt: number; repo: string; branch: string; instruction: string; origin?: TurnOrigin; sender?: Side }[], me?: Side): string {
+export function queueListText(at: string, rows: { id: number; createdAt: number; repo: string; branch: string; instruction: string; origin?: TurnOrigin; sender?: Side; replaces?: number }[], me?: Side): string {
   if (!rows.length) return `Nothing is queued for ${at}.`;
   const line = (m: (typeof rows)[number]): string => {
     const when = new Date(m.createdAt).toISOString().slice(0, 16).replace("T", " ");
     const first = m.instruction.trim().split("\n")[0]!.trim();
-    return `  #${m.id}  ${when} UTC  ${queuedSenderText(queuedSender(m), me)}  ${first.length > 100 ? `${first.slice(0, 99)}…` : first}`;
+    const replaced = m.replaces != null ? `(replaced #${m.replaces})  ` : "";
+    return `  #${m.id}  ${when} UTC  ${queuedSenderText(queuedSender(m), me)}  ${replaced}${first.length > 100 ? `${first.slice(0, 99)}…` : first}`;
   };
   return [`Queued for ${at}, oldest first (each is sent in turn when the run in flight ends):`, ...rows.map(line)].join("\n");
 }

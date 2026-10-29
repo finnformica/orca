@@ -64,6 +64,8 @@ export type TurnPage = { turns: AgentTurn[]; older: string | null; dbUnavailable
 
 export type QueuedMessage = {
   id: number; repo: string; branch: string; instruction: string; attachments: string[]; createdAt: number;
+  /** The id of the same sender's queued message this one replaced (server/db.ts `queueMessage`). */
+  replaces?: number;
 };
 
 export type InstanceHealth = {

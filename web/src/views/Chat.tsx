@@ -479,6 +479,8 @@ function Queued({ message, onCancel }: { message: QueuedMessage; onCancel: () =>
       files={attachmentRefs((message.attachments ?? []).join("\n"))}
       footer={
         <div data-slot="queued-label" className="text-muted-foreground flex items-center justify-end gap-2 text-[10px] tracking-widest uppercase">
+          {/* An agent's or Orca's newer message took the place of its own earlier one. */}
+          {message.replaces != null && <span data-slot="queued-replaces" className="tracking-normal normal-case">replaced #{message.replaces}</span>}
           <span className="text-right">queued — sends when the current run finishes</span>
           <button type="button" onClick={onCancel} className="tracking-normal normal-case hover:text-red-400">cancel</button>
         </div>

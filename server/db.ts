@@ -32,7 +32,7 @@ import { join } from "path";
 import type { AgentOutcome, AgentProvider, AgentTurn, StopReason, TurnCheck, TurnOrigin, TurnSource } from "../shared/agent";
 import * as bus from "./bus";
 import { seedAgentsSql } from "./agentSeed";
-import { chatOwner, turnRoute, type Side, type TurnRoute } from "../shared/rooms";
+import { chatOwner, queuedSender, sameSide, turnRoute, type Side, type TurnRoute } from "../shared/rooms";
 import type { Notification, NotificationInput } from "../shared/notifications";
 import { HIDDEN_FOREVER } from "../web/src/workstream";
 
@@ -2297,14 +2297,38 @@ export type QueuedMessage = {
   /** Who queued it, when the caller says (`orca send` names its agent). Also in the `reply_to` JSONB,
    *  under `sender`. Absent: read off the row by `queuedSender` (shared/rooms.ts). */
   sender?: Side;
+  /** The id of the message from the same sender this one replaced (`queueMessage`'s `replace`). In
+   *  the `reply_to` JSONB under `replaces`, beside `slot`: the replaced message's place in the queue,
+   *  which this one keeps: every read of the queue orders by
+   *  `COALESCE((reply_to->>'slot')::bigint, id), id` (a row with no slot is its own place). */
+  replaces?: number;
+  /** On a replaced row only (it is marked dispatched, so no undispatched read returns it): the id of
+   *  the message that replaced it. In the `reply_to` JSONB under `replacedBy`. */
+  replacedBy?: number;
 };
 
-/** The `reply_to` JSONB back into the message's `replyTo` and the `origin` and `sender` packed beside it. */
-const replyAndOrigin = (v: unknown): { replyTo?: ReplyTo; origin?: TurnOrigin; sender?: Side } => {
+/** The `reply_to` JSONB back into the message's `replyTo` and the `origin`, `sender` and replace
+ *  fields packed beside it (`slot` is only read by the queue's ORDER BY). */
+const replyAndOrigin = (v: unknown): { replyTo?: ReplyTo; origin?: TurnOrigin; sender?: Side; replaces?: number; replacedBy?: number } => {
   if (!v || typeof v !== "object") return {};
-  const { origin, sender, ...reply } = v as ReplyTo & { origin?: TurnOrigin; sender?: Side };
-  return { ...(Object.keys(reply).length ? { replyTo: reply as ReplyTo } : {}), ...(origin ? { origin } : {}), ...(sender ? { sender } : {}) };
+  const { origin, sender, replaces, replacedBy, slot: _slot, ...reply } = v as ReplyTo & { origin?: TurnOrigin; sender?: Side; replaces?: number; replacedBy?: number; slot?: number };
+  return {
+    ...(Object.keys(reply).length ? { replyTo: reply as ReplyTo } : {}), ...(origin ? { origin } : {}), ...(sender ? { sender } : {}),
+    ...(replaces != null ? { replaces: Number(replaces) } : {}), ...(replacedBy != null ? { replacedBy: Number(replacedBy) } : {}),
+  };
 };
+/** One `queued_message` row as a QueuedMessage. */
+const queuedRow = (r: Record<string, unknown>): QueuedMessage => ({
+  id: Number(r.id), repo: String(r.repo), branch: String(r.branch), worktreePath: String(r.worktree_path),
+  instruction: String(r.instruction), attachments: (r.attachments as string[]) ?? [],
+  provider: (r.provider as string) ?? undefined, createdAt: Number(r.created_at),
+  ...(grantOf(r.grant_scope) ? { grant: grantOf(r.grant_scope) } : {}),
+  ...replyAndOrigin(r.reply_to),
+});
+/** Every write that must see a branch's queue as it is — a replace, a claim — holds this lock until
+ *  its transaction ends, so the two never interleave and two replaces never both miss each other. */
+const lockQueue = (tx: Bun.SQL, repo: string, branch: string) =>
+  tx`SELECT pg_advisory_xact_lock(hashtextextended(${`queued_message:${currentUser()}:${repo}:${branch}`}, 0))`;
 const grantScope = (g?: Grant) => (g && g.level !== "full" ? { ...g, key: grantKey(g) } : null);
 const grantOf = (v: unknown): Grant | undefined => {
   if (!v || typeof v !== "object") return undefined;
@@ -2312,16 +2336,44 @@ const grantOf = (v: unknown): Grant | undefined => {
   return g;
 };
 
-/** Queue an instruction typed while a run was in flight. */
-export async function queueMessage(input: Omit<QueuedMessage, "id" | "createdAt">): Promise<QueuedMessage> {
-  return withRetry(async (sql) => {
-    const rows = await sql`
+/** Queue an instruction typed while a run was in flight.
+ *
+ *  `replace` (Orca's own callers for a NON-USER sender: an agent's `orca send` / `orca address`,
+ *  autofix, upkeep, a background resume): when the branch already has an undispatched message from
+ *  the same sender (`queuedSender`), the new one replaces it — one message per agent in a queue. The
+ *  old row is kept as a trace, marked dispatched with `replacedBy`; the new row takes its place in
+ *  the queue (`slot`) and names it (`replaces`). One transaction under the queue's lock: never both
+ *  or neither, and two racing sends end as one message. A person's message is never replaced and
+ *  never replaces (a user may queue any number); without `replace` nothing changes. */
+export async function queueMessage(input: Omit<QueuedMessage, "id" | "createdAt" | "replaces" | "replacedBy">, opts: { replace?: boolean } = {}): Promise<QueuedMessage> {
+  const insert = async (tx: Bun.SQL, extra: { slot?: number; replaces?: number } = {}) => {
+    const packed = { ...input.replyTo, ...(input.origin ? { origin: input.origin } : {}), ...(input.sender ? { sender: input.sender } : {}), ...extra };
+    const rows = await tx`
       INSERT INTO queued_message (user_id, repo, branch, worktree_path, instruction, attachments, provider, created_at, grant_scope, reply_to)
       VALUES (${currentUser()}, ${input.repo}, ${input.branch}, ${input.worktreePath}, ${input.instruction},
-              ${input.attachments}, ${input.provider ?? null}, ${Date.now()}, ${grantScope(input.grant)}, ${input.replyTo || input.origin || input.sender ? { ...input.replyTo, ...(input.origin ? { origin: input.origin } : {}), ...(input.sender ? { sender: input.sender } : {}) } : null})
+              ${input.attachments}, ${input.provider ?? null}, ${Date.now()}, ${grantScope(input.grant)}, ${Object.keys(packed).length ? packed : null})
       RETURNING id, created_at`;
-    return { ...input, id: Number(rows[0].id), createdAt: Number(rows[0].created_at) };
-  });
+    return { ...input, id: Number(rows[0].id), createdAt: Number(rows[0].created_at), ...(extra.replaces != null ? { replaces: extra.replaces } : {}) };
+  };
+  const from = opts.replace ? queuedSender(input) : undefined;
+  if (!from || from.kind === "person") return withRetry((sql) => insert(sql));
+  return withRetry((sql) => sql.begin(async (tx: Bun.SQL) => {
+    await lockQueue(tx, input.repo, input.branch);
+    const rows = await tx`
+      SELECT id, repo, branch, worktree_path, instruction, attachments, provider, created_at, grant_scope, reply_to,
+             COALESCE((reply_to->>'slot')::bigint, id) AS slot
+      FROM queued_message
+      WHERE user_id = ${currentUser()} AND repo = ${input.repo} AND branch = ${input.branch} AND dispatched_at IS NULL
+      ORDER BY COALESCE((reply_to->>'slot')::bigint, id), id` as Record<string, unknown>[];
+    // The newest of the sender's own: the only one, unless rows from before this rule hold several.
+    const old = rows.filter((r) => sameSide(queuedSender(queuedRow(r)), from)).at(-1);
+    if (!old) return insert(tx);
+    const made = await insert(tx, { slot: Number(old.slot), replaces: Number(old.id) });
+    await tx`
+      UPDATE queued_message SET dispatched_at = ${Date.now()}, reply_to = COALESCE(reply_to, '{}'::jsonb) || ${{ replacedBy: made.id }}::jsonb
+      WHERE id = ${Number(old.id)} AND user_id = ${currentUser()}`;
+    return made;
+  }));
 }
 
 /** Undispatched messages for a branch, oldest first — shown in the chat so a queued instruction is
@@ -2332,14 +2384,8 @@ export async function queuedMessages(repo: string, branch: string): Promise<Queu
       SELECT id, repo, branch, worktree_path, instruction, attachments, provider, created_at, grant_scope, reply_to
       FROM queued_message
       WHERE user_id = ${currentUser()} AND repo = ${repo} AND branch = ${branch} AND dispatched_at IS NULL
-      ORDER BY id`;
-    return (rows as Record<string, unknown>[]).map((r) => ({
-      id: Number(r.id), repo: String(r.repo), branch: String(r.branch), worktreePath: String(r.worktree_path),
-      instruction: String(r.instruction), attachments: (r.attachments as string[]) ?? [],
-      provider: (r.provider as string) ?? undefined, createdAt: Number(r.created_at),
-      ...(grantOf(r.grant_scope) ? { grant: grantOf(r.grant_scope) } : {}),
-      ...replyAndOrigin(r.reply_to),
-    }));
+      ORDER BY COALESCE((reply_to->>'slot')::bigint, id), id`;
+    return (rows as Record<string, unknown>[]).map(queuedRow);
   });
 }
 
@@ -2358,28 +2404,25 @@ export async function queuedCounts(repo: string): Promise<Map<string, number>> {
 /** Claim the next queued message for a branch, marking it dispatched in the same statement so two
  *  instances (or a restart racing itself) cannot send it twice. */
 export async function claimQueuedMessage(repo: string, branch: string, onlyGrant?: string): Promise<QueuedMessage | undefined> {
-  return withRetry(async (sql) => {
+  return withRetry((sql) => sql.begin(async (tx: Bun.SQL) => {
+    // The queue's lock: a replace (queueMessage) either finished before this claim or starts after it,
+    // so a claim never takes a row a replace is about to retire, nor skips past it to a later one.
+    await lockQueue(tx, repo, branch);
     // `onlyGrant` (a grantKey) claims only messages of that grant: one wake never mixes an outside
     // sender's message with yours, so the wake's grant is exact (shared/integrations.ts §3.7).
-    const rows = await sql`
+    const rows = await tx`
       UPDATE queued_message SET dispatched_at = ${Date.now()}
       WHERE id = (
         SELECT id FROM queued_message
         WHERE user_id = ${currentUser()} AND repo = ${repo} AND branch = ${branch} AND dispatched_at IS NULL
           AND (${onlyGrant ?? null}::text IS NULL OR COALESCE(grant_scope->>'key', 'full') = ${onlyGrant ?? null}::text)
-        ORDER BY id LIMIT 1
+        ORDER BY COALESCE((reply_to->>'slot')::bigint, id), id LIMIT 1
         FOR UPDATE SKIP LOCKED
       )
       RETURNING id, repo, branch, worktree_path, instruction, attachments, provider, created_at, grant_scope, reply_to`;
     const r = rows[0] as Record<string, unknown> | undefined;
-    return r && {
-      id: Number(r.id), repo: String(r.repo), branch: String(r.branch), worktreePath: String(r.worktree_path),
-      instruction: String(r.instruction), attachments: (r.attachments as string[]) ?? [],
-      provider: (r.provider as string) ?? undefined, createdAt: Number(r.created_at),
-      ...(grantOf(r.grant_scope) ? { grant: grantOf(r.grant_scope) } : {}),
-      ...replyAndOrigin(r.reply_to),
-    };
-  });
+    return r && queuedRow(r);
+  }));
 }
 
 /** The `queued_message` rows a turn's origin references, by id (dispatched or not), for the join

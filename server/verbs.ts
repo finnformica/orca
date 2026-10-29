@@ -176,7 +176,7 @@ export async function createWorkstream(
 export async function followUp(
   cfg: OrcaConfig, repo: RepoConfig, branch: string,
   input: { instruction: string; prompt?: string; action?: string; evidenceChars?: number; origin?: TurnOrigin; sender?: Side; prNumber?: number },
-): Promise<{ status: "running" | "queued"; worktreePath: string; queuedId?: number }> {
+): Promise<{ status: "running" | "queued"; worktreePath: string; queuedId?: number; replacedId?: number }> {
   const worktreePath = await ensureWorktree(repo, branch);
   const e = (await db.enrichment(repo.name))[branch] ?? {};
   const provider = providerFor(repo, e);
@@ -184,9 +184,11 @@ export async function followUp(
   // queues behind them and the queue drains in order, instead of jumping ahead and leaving them.
   const behind = !agent.isRunning(worktreePath) && (await db.queuedMessages(repo.name, branch).catch(() => [])).length > 0;
   if (agent.isRunning(worktreePath) || behind) {
-    const queued = await db.queueMessage({ repo: repo.name, branch, worktreePath, instruction: input.instruction, attachments: [], provider, ...(input.origin ? { origin: input.origin } : {}), ...(input.sender ? { sender: input.sender } : {}) });
+    // `replace`: an agent's or Orca's message replaces that sender's own still-queued one, in its
+    // place (one message per sender). A person's message (no sender, no origin) queues as before.
+    const queued = await db.queueMessage({ repo: repo.name, branch, worktreePath, instruction: input.instruction, attachments: [], provider, ...(input.origin ? { origin: input.origin } : {}), ...(input.sender ? { sender: input.sender } : {}) }, { replace: true });
     if (behind) await agent.drainQueue(worktreePath, repo.name, branch);
-    return { status: "queued", worktreePath, queuedId: queued.id };
+    return { status: "queued", worktreePath, queuedId: queued.id, ...(queued.replaces ? { replacedId: queued.replaces } : {}) };
   }
   const next = continuation({
     provider, from: isAgentProvider(e.agentProvider) ? e.agentProvider : undefined,
@@ -310,7 +312,7 @@ export async function settleConflict(repo: RepoConfig, branch: string): Promise<
 /** THE agent action for a PR — one run for conflicts, failing CI and the review, whichever apply —
  *  with the evidence fetched immediately before launch. The manual form of the store's `addressPr`:
  *  every unresolved thread is sent, and the hand-over is recorded once the launch is accepted. */
-export async function addressPr(cfg: OrcaConfig, repo: RepoConfig, branch: string, opts: { origin?: TurnOrigin; sender?: Side } = {}): Promise<{ status: "running" | "queued" | "resolved"; pr: number }> {
+export async function addressPr(cfg: OrcaConfig, repo: RepoConfig, branch: string, opts: { origin?: TurnOrigin; sender?: Side } = {}): Promise<{ status: "running" | "queued" | "resolved"; pr: number; replacedId?: number }> {
   const pr = (await gh.listPrs(repo.repoPath)).find((p) => p.branch === branch);
   if (!pr) throw new Error(`${repo.name}/${branch} has no open PR to address`);
   const e = (await db.enrichment(repo.name))[branch] ?? {};
@@ -328,7 +330,7 @@ export async function addressPr(cfg: OrcaConfig, repo: RepoConfig, branch: strin
   const seenAt = new Date().toISOString();
   const ci = ciFailing ? { failingChecks: pr.failingChecks, details } : undefined;
   if (settled && !addressNeedsAgent({ conflicting, ci, feedback: pr.feedback, threads: marked, comments })) return { status: "resolved", pr: pr.number };
-  const { status } = await followUp(cfg, repo, branch, {
+  const { status, replacedId } = await followUp(cfg, repo, branch, {
     instruction: "Address the PR: conflicts, CI, review", action: "address", origin: opts.origin, ...(opts.sender ? { sender: opts.sender } : {}),
     evidenceChars: JSON.stringify(details).length + JSON.stringify(marked).length + JSON.stringify(comments).length,
     prompt: addressPrPrompt({ prNumber: pr.number, branch }, {
@@ -340,7 +342,7 @@ export async function addressPr(cfg: OrcaConfig, repo: RepoConfig, branch: strin
   if (threads.length) fields.handedReviewThreadIds = [...new Set([...handed, ...threads.map((thread) => thread.id)])].slice(-100);
   if (comments.length) fields.commentsSeenAt = seenAt;
   if (Object.keys(fields).length) await db.patchEnrichment(repo.name, branch, fields);
-  return { status, pr: pr.number };
+  return { status, pr: pr.number, ...(replacedId ? { replacedId } : {}) };
 }
 
 // ---- placement: which instance a request about a workstream belongs to ----
