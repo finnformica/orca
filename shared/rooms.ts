@@ -238,6 +238,17 @@ export const entryTurn = (e: RoomEntry) => ({
 export const queuedSender = (m: { repo: string; branch: string; instruction: string; origin?: TurnOrigin; sender?: Side }): Side =>
   turnRoute(workerSide(m.repo, m.branch), { instruction: m.instruction, origin: m.origin, sender: m.sender }).sender;
 
+/** Why `orca queue cancel` refuses the caller `me` a message queued by `from`, or undefined when it
+ *  may cancel it. Its own message: always. A user's: never. Another agent's or Orca's own (autofix,
+ *  address, upkeep): only an agent with every verb (its row's `tools.verbs` is "all"), the same rule
+ *  as a wake set for another agent. Pure. */
+export function queueCancelRefusal(from: Side, me: Side, allVerbs: boolean): string | undefined {
+  if (sameSide(from, me)) return undefined;
+  if (from.kind === "person") return `was queued by ${queuedSenderText(from)}; an agent never cancels a user's message`;
+  if (allVerbs) return undefined;
+  return `was queued by ${queuedSenderText(from)}; you cancel only your own (only an agent with every verb cancels another agent's or Orca's message)`;
+}
+
 /** A queued message's sender as an agent reads it in `orca queue`; `me` is the caller. */
 export function queuedSenderText(s: Side, me?: Side): string {
   const self = me && sameSide(s, me) ? " (you)" : "";
@@ -249,12 +260,13 @@ export function queuedSenderText(s: Side, me?: Side): string {
 
 /** `orca queue`'s answer: one line per undispatched message, oldest first (the order they are sent
  *  in): id, queued time (UTC), sender and the first line of the text. Pure. */
-export function queueListText(at: string, rows: { id: number; createdAt: number; repo: string; branch: string; instruction: string; origin?: TurnOrigin; sender?: Side }[], me?: Side): string {
+export function queueListText(at: string, rows: { id: number; createdAt: number; repo: string; branch: string; instruction: string; origin?: TurnOrigin; sender?: Side; replaces?: number }[], me?: Side): string {
   if (!rows.length) return `Nothing is queued for ${at}.`;
   const line = (m: (typeof rows)[number]): string => {
     const when = new Date(m.createdAt).toISOString().slice(0, 16).replace("T", " ");
     const first = m.instruction.trim().split("\n")[0]!.trim();
-    return `  #${m.id}  ${when} UTC  ${queuedSenderText(queuedSender(m), me)}  ${first.length > 100 ? `${first.slice(0, 99)}…` : first}`;
+    const replaced = m.replaces != null ? `(replaced #${m.replaces})  ` : "";
+    return `  #${m.id}  ${when} UTC  ${queuedSenderText(queuedSender(m), me)}  ${replaced}${first.length > 100 ? `${first.slice(0, 99)}…` : first}`;
   };
   return [`Queued for ${at}, oldest first (each is sent in turn when the run in flight ends):`, ...rows.map(line)].join("\n");
 }

@@ -1090,11 +1090,12 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
       await recordTurn(options, () => outbox.setCheck(runId, check!, options));
       if (!check.ok && options.check.autofix && primary.held() && options.repo && options.branch && !isAutofix(options.instruction)) {
         // Queued rather than launched: the same path a typed follow-up takes, so it inherits the
-        // session, profile routing, and the run lease. dispatchQueued below sends it.
+        // session, profile routing, and the run lease. dispatchQueued below sends it. `replace`: a
+        // second autofix still queued replaces the first (Orca's own nudge, one in a queue).
         await db.queueMessage({
           repo: options.repo, branch: options.branch, worktreePath: cwd, provider,
           instruction: autofixInstruction(check), attachments: [],
-        }).catch(db.logUnlessDown("orca: autofix queue failed"));
+        }, { replace: true }).catch(db.logUnlessDown("orca: autofix queue failed"));
       }
     }
     if (resumeTasks) {
@@ -1102,7 +1103,7 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
       await db.queueMessage({
         repo: options.repo!, branch: options.branch!, worktreePath: cwd, provider,
         instruction: backgroundResumeInstruction(leftBehind, waitCapped ? "cap" : "exit", waitMinutes), attachments: [],
-      }).catch(db.logUnlessDown("orca: background resume queue failed"));
+      }, { replace: true }).catch(db.logUnlessDown("orca: background resume queue failed"));
     }
     const handled = afterRunStarted();
     runs.set(key, ok
