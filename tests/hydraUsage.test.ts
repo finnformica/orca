@@ -69,7 +69,7 @@ test("with hydra on PATH, usage() reports every login from `hydra status --json`
 
   const u = await usage();
   expect(u?.profiles?.map((p) => `${p.name}:${p.state}`)).toEqual(["formicsoftware:ok", "work:exhausted", "spare:not signed in on this machine"]);
-  expect(u?.claude?.fiveHour.utilization).toBe(12); // back-compat: the first login's reading
+  expect(u?.claude?.fiveHour?.utilization).toBe(12); // back-compat: the first login's reading
   expect(u?.claude?.fable?.utilization).toBe(21);   // the window the bare endpoint never exposed
 });
 
