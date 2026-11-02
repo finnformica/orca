@@ -3410,13 +3410,23 @@ export const routingBroken = (u: UsageReading | null): boolean => Boolean(u?.rou
  *  account: two numbers for one thing. Per-login detail (which login, its own state) lives only in
  *  the hover card's full UsageCard, never in the header's own number or tooltip. Null when the
  *  headline row itself has nothing to show (no provider signed in, or nothing in rotation) — the
- *  header hides rather than drawing an empty ring. */
+ *  header hides rather than drawing an empty ring.
+ *  With hydra, a login in rotation with no 5-hour window (an Ultra login) would otherwise make the
+ *  fleet's 5-hour mean describe only the OTHER logins — a header that read 90% off one login while
+ *  two others had no window at all. So the weekly window, which every login shares, is the headline
+ *  whenever ANY login in rotation has no 5-hour window, not only when NONE of them has one. A single
+ *  login with no hydra keeps the per-window choice unchanged. */
 export type HeaderUsage = { pct: number; tooltip: string };
 export function headerUsage(u: UsageReading | null, now = Date.now()): HeaderUsage | null {
-  const head = usageGroups(u, now).find((g) => g.key === "fleet" || g.key === "claude");
-  // With no 5-hour limit on any login in rotation, the weekly window is the headline.
-  const row = head?.rows.find((r) => r.key.endsWith(":fiveHour") && !r.noLimit) ?? head?.rows.find((r) => r.key.endsWith(":sevenDay"));
-  if (!head || !row) return null;
+  const groups = usageGroups(u, now);
+  const head = groups.find((g) => g.key === "fleet" || g.key === "claude");
+  if (!head) return null;
+  const partialFiveHour = head.key === "fleet" && groups.some((g) =>
+    g.key.startsWith("login:") && !g.dim && g.rows.some((r) => r.key.endsWith(":fiveHour") && r.noLimit));
+  const row = partialFiveHour
+    ? head.rows.find((r) => r.key.endsWith(":sevenDay"))
+    : head.rows.find((r) => r.key.endsWith(":fiveHour") && !r.noLimit) ?? head.rows.find((r) => r.key.endsWith(":sevenDay"));
+  if (!row) return null;
   return { pct: row.pct, tooltip: head.subtitle ? `${row.label} · ${head.subtitle}` : row.label };
 }
 
