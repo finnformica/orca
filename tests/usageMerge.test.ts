@@ -27,7 +27,7 @@ test("mergeInstanceProfiles: the freshest OK reading wins across instances, matc
   ];
   const [merged] = mergeInstanceProfiles(byInstance);
   expect(merged).toMatchObject({ name: "finnformica", state: "ok", instance: "cloud" });
-  expect(merged!.usage?.fiveHour.utilization).toBe(10);
+  expect(merged!.usage?.fiveHour?.utilization).toBe(10);
   // Every host that reported it is kept, with ITS OWN state — the secondary hint's data.
   expect(merged!.hosts).toEqual([
     { instance: "local", state: "token stale — refreshes on next launch" },

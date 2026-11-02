@@ -186,7 +186,7 @@ export const apiFake = {
     claude: null | { fiveHour: { utilization: number; resetsAt: string | null }; sevenDay: { utilization: number; resetsAt: string | null }; extra: { usedMinor: number; limitMinor: number; currency: string; exponent: number; utilization: number } | null };
     codex: null | { windows: { label: string; durationMinutes: number | null; utilization: number; resetsAt: string | null }[] };
     profiles?: {
-      name: string; usage: null | { fiveHour: { utilization: number; resetsAt: string | null }; sevenDay: { utilization: number; resetsAt: string | null }; extra: null; fable?: { utilization: number; resetsAt: string | null } | null };
+      name: string; usage: null | { fiveHour: { utilization: number; resetsAt: string | null } | null; sevenDay: { utilization: number; resetsAt: string | null }; extra: null; fable?: { utilization: number; resetsAt: string | null } | null };
       state?: string; email?: string; instance?: string; hosts?: { instance: string; state?: string }[];
     }[];
     routing?: { hydra: boolean; shim: boolean; bin?: string };

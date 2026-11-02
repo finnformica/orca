@@ -69,7 +69,7 @@ test("with hydra on PATH, usage() reports every login from `hydra status --json`
 
   const u = await usage();
   expect(u?.profiles?.map((p) => `${p.name}:${p.state}`)).toEqual(["formicsoftware:ok", "work:exhausted", "spare:not signed in on this machine"]);
-  expect(u?.claude?.fiveHour.utilization).toBe(12); // back-compat: the first login's reading
+  expect(u?.claude?.fiveHour?.utilization).toBe(12); // back-compat: the first login's reading
   expect(u?.claude?.fable?.utilization).toBe(21);   // the window the bare endpoint never exposed
 });
 
@@ -140,4 +140,24 @@ test("routingInfo without hydra or claude on PATH reports neither", async () => 
   } finally {
     await rm(empty, { recursive: true, force: true });
   }
+});
+
+// An Ultra login (the plan that was Max 20x) has no 5-hour limit since late October 2026: hydra
+// reports session null with weekly and Fable windows, and says "no usage data yet" for it.
+test("shapeHydraStatus: a weekly-only login keeps its weekly and Fable windows, fiveHour null, state ok", () => {
+  const iso = (s: number) => new Date(s * 1000).toISOString();
+  const [ultra, fresh] = shapeHydraStatus({ profiles: [
+    { name: "finnformica", email: "finn@x", signed_in: true, disabled: false, fetched_at: 1789378422,
+      session: null, weekly: { pct: 6, resets: 1789776000 }, fable: { pct: 8, resets: 1789776000 }, state: "no usage data yet" },
+    { name: "new", email: "new@x", signed_in: true, disabled: false, fetched_at: 0, session: null, weekly: null, fable: null, state: "no usage data yet" },
+  ] });
+  expect(ultra?.usage).toEqual({
+    fiveHour: null,
+    sevenDay: { utilization: 6, resetsAt: iso(1789776000) },
+    fable: { utilization: 8, resetsAt: iso(1789776000) },
+    extra: null,
+  });
+  expect(ultra?.state).toBe("ok");          // hydra's "no usage data yet" is wrong with a reading in hand
+  expect(fresh?.usage).toBeNull();          // no window at all: still no reading…
+  expect(fresh?.state).toBe("no usage data yet"); // …and hydra's text stays
 });

@@ -3239,7 +3239,7 @@ export function formatMoney(minor: number, exponent: number, currency: string): 
 }
 
 type Window = { utilization: number; resetsAt: string | null };
-type ClaudeReading = { fiveHour: Window; sevenDay: Window; fable?: Window | null; extra: { usedMinor: number; limitMinor: number; currency: string; exponent: number; utilization: number } | null };
+type ClaudeReading = { fiveHour: Window | null; sevenDay: Window; fable?: Window | null; extra: { usedMinor: number; limitMinor: number; currency: string; exponent: number; utilization: number } | null };
 type UsageReading = {
   claude: ClaudeReading | null;
   codex: { windows: (Window & { label: string })[] } | null;
@@ -3252,6 +3252,8 @@ export type UsageRow = {
   key: string; label: string; pct: number; value: string; limit: string; resetsIn: string | null;
   /** Said in the countdown's place when there is no reset to count to: a window not yet opened. */
   resetNote?: string;
+  /** The account has no such window (an Ultra login has no 5-hour limit): nothing to measure. */
+  noLimit?: boolean;
 };
 /** A block of rows under one heading: the fleet, one hydra login, Codex. `state` is hydra's verdict
  *  when it isn't "ok"; `dim` when hydra can't route to that login. `name` is the hydra login name
@@ -3320,10 +3322,11 @@ export function withProfileEnabled<P extends { name: string; state?: string }>(p
   return profiles.map((p) => p.name === name ? { ...p, state: enabled ? undefined : "disabled" } : p);
 }
 
-export type FleetUsage = { count: number; exhausted: number; fiveHour: Window; sevenDay: Window; fable: Window | null };
+export type FleetUsage = { count: number; exhausted: number; fiveHour: Window | null; sevenDay: Window; fable: Window | null };
 
 /** One reading for the whole fleet: the mean utilization per window across the logins in rotation,
- *  with the soonest reset still to come (`liveWindow`). Null when nothing is in rotation. */
+ *  with the soonest reset still to come (`liveWindow`). Null when nothing is in rotation. The 5-hour
+ *  and Fable means count only the logins that have that window; null when none has it. */
 export function aggregateProfiles(profiles: LoginReading[], now = Date.now()): FleetUsage | null {
   const live = profiles.filter((p) => !outOfRotation(p));
   if (!live.length) return null;
@@ -3335,10 +3338,11 @@ export function aggregateProfiles(profiles: LoginReading[], now = Date.now()): F
     };
   };
   const fables = live.map((p) => p.usage!.fable).filter((w): w is Window => Boolean(w));
+  const fives = live.map((p) => p.usage!.fiveHour).filter((w): w is Window => Boolean(w));
   return {
     count: live.length,
     exhausted: live.filter((p) => p.state === "exhausted" || p.state === "locked").length,
-    fiveHour: mean(live.map((p) => p.usage!.fiveHour)),
+    fiveHour: fives.length ? mean(fives) : null,
     sevenDay: mean(live.map((p) => p.usage!.sevenDay)),
     fable: fables.length ? mean(fables) : null,
   };
@@ -3348,6 +3352,11 @@ function claudeRows(key: string, c: ClaudeReading, now: number): UsageRow[] {
   const rows: UsageRow[] = [];
   for (const [field, label] of CLAUDE_WINDOWS) {
     const raw = c[field] as Window | null | undefined;
+    // An explicit null 5-hour window is an account with no 5-hour limit: say so in its slot.
+    if (field === "fiveHour" && raw === null) {
+      rows.push({ key: `${key}:${field}`, label, pct: 0, value: "—", limit: "—", resetsIn: null, resetNote: "no 5-hour limit", noLimit: true });
+      continue;
+    }
     if (!raw) continue;
     const w = liveWindow(raw, now);
     // No reset and nothing used: the window opens on the next message (Claude's 5-hour window is
@@ -3405,9 +3414,10 @@ export const routingBroken = (u: UsageReading | null): boolean => Boolean(u?.rou
 export type HeaderUsage = { pct: number; tooltip: string };
 export function headerUsage(u: UsageReading | null, now = Date.now()): HeaderUsage | null {
   const head = usageGroups(u, now).find((g) => g.key === "fleet" || g.key === "claude");
-  const row = head?.rows.find((r) => r.key.endsWith(":fiveHour"));
+  // With no 5-hour limit on any login in rotation, the weekly window is the headline.
+  const row = head?.rows.find((r) => r.key.endsWith(":fiveHour") && !r.noLimit) ?? head?.rows.find((r) => r.key.endsWith(":sevenDay"));
   if (!head || !row) return null;
-  return { pct: row.pct, tooltip: head.subtitle ? `5-hour window · ${head.subtitle}` : "5-hour window" };
+  return { pct: row.pct, tooltip: head.subtitle ? `${row.label} · ${head.subtitle}` : row.label };
 }
 
 /** Usage zone by how much of an allowance is burned: fine, caution (≥75%), the red zone (≥90%). */
