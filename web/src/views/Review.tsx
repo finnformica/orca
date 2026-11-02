@@ -22,7 +22,6 @@ const avatarUrl = (login: string) => `https://github.com/${login}.png?size=40`;
 
 const STATUS_LABEL: Record<ReviewerStatus, string> = { APPROVED: "Approved", CHANGES_REQUESTED: "Changes requested", COMMENTED: "Commented" };
 const STATUS_RANK: Record<ReviewerStatus, number> = { CHANGES_REQUESTED: 0, APPROVED: 1, COMMENTED: 2 };
-const STATUS_RING: Record<ReviewerStatus, string> = { APPROVED: "ring-geist-green/60", CHANGES_REQUESTED: "ring-geist-red/60", COMMENTED: "ring-border" };
 const STATUS_FALLBACK: Record<ReviewerStatus, string> = {
   APPROVED: "bg-geist-green/15 text-geist-green", CHANGES_REQUESTED: "bg-geist-red/15 text-geist-red", COMMENTED: "bg-muted text-muted-foreground",
 };
@@ -33,7 +32,7 @@ const byStatus = (list: Reviewer[]) => [...list].sort((a, b) => STATUS_RANK[a.st
 
 function ReviewerAvatar({ reviewer }: { reviewer: Reviewer }) {
   return (
-    <Avatar data-slot="reviewer-avatar" data-status={reviewer.status} className={`ring-card size-5 ring-2 ${STATUS_RING[reviewer.status]}`}>
+    <Avatar data-slot="reviewer-avatar" data-status={reviewer.status} className="size-5">
       <AvatarImage src={avatarUrl(reviewer.login)} alt="" />
       <AvatarFallback className={`text-[9px] font-semibold ${STATUS_FALLBACK[reviewer.status]}`}>{initials(reviewer.login)}</AvatarFallback>
     </Avatar>
