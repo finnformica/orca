@@ -1,8 +1,10 @@
+import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { ExternalLink, MessageSquare } from "lucide-react";
 import { StatusDot, VCard } from "@/components/console";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { useReviewDigest, type Row } from "../store";
-import { ago, type ReviewItem } from "../workstream";
+import { ago, type Reviewer, type ReviewerStatus, type ReviewItem } from "../workstream";
 
 // The review SIGNAL on a PR, not just its state: who approved, how many review threads still ask
 // for a change, and whether an AI reviewer flagged something severe (list row), plus the human and
@@ -14,12 +16,78 @@ export const reviewSig = (row: Pick<Row, "reviewStatus" | "feedback">) => `${row
 
 const initials = (login: string) => login.replace(/\[bot\]$/, "").split(/[-_.]/).filter(Boolean).slice(0, 2).map((p) => p[0]!.toUpperCase()).join("") || "?";
 
-function ApproverChip({ login }: { login: string }) {
+/** The account's GitHub profile picture: `LOGIN.png` needs no token and no API call (same formula
+ *  as server/repos.ts's avatarUrl, kept separate since the web bundle must not import server code). */
+const avatarUrl = (login: string) => `https://github.com/${login}.png?size=40`;
+
+const STATUS_LABEL: Record<ReviewerStatus, string> = { APPROVED: "Approved", CHANGES_REQUESTED: "Changes requested", COMMENTED: "Commented" };
+const STATUS_RANK: Record<ReviewerStatus, number> = { CHANGES_REQUESTED: 0, APPROVED: 1, COMMENTED: 2 };
+const STATUS_RING: Record<ReviewerStatus, string> = { APPROVED: "ring-geist-green/60", CHANGES_REQUESTED: "ring-geist-red/60", COMMENTED: "ring-border" };
+const STATUS_FALLBACK: Record<ReviewerStatus, string> = {
+  APPROVED: "bg-geist-green/15 text-geist-green", CHANGES_REQUESTED: "bg-geist-red/15 text-geist-red", COMMENTED: "bg-muted text-muted-foreground",
+};
+
+/** Changes requested first (it is what blocks progress most, same priority as elsewhere), then
+ *  approved, then a plain comment. */
+const byStatus = (list: Reviewer[]) => [...list].sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status]);
+
+function ReviewerAvatar({ reviewer }: { reviewer: Reviewer }) {
   return (
-    <span data-slot="approver" aria-label={`Approved by ${login}`}
-      className="bg-geist-green/15 text-geist-green ring-card inline-flex size-5 items-center justify-center rounded-full text-[9px] font-semibold ring-2">
-      {initials(login)}
-    </span>
+    <Avatar data-slot="reviewer-avatar" data-status={reviewer.status} className={`ring-card size-5 ring-2 ${STATUS_RING[reviewer.status]}`}>
+      <AvatarImage src={avatarUrl(reviewer.login)} alt="" />
+      <AvatarFallback className={`text-[9px] font-semibold ${STATUS_FALLBACK[reviewer.status]}`}>{initials(reviewer.login)}</AvatarFallback>
+    </Avatar>
+  );
+}
+
+/** One reviewer row inside the hover card: picture, login, and their state — grouped by state via
+ *  `byStatus`, so changes-requested reviewers lead. */
+function ReviewerRow({ reviewer }: { reviewer: Reviewer }) {
+  return (
+    <li data-slot="reviewer-row" data-status={reviewer.status} className="flex items-center gap-2 px-3 py-2 text-sm">
+      <ReviewerAvatar reviewer={reviewer} />
+      <span className="min-w-0 flex-1 truncate font-medium">{reviewer.login}</span>
+      <span className="text-muted-foreground text-xs whitespace-nowrap">{STATUS_LABEL[reviewer.status]}</span>
+    </li>
+  );
+}
+
+/** The overlapping avatar stack for the people who approved, requested changes or commented on a
+ *  PR. Hovering or focusing the GROUP opens a `HoverCard` listing every reviewer with their state,
+ *  grouped by state. A `HoverCard` ignores touch by design (it must not fight a tap meant for
+ *  something else) — there is nothing else to tap here, so a tap on a touch screen opens or closes
+ *  it itself (the same `lastPointer` trick the Agents list uses for its own touch/mouse split). The
+ *  open/closed decision is read in `onPointerDown`, BEFORE the click: a second tap lands outside the
+ *  content from the DismissableLayer's own point of view, which closes the card first — reading
+ *  `open` again inside `onClick` would see that already-closed state and reopen it. */
+function ReviewerAvatars({ reviewers: list }: { reviewers: Reviewer[] }) {
+  const [open, setOpen] = useState(false);
+  const lastPointer = useRef("mouse");
+  const wasOpen = useRef(false);
+  const sorted = byStatus(list);
+  const shown = sorted.slice(0, 3);
+  const extra = sorted.length - shown.length;
+  return (
+    <HoverCard open={open} onOpenChange={setOpen}>
+      <HoverCardTrigger asChild>
+        <span data-slot="reviewer-avatars" tabIndex={0} aria-label={`${sorted.length} reviewer${sorted.length === 1 ? "" : "s"}`}
+          onPointerDown={(e: ReactPointerEvent) => { lastPointer.current = e.pointerType; wasOpen.current = open; }}
+          onClick={(e) => {
+            // Never opens the row — same rule as the subline's own "+N" chip. On a mouse the
+            // hover already opens/closes the card; on touch (ignored by a HoverCard by design)
+            // a tap is the only way in, so it opens or closes the card itself.
+            e.stopPropagation();
+            if (lastPointer.current !== "mouse") setOpen(!wasOpen.current);
+          }}
+          className="inline-flex shrink-0 items-center outline-none">
+          <span className="flex -space-x-1">{shown.map((r) => <ReviewerAvatar key={r.login} reviewer={r} />)}</span>
+          {extra > 0 && <span className="text-muted-foreground ml-1 text-[10px]">+{extra}</span>}
+        </span>
+      </HoverCardTrigger>
+      <HoverCardContent align="start" className="w-56 p-0">
+        <ul data-slot="reviewer-list" className="divide-y">{sorted.map((r) => <ReviewerRow key={r.login} reviewer={r} />)}</ul>
+      </HoverCardContent>
+    </HoverCard>
   );
 }
 
@@ -28,8 +96,8 @@ const SEVERITY_CLASS: Record<string, string> = {
   warning: "border-geist-warning-fg/40 text-geist-warning-fg",
 };
 
-/** The list row's compact cluster: approver chips, then a count-then-icon `MessageSquare` chip
- *  for unresolved threads — coloured by the AI reviewer's worst severity when it flagged
+/** The list row's compact cluster: the reviewer avatar group, then a count-then-icon `MessageSquare`
+ *  chip for unresolved threads — coloured by the AI reviewer's worst severity when it flagged
  *  anything, muted otherwise — and a separate plain `MessageSquare` count for human comments (the
  *  colour is what tells the two apart, not the icon). Hovering (or focusing) the unresolved chip
  *  opens a `HoverCard` showing the same `ReviewPanel` as the agent page's Review card, rather than
@@ -38,11 +106,10 @@ export function ReviewCluster({ row }: { row: Row }) {
   const d = useReviewDigest(row.repo, row.prNumber, reviewSig(row));
   if (!d) return null;
   const { count } = d.unresolved;
-  if (!d.approvers.length && !count && !d.worst && !d.human.length) return null;
+  if (!d.reviewers.length && !count && !d.worst && !d.human.length) return null;
   return (
     <span data-slot="review-cluster" className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap">
-      {d.approvers.length > 0 && <span className="flex -space-x-1">{d.approvers.slice(0, 3).map((a) => <ApproverChip key={a} login={a} />)}</span>}
-      {d.approvers.length > 3 && <span className="text-muted-foreground text-[10px]">+{d.approvers.length - 3}</span>}
+      {d.reviewers.length > 0 && <ReviewerAvatars reviewers={d.reviewers} />}
       {(count > 0 || d.worst) && (
         <HoverCard>
           <HoverCardTrigger asChild>

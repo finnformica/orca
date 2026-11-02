@@ -8,7 +8,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { reviewSignal, type ConversationComment, type ReviewSignal, type ReviewThreadEvidence } from "../server/gh";
 import {
-  actionableUnresolved, approvers, commentSeverity, firstLine, humanComments, isBotAuthor, reviewDigest, severeAiComments,
+  actionableUnresolved, approvers, commentSeverity, firstLine, humanComments, isBotAuthor, reviewDigest, reviewers, severeAiComments,
 } from "@/workstream";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
@@ -72,6 +72,21 @@ describe("review signal derivations (pure)", () => {
   test("approvers: latest decisive review is APPROVED (a later plain comment doesn't withdraw it)", () => {
     expect(approvers(signal)).toEqual(["alice", "carol"]);
     expect(approvers({ threads: [], comments: [] })).toEqual([]);
+  });
+
+  test("reviewers: every person's current state, bots excluded, a later comment never withdraws a decision", () => {
+    expect(reviewers(signal)).toEqual([
+      { login: "alice", status: "APPROVED" }, // approved, then a plain comment: stays approved
+      { login: "bob", status: "CHANGES_REQUESTED" }, // approved, then changed their mind
+      { login: "carol", status: "APPROVED" }, // requested changes, then approved
+      // copilot-pull-request-reviewer is a bot: excluded, like humanComments
+    ]);
+    const dismissed: ConversationComment[] = [
+      { id: "D1", kind: "review", author: "dave", state: "APPROVED", body: "", createdAt: at(1) },
+      { id: "D2", kind: "review", author: "dave", state: "DISMISSED", body: "", createdAt: at(2) },
+    ];
+    expect(reviewers({ threads: [], comments: dismissed })).toEqual([]); // dismissed: as if never reviewed
+    expect(reviewers({ threads: [], comments: [] })).toEqual([]);
   });
 
   test("severity: emoji markers, Gemini priority badges and severity words near the top", () => {
@@ -206,7 +221,8 @@ describe("review cluster + Review panel", () => {
     const row = container!.querySelector<HTMLElement>('[data-branch="feat-x"]')!;
     const cluster = row.querySelector<HTMLElement>('[data-slot="review-cluster"]')!;
     expect(cluster).not.toBeNull();
-    expect([...cluster.querySelectorAll('[data-slot="approver"]')].map((a) => a.getAttribute("aria-label"))).toEqual(["Approved by alice", "Approved by carol"]);
+    const avatars = cluster.querySelector<HTMLElement>('[data-slot="reviewer-avatars"]')!;
+    expect(avatars.getAttribute("aria-label")).toBe("3 reviewers"); // alice, bob, carol (copilot is a bot)
     const chip = cluster.querySelector<HTMLElement>('[data-slot="unresolved"]')!;
     expect(chip.textContent).toBe("5"); // count then icon — no icon glyph in textContent
     expect(chip.dataset.severity).toBe("critical"); // the chip itself carries the severity now — no separate dot
@@ -230,6 +246,43 @@ describe("review cluster + Review panel", () => {
     await act(async () => { await store.refresh(); await flush(); });
     expect(apiFake.reviewSignalCalls.filter((c) => c === "r#7")).toEqual(["r#7"]);
     expect(container!.querySelector('[data-branch="local-only"] [data-slot="review-cluster"]')).toBeNull();
+  });
+
+  test("reviewer avatar group: focus (keyboard) opens a hover card listing names and states, grouped by state; a tap does too", async () => {
+    apiFake.prsData = [{ number: 7, title: "feat", branch: "feat-x", url: "https://x/7", state: "OPEN", isDraft: false, ciStatus: "passing", reviewStatus: "approved", mergeable: "MERGEABLE", autoMergeEnabled: false }];
+    apiFake.reviewEvidenceData = threads;
+    apiFake.prCommentsData = comments;
+    await mount(<Agents />);
+    const row = container!.querySelector<HTMLElement>('[data-branch="feat-x"]')!;
+    const avatars = row.querySelector<HTMLElement>('[data-slot="reviewer-avatars"]')!;
+    expect(document.querySelector('[data-slot="reviewer-list"]')).toBeNull(); // closed until hovered/focused/tapped
+    await focusChip(avatars);
+    const rows = [...document.querySelectorAll<HTMLElement>('[data-slot="reviewer-row"]')];
+    // bob's latest decision (changes requested) leads; alice and carol (both approved) follow,
+    // in the order they last changed — the copilot bot review never appears (people only).
+    expect(rows.map((r) => r.dataset.status)).toEqual(["CHANGES_REQUESTED", "APPROVED", "APPROVED"]);
+    expect(rows[0]!.textContent).toContain("bob");
+    expect(rows[0]!.textContent).toContain("Changes requested");
+    expect(rows[1]!.textContent).toContain("alice");
+    expect(rows[1]!.textContent).toContain("Approved");
+    expect(rows[2]!.textContent).toContain("carol");
+    expect(rows.some((r) => r.textContent?.includes("copilot"))).toBe(false);
+    await blurChip(avatars);
+    await act(async () => { await new Promise((r) => setTimeout(r, 150)); });
+    expect(document.querySelector('[data-slot="reviewer-list"]')).toBeNull();
+    // A HoverCard ignores touch by design — a tap on the group toggles it open itself instead.
+    await act(async () => {
+      avatars.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "touch" }));
+      avatars.click();
+      await flush(); await flush();
+    });
+    expect(document.querySelector('[data-slot="reviewer-list"]')).not.toBeNull();
+    await act(async () => {
+      avatars.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "touch" }));
+      avatars.click();
+      await flush(); await flush();
+    });
+    expect(document.querySelector('[data-slot="reviewer-list"]')).toBeNull();
   });
 
   test("a severe AI comment with every thread resolved still shows the coloured chip, with just the icon (no count)", async () => {
