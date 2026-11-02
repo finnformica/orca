@@ -5,6 +5,8 @@
 // worker (lib/sw.ts applyUpdate) and reloads.
 import { useEffect, useState } from "react";
 import { CloudOff, DatabaseZap, RefreshCw, Server, WifiOff } from "lucide-react";
+import { useGithubLimits } from "@/lib/githubLimits";
+import { limitBanner, type GithubLimits } from "../../../shared/githubLimits";
 import { poll } from "@/lib/poll";
 import { refreshEverything, useDatabaseDown, useRefreshing } from "@/lib/refresh";
 import { applyUpdate } from "@/lib/sw";
@@ -108,6 +110,21 @@ export function DatabaseBanner({ now }: { now?: number }) {
     <div role="status" data-slot="database-banner" className="bg-geist-warning-bg text-geist-warning-fg flex items-center justify-center gap-2 border-b px-4 py-2 text-sm">
       <DatabaseZap className="size-4 shrink-0" aria-hidden="true" />
       <span>{databaseBannerText(since, now ?? Date.now())}</span>
+    </div>
+  );
+}
+
+/** "GitHub rate limited until HH:MM" (the viewer's local time, from GitHub's reset header) while
+ *  this bridge is blocked on a GitHub budget. The PR rows show their last known state meanwhile. */
+export function GitHubLimitBanner({ limits, now }: { limits?: GithubLimits; now?: number }) {
+  const polled = useGithubLimits();
+  const text = limitBanner(limits ?? polled, now ?? Date.now(), (ms) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+  if (!text) return null;
+  return (
+    <div role="status" data-slot="github-limit-banner" className="bg-geist-warning-bg text-geist-warning-fg flex flex-wrap items-center justify-center gap-x-2 gap-y-0.5 border-b px-4 py-2 text-center text-sm">
+      <CloudOff className="size-4 shrink-0" aria-hidden="true" />
+      <span className="font-medium">{text.title}</span>
+      <span className="max-md:w-full">{text.detail}</span>
     </div>
   );
 }

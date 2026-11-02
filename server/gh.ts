@@ -1,4 +1,4 @@
-import { forRepo, GitHubNotFoundError } from "./github";
+import { forRepo, GitHubError, GitHubNotFoundError, GitHubRateLimitError } from "./github";
 import { mergeSafe } from "../web/src/workstream";
 import { extractPreviewUrl } from "./previewUrl";
 
@@ -67,8 +67,8 @@ export function flatPr(p: any): any {
 }
 
 /** `gh pr view <n> --json <fields>`: one PR of the repo at `cwd`, flattened. */
-async function viewPr(cwd: string, pr: number, fields: string): Promise<any> {
-  const c = await forRepo(cwd);
+async function viewPr(cwd: string, pr: number, fields: string, op = "viewPr"): Promise<any> {
+  const c = await forRepo(cwd, op);
   const d = await c.gql(`query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){${fields}}}}`, { owner: c.owner, name: c.name, number: pr });
   const node = d?.repository?.pullRequest;
   if (!node) throw new GitHubNotFoundError(`no pull request #${pr} in ${c.slug}`, 404, "graphql");
@@ -77,8 +77,8 @@ async function viewPr(cwd: string, pr: number, fields: string): Promise<any> {
 
 /** `gh pr list --search …`: PRs of the repo at `cwd` matching `filter` (GitHub search syntax, e.g.
  *  `is:open author:@me`), newest first, at most `limit`, flattened. */
-async function searchPrs(cwd: string, filter: string, limit: number, fields: string): Promise<any[]> {
-  const c = await forRepo(cwd);
+async function searchPrs(cwd: string, filter: string, limit: number, fields: string, op = "searchPrs"): Promise<any[]> {
+  const c = await forRepo(cwd, op);
   const q = `repo:${c.slug} is:pr ${filter} sort:created-desc`;
   const out: any[] = [];
   let after: string | null = null;
@@ -95,16 +95,21 @@ async function searchPrs(cwd: string, filter: string, limit: number, fields: str
 
 /** The GraphQL node id of PR `pr` — what a mutation takes. */
 async function prNodeId(cwd: string, pr: number): Promise<string> {
-  const id = (await viewPr(cwd, pr, "id")).id;
+  const id = (await viewPr(cwd, pr, "id", "prNodeId")).id;
   if (typeof id !== "string") throw new GitHubNotFoundError(`no pull request #${pr}`, 404, "graphql");
   return id;
 }
 
 /** One PR mutation (`gh pr ready / merge`), by name, with the PR's node id. */
 async function mutatePr(cwd: string, pr: number, mutation: string, extra = ""): Promise<any> {
-  const c = await forRepo(cwd);
+  const c = await forRepo(cwd, mutation);
   const id = await prNodeId(cwd, pr);
-  return c.gql(`mutation($id:ID!){${mutation}(input:{pullRequestId:$id${extra}}){clientMutationId}}`, { id });
+  return after(cwd, c.gql(`mutation($id:ID!){${mutation}(input:{pullRequestId:$id${extra}}){clientMutationId}}`, { id }));
+}
+
+/** A mutation's answer, and the repo's PR caches dropped whether it worked or not: the next read is fresh. */
+async function after<T>(cwd: string, p: Promise<T>): Promise<T> {
+  try { return await p; } finally { invalidatePrs(cwd); }
 }
 
 const REVIEW_BODY_LIMIT = 1_200;
@@ -131,7 +136,7 @@ const COMMENTS_MAX = 30;
  *  Deliberately no other filtering (bots included): what needs a response is the agent's call.
  *  Newest-last, bounded to the last COMMENTS_MAX and the same total size as thread evidence. */
 export async function conversationComments(cwd: string, pr: number, since?: string): Promise<ConversationComment[]> {
-  const j = await viewPr(cwd, pr, `${ACTOR},${COMMENTS},${REVIEWS}`) as {
+  const j = await viewPr(cwd, pr, `${ACTOR},${COMMENTS},${REVIEWS}`, "conversationComments") as {
     author?: { login?: string };
     comments?: Array<{ id?: string; author?: { login?: string }; body?: string; createdAt?: string; url?: string }>;
     reviews?: Array<{ id?: string; author?: { login?: string }; body?: string; submittedAt?: string; url?: string; state?: string }>;
@@ -161,7 +166,7 @@ export async function conversationComments(cwd: string, pr: number, since?: stri
 
 /** Unresolved inline review threads for one PR. This GraphQL call is intentionally on-demand. */
 export async function reviewEvidence(cwd: string, pr: number): Promise<ReviewThreadEvidence[]> {
-  const c = await forRepo(cwd);
+  const c = await forRepo(cwd, "reviewEvidence");
   const query = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{id,isResolved,path,line,originalLine,comments(first:20){nodes{author{login},body,url}}}}}}}`;
   const nodes = (await c.gql(query, { owner: c.owner, name: c.name, number: pr }))?.repository?.pullRequest?.reviewThreads?.nodes ?? [];
   const evidence: ReviewThreadEvidence[] = [];
@@ -204,8 +209,22 @@ export type ReviewSignal = {
 
 const SIGNAL_BODY_LIMIT = 600;
 
-export async function reviewSignal(cwd: string, pr: number): Promise<ReviewSignal> {
-  const c = await forRepo(cwd);
+// One read per PR serves every tab's review cluster and the upkeep tick for 9 × prCacheMs (3 min).
+const signalCache = new Map<string, { at: number; value?: ReviewSignal; inflight?: Promise<ReviewSignal> }>();
+export function reviewSignal(cwd: string, pr: number): Promise<ReviewSignal> {
+  const key = `${cwd}#${pr}`;
+  const hit = signalCache.get(key);
+  if (hit?.value && Date.now() - hit.at < 9 * prCacheMs()) return Promise.resolve(hit.value);
+  if (hit?.inflight) return hit.inflight;
+  const inflight = readReviewSignal(cwd, pr)
+    .then((value) => { signalCache.set(key, { at: Date.now(), value }); return value; })
+    .catch((e) => { if (hit?.value) signalCache.set(key, hit); else signalCache.delete(key); throw e; });
+  signalCache.set(key, { at: hit?.at ?? 0, value: hit?.value, inflight });
+  return inflight;
+}
+
+async function readReviewSignal(cwd: string, pr: number): Promise<ReviewSignal> {
+  const c = await forRepo(cwd, "reviewSignal");
   const who = "author{__typename,login}";
   const query = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){author{login},`
     + `commits(last:1){nodes{commit{committedDate}}},`
@@ -252,7 +271,7 @@ function usefulLogExcerpt(raw: string): string | undefined {
 /** `gh run view <id> --log-failed`: the logs of the run's failed jobs, each line prefixed by its job
  *  name as gh did. A log download redirects to a storage host, which must not get the token. */
 async function failedRunLog(cwd: string, runId: string): Promise<string> {
-  const c = await forRepo(cwd);
+  const c = await forRepo(cwd, "failedRunLog");
   const jobs = (await c.rest<{ jobs?: Array<{ id: number; name?: string; conclusion?: string | null }> }>(`{repo}/actions/runs/${runId}/jobs?filter=latest&per_page=100`))?.jobs ?? [];
   const failed = jobs.filter((j) => j.conclusion && FAIL.has(j.conclusion.toUpperCase()));
   const parts: string[] = [];
@@ -265,7 +284,7 @@ async function failedRunLog(cwd: string, runId: string): Promise<string> {
 
 /** Failing checks plus bounded GitHub Actions failed-step logs for one PR, fetched on demand. */
 export async function ciEvidence(cwd: string, pr: number): Promise<CiFailureEvidence[]> {
-  const checks = (await viewPr(cwd, pr, ROLLUP)).statusCheckRollup ?? [];
+  const checks = (await viewPr(cwd, pr, ROLLUP, "ciEvidence")).statusCheckRollup ?? [];
   const failures = checks.filter((check: any) => checkOutcome(check) === "failing");
   const result: CiFailureEvidence[] = [];
   const logs = new Map<string, string | undefined>();
@@ -301,10 +320,10 @@ export async function createPr(
   worktreePath: string,
   opts: { title: string; body: string; base: string; head: string; draft?: boolean },
 ): Promise<{ number: number; url: string }> {
-  const c = await forRepo(worktreePath);
-  const res = await c.rest<{ number: number; html_url: string }>("{repo}/pulls", {
+  const c = await forRepo(worktreePath, "createPr");
+  const res = await after(worktreePath, c.rest<{ number: number; html_url: string }>("{repo}/pulls", {
     method: "POST", body: { title: opts.title, body: opts.body, base: opts.base, head: opts.head, draft: Boolean(opts.draft) },
-  });
+  }));
   return { number: res.number, url: res.html_url };
 }
 
@@ -318,6 +337,10 @@ export type PrSummary = PrStatus & {
   additions: number; deletions: number;
   /** The PR's head commit — what a CI notification is keyed on, and what cleanup calls "pushed". */
   head?: string;
+  /** Set when GitHub could not be asked: this row is the last known state, read at `staleAt` (ms).
+   *  A caller that ACTS on CI, review or conflicts (upkeep, notifications) skips such a row. */
+  staleAt?: number;
+  staleReason?: string;
 };
 
 /** Count HUMAN feedback on a PR: issue comments + reviews left by someone other than the author,
@@ -395,15 +418,130 @@ const mapSummary = (j: RawPr, required: Set<string> = new Set(), previewLabelNam
 
 /** List the current user's open PRs with status — the source of truth for the kanban. Fetches CI,
  *  comments + reviews too (there are few of your own PRs) so the board shows checks, links the deploy
- *  preview, and "Follow PR" can react to new reviewer feedback. */
+ *  preview, and "Follow PR" can react to new reviewer feedback.
+ *
+ *  ONE read per repo serves every caller (each tab's board poll, upkeep, cleanup, the orchestrator's
+ *  board, `orca send`): cached for `prCacheMs()` and shared while in flight. A mutation here drops it
+ *  (`invalidatePrs`). When GitHub cannot be asked (rate limited, down), the answer is the LAST KNOWN
+ *  state, each row marked `staleAt` — never an empty list, which the board drew as "no PR" / local. */
 export async function listPrs(cwd: string, previewLabelName = "preview"): Promise<PrSummary[]> {
+  const entry = openCache.get(cwd) ?? {};
+  openCache.set(cwd, entry);
+  const map = (r: OpenRead) => r.raw.map((j) => mapSummary(j, (j.baseRefName && r.required.get(j.baseRefName)) || new Set(), previewLabelName));
+  // A repo with no open PR is read 6× less often: 7 of 9 repos had none, polled like the busy ones.
+  if (entry.read && Date.now() - entry.read.at < (entry.read.raw.length ? prCacheMs() : 6 * prCacheMs())) return map(entry.read);
+  const mine = !entry.inflight;
+  const inflight = entry.inflight ??= readOpen(cwd)
+    .then((r) => {
+      // A PR left the open list (merged or closed, maybe outside Orca): the done lists are old now.
+      // Without this, the row read as a local branch until the merged list's own refresh.
+      const now = new Set(r.raw.map((p) => p.number));
+      if (entry.read?.raw.some((p) => !now.has(p.number))) dropDone(cwd);
+      entry.read = r;
+      return r;
+    })
+    .finally(() => { entry.inflight = undefined; });
+  try {
+    const read = await inflight;
+    const prs = map(read);
+    if (mine && memory) void Promise.resolve(memory.save(cwd, prs, read.at)).catch(() => {});
+    return prs;
+  } catch (e) {
+    const stale = await lastKnownPrs(cwd, entry.read, e, previewLabelName);
+    if (stale) return stale;
+    throw e;
+  }
+}
+
+type OpenRead = { raw: RawPr[]; required: Map<string, Set<string>>; at: number };
+const openCache = new Map<string, { read?: OpenRead; inflight?: Promise<OpenRead> }>();
+
+async function readOpen(cwd: string): Promise<OpenRead> {
   // gh pr list's default --limit is 30.
-  const prs = await searchPrs(cwd, "is:open author:@me", 30, `${PR_META_FIELDS},${ROLLUP},${COMMENTS},${ACTOR},${REVIEWS},${LABELS}`) as RawPr[];
+  const raw = await searchPrs(cwd, "is:open author:@me", 30, `${PR_META_FIELDS},${ROLLUP},${COMMENTS},${ACTOR},${REVIEWS},${LABELS}`, "listPrs") as RawPr[];
   // Resolve each distinct base branch's required-check set once, so CI status reflects only checks
   // that actually gate merge (advisory bots like an AI reviewer don't turn the badge red).
-  const bases = [...new Set(prs.map((p) => p.baseRefName).filter((b): b is string => Boolean(b)))];
+  const bases = [...new Set(raw.map((p) => p.baseRefName).filter((b): b is string => Boolean(b)))];
   const required = new Map(await Promise.all(bases.map(async (b) => [b, await requiredChecks(cwd, b)] as const)));
-  return prs.map((j) => mapSummary(j, (j.baseRefName && required.get(j.baseRefName)) || new Set(), previewLabelName));
+  return { raw, required, at: Date.now() };
+}
+
+/** How long one open-PR read serves every caller. `ORCA_GH_PR_CACHE_MS` overrides it (the tests set
+ *  0, so a changed fixture reads at once). 20s: the board's active poll is 8s per tab. */
+export function prCacheMs(): number {
+  const v = Number(process.env.ORCA_GH_PR_CACHE_MS);
+  return process.env.ORCA_GH_PR_CACHE_MS !== undefined && Number.isFinite(v) && v >= 0 ? v : 20_000;
+}
+
+/** Drop the cached open-PR read of the repo at `cwd` (after a mutation: create, merge, close…). */
+export function invalidatePrs(cwd: string): void {
+  const e = openCache.get(cwd);
+  if (e) e.read = e.read && { ...e.read, at: 0 }; // kept as the last known state, never served as fresh
+  dropDone(cwd);
+  for (const k of signalCache.keys()) if (k.startsWith(`${cwd}#`)) signalCache.delete(k);
+}
+function dropDone(cwd: string): void {
+  mergedCache.delete(cwd);
+  closedCache.delete(cwd);
+  for (const k of mergedSinceCache.keys()) if (k.startsWith(`${cwd}\0`)) mergedSinceCache.delete(k);
+}
+/** Clear every PR cache (tests). */
+export function resetPrCaches(): void {
+  openCache.clear(); mergedCache.clear(); closedCache.clear(); mergedSinceCache.clear(); signalCache.clear(); requiredCache.clear(); viewers.clear();
+}
+
+/** Where the last known open PRs persist across a restart (server/prMemory.ts: each workstream's
+ *  enrichment `lastPr`). Unset: memory only. */
+export type PrMemory = {
+  save(cwd: string, prs: PrSummary[], at: number): Promise<void> | void;
+  load(cwd: string): Promise<{ prs: PrSummary[] } | undefined>;
+};
+let memory: PrMemory | undefined;
+export function setPrMemory(m: PrMemory | undefined): void { memory = m; }
+
+/** An error that means "GitHub could not be asked now" (not "this repo has no GitHub remote"). */
+export function githubUnavailable(e: unknown): boolean {
+  if (e instanceof GitHubRateLimitError) return true;
+  return e instanceof GitHubError && e.path !== "" && (e.status === 0 || e.status >= 500);
+}
+const staleReason = (e: unknown) => e instanceof GitHubRateLimitError ? "GitHub rate limited" : "GitHub unreachable";
+
+async function lastKnownPrs(cwd: string, read: OpenRead | undefined, e: unknown, previewLabelName: string): Promise<PrSummary[] | undefined> {
+  if (!githubUnavailable(e)) return undefined;
+  const reason = staleReason(e);
+  const known: PrSummary[] | undefined = read
+    ? read.raw.map((j) => ({ ...mapSummary(j, (j.baseRefName && read.required.get(j.baseRefName)) || new Set(), previewLabelName), staleAt: read.at }))
+    : (await memory?.load(cwd).catch(() => undefined))?.prs;
+  // GraphQL spent but REST not: which PRs are open is fresh from REST; CI, review and mergeable stay
+  // the last known values (REST has them only per PR).
+  if (e instanceof GitHubRateLimitError && e.path === "graphql") {
+    const viaRest = await openPrsRest(cwd, known ?? []).catch(() => undefined);
+    if (viaRest) return viaRest.map((p) => ({ ...p, staleReason: reason }));
+  }
+  return known?.map((p) => ({ ...p, staleAt: p.staleAt ?? read?.at ?? Date.now(), staleReason: reason }));
+}
+
+const viewers = new Map<string, string>();
+/** The open PRs of the account by REST (`GET pulls`, ETag: a 304 is free), merged over `known`. */
+async function openPrsRest(cwd: string, known: PrSummary[]): Promise<PrSummary[]> {
+  const c = await forRepo(cwd, "listPrsRest");
+  const me = viewers.get(c.token) ?? (await c.rest<{ login: string }>("user")).login;
+  viewers.set(c.token, me);
+  const pulls = await c.rest<any[]>("{repo}/pulls?state=open&per_page=100");
+  const byNumber = new Map(known.map((p) => [p.number, p]));
+  return pulls.filter((p) => p?.user?.login === me).slice(0, 30).map((p): PrSummary => {
+    const k = byNumber.get(p.number);
+    return {
+      ciStatus: "none", reviewStatus: "none", mergeable: "UNKNOWN", externalFeedback: 0, additions: 0, deletions: 0,
+      ...k,
+      number: p.number, title: p.title ?? k?.title ?? "", branch: p.head?.ref ?? k?.branch ?? "", head: p.head?.sha || k?.head,
+      base: p.base?.ref ?? k?.base, url: p.html_url ?? k?.url ?? "", state: "OPEN", isDraft: Boolean(p.draft),
+      autoMergeEnabled: Boolean(p.auto_merge), autoMergeMethod: p.auto_merge?.merge_method || k?.autoMergeMethod,
+      // A new head since the last known read: its CI and mergeable are unknown, not the old ones.
+      ...(k && k.head && p.head?.sha && k.head !== p.head.sha ? { ciStatus: "pending" as const, failingChecks: undefined, mergeable: "UNKNOWN" as const } : {}),
+      staleAt: k?.staleAt ?? Date.now(),
+    };
+  });
 }
 
 const REQUIRED_TTL_MS = 5 * 60_000;
@@ -420,7 +558,7 @@ export async function requiredChecks(cwd: string, branch: string): Promise<Set<s
   if (hit && Date.now() - hit.at < REQUIRED_TTL_MS) return hit.checks;
   const checks = new Set<string>();
   try {
-    const rules = await (await forRepo(cwd)).rest(`{repo}/rules/branches/${branch}`) as Array<{ type?: string; parameters?: { required_status_checks?: Array<{ context?: string }> } }>;
+    const rules = await (await forRepo(cwd, "requiredChecks")).rest(`{repo}/rules/branches/${branch}`) as Array<{ type?: string; parameters?: { required_status_checks?: Array<{ context?: string }> } }>;
     for (const r of rules) if (r.type === "required_status_checks") for (const c of r.parameters?.required_status_checks ?? []) if (c.context) checks.add(c.context);
   } catch { /* no protection / no access → empty set → callers keep the all-checks behaviour */ }
   requiredCache.set(key, { at: Date.now(), checks });
@@ -437,7 +575,7 @@ async function fetchReviewPrs(cwd: string): Promise<ReviewPr[]> {
   // Fields GitHub computes PER PR (mergeable, autoMergeRequest) are left out: over ~250 PRs they add
   // seconds, and the queue doesn't show them — the PR page fetches its own (prDetail). reviewDecision
   // stays: approved / changes requested is what a review queue is for.
-  const arr = await searchPrs(cwd, "is:open -author:@me", 500, REVIEW_FIELDS) as Array<RawPr & { author?: { login?: string; name?: string }; updatedAt?: string }>;
+  const arr = await searchPrs(cwd, "is:open -author:@me", 500, REVIEW_FIELDS, "listReviewPrs") as Array<RawPr & { author?: { login?: string; name?: string }; updatedAt?: string }>;
   return arr
     .map((j) => ({ ...mapSummary(j), author: j.author?.login ?? "", authorName: j.author?.name || j.author?.login || "", updatedAt: j.updatedAt ?? "" }))
     .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
@@ -523,7 +661,7 @@ const defined = <T extends Record<string, unknown>>(o: T): T => Object.fromEntri
 export async function prDetail(cwd: string, pr: number): Promise<PrDetail> {
   // deno-lint-ignore no-explicit-any -- GitHub's json is broad; we normalise below
   const j = await viewPr(cwd, pr,
-    `number,title,body,${ACTOR},state,url,headRefName,baseRefName,additions,deletions,changedFiles,${FILES},${REVIEWS},${COMMENTS},mergeable,reviewDecision,${ROLLUP},${AUTO_MERGE}`) as any;
+    `number,title,body,${ACTOR},state,url,headRefName,baseRefName,additions,deletions,changedFiles,${FILES},${REVIEWS},${COMMENTS},mergeable,reviewDecision,${ROLLUP},${AUTO_MERGE}`, "prDetail") as any;
   return {
     number: j.number,
     title: j.title ?? "",
@@ -555,7 +693,7 @@ export async function prDetail(cwd: string, pr: number): Promise<PrDetail> {
 
 /** Raw unified diff for a PR. */
 export const prDiff = async (cwd: string, pr: number): Promise<string> =>
-  String(await (await forRepo(cwd)).rest(`{repo}/pulls/${pr}`, { accept: "application/vnd.github.diff" }) ?? "");
+  String(await (await forRepo(cwd, "prDiff")).rest(`{repo}/pulls/${pr}`, { accept: "application/vnd.github.diff" }) ?? "");
 
 /** `headSha`: the PR's last head — a worktree past it is a reused branch, not this PR
  *  (`mergedPrIsHistory`), UNLESS `headBehindPr` says the worktree is merely behind it (never fetched
@@ -564,15 +702,17 @@ export const prDiff = async (cwd: string, pr: number): Promise<string> =>
 export type MergedPr = { number: number; title: string; branch: string; url: string; mergedAt: string; headSha?: string; headBehindPr?: boolean };
 
 type RawMergedPr = { number: number; title: string; headRefName: string; url: string; mergedAt: string; headRefOid?: string };
-const MERGED_TTL_MS = 15_000;
+// 15 × prCacheMs (5 min): cleanup asks every 10s per repo (the inventory tick), each tab every 90s.
+// A merge through Orca drops it (invalidatePrs), and so does a PR that leaves the open list (listPrs).
+const doneTtl = () => 15 * prCacheMs();
 const mergedCache = new Map<string, { at: number; rows: RawMergedPr[]; inflight?: Promise<RawMergedPr[]> }>();
 
 /** One shared merged-PR query powers both cleanup and the Done lane. */
 async function mergedRows(cwd: string): Promise<RawMergedPr[]> {
   const hit = mergedCache.get(cwd);
-  if (hit && Date.now() - hit.at < MERGED_TTL_MS) return hit.rows;
+  if (hit && Date.now() - hit.at < doneTtl()) return hit.rows;
   if (hit?.inflight) return hit.inflight;
-  const inflight = searchPrs(cwd, "is:merged author:@me", 50, "number,title,headRefName,url,mergedAt,headRefOid")
+  const inflight = searchPrs(cwd, "is:merged author:@me", 50, "number,title,headRefName,url,mergedAt,headRefOid", "mergedRows")
     .then((found) => {
       const rows = found as RawMergedPr[];
       mergedCache.set(cwd, { at: Date.now(), rows });
@@ -593,9 +733,9 @@ async function mergedSince(cwd: string, since: number): Promise<RawMergedPr[]> {
   const day = new Date(since - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const key = `${cwd}\0${day}`;
   const hit = mergedSinceCache.get(key);
-  if (hit && Date.now() - hit.at < MERGED_TTL_MS) return hit.rows;
+  if (hit && Date.now() - hit.at < doneTtl()) return hit.rows;
   if (hit?.inflight) return hit.inflight;
-  const inflight = searchPrs(cwd, `is:merged author:@me merged:>=${day}`, MERGED_SINCE_LIMIT, "number,title,headRefName,url,mergedAt,headRefOid")
+  const inflight = searchPrs(cwd, `is:merged author:@me merged:>=${day}`, MERGED_SINCE_LIMIT, "number,title,headRefName,url,mergedAt,headRefOid", "listMerged")
     .then((found) => {
       const rows = found as RawMergedPr[];
       for (const k of mergedSinceCache.keys()) if (k.startsWith(`${cwd}\0`) && k !== key) mergedSinceCache.delete(k); // yesterday's window
@@ -633,9 +773,9 @@ type RawClosedPr = { number?: number; headRefName: string; headRefOid?: string; 
 const closedCache = new Map<string, { at: number; rows: RawClosedPr[]; inflight?: Promise<RawClosedPr[]> }>();
 async function closedRows(cwd: string): Promise<RawClosedPr[]> {
   const hit = closedCache.get(cwd);
-  if (hit && Date.now() - hit.at < MERGED_TTL_MS) return hit.rows;
+  if (hit && Date.now() - hit.at < doneTtl()) return hit.rows;
   if (hit?.inflight) return hit.inflight;
-  const inflight = searchPrs(cwd, "is:closed author:@me", 50, "number,headRefName,headRefOid,closedAt,mergedAt")
+  const inflight = searchPrs(cwd, "is:closed author:@me", 50, "number,headRefName,headRefOid,closedAt,mergedAt", "donePrs")
     .then((found) => {
       const rows = (found as RawClosedPr[]).filter((j) => j.headRefName);
       closedCache.set(cwd, { at: Date.now(), rows });
@@ -655,16 +795,13 @@ export async function closedBranches(cwd: string): Promise<Set<string>> {
  *  newest PR per branch wins — gh lists newest first. */
 export type DonePr = { reason: "merged" | "closed"; at?: number; head?: string; number?: number };
 export async function donePrs(cwd: string): Promise<Map<string, DonePr>> {
-  const [merged, closed] = await Promise.all([mergedRows(cwd), closedRows(cwd).catch(() => [] as RawClosedPr[])]);
+  // ONE search: `is:closed` includes merged PRs (`mergedAt` tells them apart). It was two (merged +
+  // closed), each every 10s per repo through cleanup — the largest steady GraphQL spend.
+  const closed = await closedRows(cwd);
   const out = new Map<string, DonePr>();
   const at = (iso?: string | null) => (iso && Number.isFinite(Date.parse(iso)) ? Date.parse(iso) : undefined);
-  for (const j of merged) if (j.headRefName && j.mergedAt && !out.has(j.headRefName)) out.set(j.headRefName, { reason: "merged", at: at(j.mergedAt), head: j.headRefOid || undefined, number: j.number });
-  for (const j of closed) {
-    if (out.has(j.headRefName)) continue;
-    out.set(j.headRefName, j.mergedAt
-      ? { reason: "merged", at: at(j.mergedAt), head: j.headRefOid || undefined, number: j.number }
-      : { reason: "closed", at: at(j.closedAt), head: j.headRefOid || undefined, number: j.number });
-  }
+  for (const j of closed) if (j.mergedAt && !out.has(j.headRefName)) out.set(j.headRefName, { reason: "merged", at: at(j.mergedAt), head: j.headRefOid || undefined, number: j.number });
+  for (const j of closed) if (!out.has(j.headRefName)) out.set(j.headRefName, { reason: "closed", at: at(j.closedAt), head: j.headRefOid || undefined, number: j.number });
   return out;
 }
 
@@ -674,15 +811,15 @@ export async function mergedBranches(cwd: string): Promise<Set<string>> {
 
 /** Close a PR without merging (best-effort). */
 export const closePr = async (cwd: string, pr: number) =>
-  (await forRepo(cwd)).rest(`{repo}/pulls/${pr}`, { method: "PATCH", body: { state: "closed" } });
+  after(cwd, (await forRepo(cwd, "closePr")).rest(`{repo}/pulls/${pr}`, { method: "PATCH", body: { state: "closed" } }));
 
 /** Add a label to a PR (e.g. to trigger the deploy-preview action). */
 export const addLabel = async (cwd: string, pr: number, label: string) =>
-  (await forRepo(cwd)).rest(`{repo}/issues/${pr}/labels`, { method: "POST", body: { labels: label.split(",").map((l) => l.trim()).filter(Boolean) } });
+  after(cwd, (await forRepo(cwd, "addLabel")).rest(`{repo}/issues/${pr}/labels`, { method: "POST", body: { labels: label.split(",").map((l) => l.trim()).filter(Boolean) } }));
 
 /** Rename a PR — the GitHub title is the card's title for a PR row, so this is how a rename sticks. */
 export const editTitle = async (cwd: string, pr: number, title: string) =>
-  (await forRepo(cwd)).rest(`{repo}/pulls/${pr}`, { method: "PATCH", body: { title } });
+  after(cwd, (await forRepo(cwd, "editTitle")).rest(`{repo}/pulls/${pr}`, { method: "PATCH", body: { title } }));
 
 /** Mark a draft PR ready for review. */
 export const markReady = (cwd: string, pr: number) => mutatePr(cwd, pr, "markPullRequestReadyForReview");
@@ -699,13 +836,14 @@ const STACKED = /part of a stack/i;
  *  little for the background merge to land so a failure surfaces here rather than on the next poll.
  *  `merge_action: default` lets GitHub pick the merge queue when the base requires one. */
 async function mergeAsync(cwd: string, pr: number, auto: boolean): Promise<void> {
-  const c = await forRepo(cwd);
+  const c = await forRepo(cwd, "mergeAsync");
   let res = await c.rest(`{repo}/pulls/${pr}/merge-async`, { method: "PUT", body: { merge_method: "squash", merge_action: auto ? "default" : "direct_merge" } }) as { status: string; details?: { uuid?: string; message?: string } };
   // ponytail: ~20s of polling, then trust the board's own PR poll to show the result.
   for (let i = 0; i < 10 && res.status === "pending" && res.details?.uuid; i++) {
     await Bun.sleep(2_000);
     res = await c.rest(`{repo}/pulls/${pr}/merge-async/${res.details.uuid}`);
   }
+  invalidatePrs(cwd);
   if (res.status === "failed") throw new Error(`stacked merge of PR #${pr} failed: ${res.details?.message ?? "see the PR on GitHub"}`);
 }
 
@@ -756,7 +894,7 @@ export const disableAutoMerge = (cwd: string, pr: number) =>
 /** Only required checks decide pass/fail (the board's own rule, `mapSummary` above) — an advisory
  *  bot failing must not read as "CI is failing" here either. */
 export async function prStatus(cwd: string, pr: number): Promise<PrStatus> {
-  const json = await viewPr(cwd, pr, `state,mergeable,reviewDecision,baseRefName,${ROLLUP}`) as {
+  const json = await viewPr(cwd, pr, `state,mergeable,reviewDecision,baseRefName,${ROLLUP}`, "prStatus") as {
     state: string;
     mergeable: string;
     reviewDecision: string;
@@ -782,7 +920,7 @@ export type PrMergeGate = PrStatus & {
 /** Same required-check filter as the board: only a check in the PR base's required set (or, when
  *  that set is empty, every check) decides `ciStatus` and lists in `failingChecks`. */
 export async function prMergeGate(cwd: string, pr: number): Promise<PrMergeGate> {
-  const j = await viewPr(cwd, pr, `number,title,headRefName,baseRefName,url,isDraft,headRefOid,state,mergeable,reviewDecision,${ROLLUP},${FILES},changedFiles`) as {
+  const j = await viewPr(cwd, pr, `number,title,headRefName,baseRefName,url,isDraft,headRefOid,state,mergeable,reviewDecision,${ROLLUP},${FILES},changedFiles`, "prMergeGate") as {
     number: number; title: string; headRefName: string; baseRefName?: string; url: string; isDraft: boolean; headRefOid: string;
     state: string; mergeable: string; reviewDecision: string; changedFiles?: number; files?: Array<{ path: string }>;
     statusCheckRollup: Array<{ name?: string; context?: string; conclusion?: string; state?: string }>;

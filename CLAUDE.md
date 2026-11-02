@@ -180,6 +180,18 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
   post surfaces as an error (never silently degraded), and the client copies the exact message to the
   clipboard so it can be pasted by hand. The message is the linked `#7 Title` (Slack mrkdwn for the
   post, rich HTML for the copy).
+- **GitHub rate limits** (2026-11-02: the shared GraphQL budget ran out twice; open PRs showed as
+  "no PR"). A block is per token AND resource (`graphql` / `core` / `search`), so spent GraphQL never
+  stops REST; a refused call checks a minute-old block (or a GraphQL `RATE_LIMITED` error) against the
+  free `GET /rate_limit`. `gh.listPrs` is ONE read per repo for every caller (`prCacheMs`, 20s; 2 min
+  for a repo with no PR; `ORCA_GH_PR_CACHE_MS`, 0 in tests), dropped by any mutation (`invalidatePrs`).
+  When GitHub cannot be asked it answers the LAST KNOWN state, each row `staleAt`: open PRs by REST
+  (`GET pulls`, ETag) over the last read, else memory, else enrichment `lastPr` (`server/prMemory.ts`,
+  no table). Upkeep, followers and notifications skip a stale row. `donePrs` is one `is:closed`
+  search cached 5 min (dropped when a PR leaves the open list). `/api/github/limits` feeds the
+  "GitHub rate limited until HH:MM" banner (`GitHubLimitBanner`); `/api/diagnostics` counts calls per op
+  (`gh.byOp`). A local verb (archive, hide, unhide, status, stop) never needs GitHub: archive keeps the
+  branch when it cannot tell.
 
 ## Integrations (one path in, one path out)
 

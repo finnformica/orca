@@ -27,7 +27,7 @@ import { SLIDE_MS } from "@/components/SidePanel";
 import { dockClipElementAtom, dockElementAtom, dockWidthAtom, noteDockMotion, useNavToggle } from "@/lib/dock";
 import { HeaderUsageMeter } from "@/views/Vitals";
 import { CountBadge } from "@/components/console";
-import { BridgeLabel, DatabaseBanner, OfflineScreen, StaleIndicator, UpdateBanner } from "@/components/Freshness";
+import { BridgeLabel, DatabaseBanner, GitHubLimitBanner, OfflineScreen, StaleIndicator, UpdateBanner } from "@/components/Freshness";
 import { useTheme, type Theme } from "@/lib/theme";
 import { cn, PortalContainer } from "@/lib/utils";
 import { validChoice } from "@/lib/persisted";
@@ -223,6 +223,7 @@ export function Shell({ crumbs, sidebarActions, children }: {
           </div>
         </header>
         <DatabaseBanner />
+        <GitHubLimitBanner />
         <main className="w-full flex-1 px-4 py-6 md:px-6 max-md:min-w-0 max-md:px-[max(1rem,env(safe-area-inset-left))] max-md:pb-[calc(5.5rem+env(safe-area-inset-bottom))]">
           {serverProblem && <ServerOffline configFailed={offline} />}
           {offline ? (serverProblem ? null : <OfflineScreen />) : children}

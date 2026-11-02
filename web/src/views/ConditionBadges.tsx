@@ -2,9 +2,11 @@
 // for, auto-merge. `showAutoMerge` defaults to on (Board.tsx's card has no other auto-merge
 // indicator); Agents.tsx turns it off, because the row's state pill right beside this already reads
 // "Auto-merge" (Finn: it was shown twice).
-import { GitMerge } from "lucide-react";
+import { Clock, GitMerge } from "lucide-react";
 import type { Row } from "../store";
 import { Badge } from "@/components/ui/badge";
+import { Tip } from "@/components/ui/tip";
+import { ago } from "../workstream";
 import { CiChip } from "./PrPanels";
 
 // `h-6` on every badge here: Badge's own height (border + py-0.5 + text-xs's line-height, ~22px) is
@@ -14,11 +16,21 @@ import { CiChip } from "./PrPanels";
 export function ConditionBadges({ row, showAutoMerge = true }: { row: Row; showAutoMerge?: boolean }) {
   return (
     <>
+      {row.prStaleAt !== undefined && <StaleBadge at={row.prStaleAt} />}
       {showAutoMerge && row.autoMergeEnabled && <Badge variant="outline" className="h-6 border-transparent bg-purple-500/10 text-purple-700 dark:text-purple-400">Auto-merge <GitMerge /></Badge>}
       {row.reviewStatus === "changes_requested" && <Badge variant="destructive" className="h-6">Changes requested</Badge>}
       {row.mergeable === "CONFLICTING" && <Badge variant="destructive" className="h-6">Conflicts</Badge>}
       {row.mergeable === "UNKNOWN" && <Badge variant="outline" className="h-6">Checking…</Badge>}
       <CiChip repo={row.repo} prNumber={row.prNumber} ciStatus={row.ciStatus} />
     </>
+  );
+}
+
+/** The PR state is the last known one (GitHub rate limited or down): how old it is. */
+export function StaleBadge({ at, now = Date.now() }: { at: number; now?: number }) {
+  return (
+    <Tip label={`GitHub could not be asked. This PR state was read at ${new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.`} wrap>
+      <Badge variant="outline" data-testid="pr-stale" className="h-6 border-transparent bg-amber-500/10 text-amber-700 dark:text-amber-400"><Clock />Stale · {ago(at, now)}</Badge>
+    </Tip>
   );
 }

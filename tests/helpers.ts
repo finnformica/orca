@@ -46,6 +46,10 @@ esac
 //   ORCA_GH_CLEAN_STATUS: auto-merge fails the way GitHub refuses it on a PR that is already clean
 //   to merge (CLEAN) or only has advisory checks failing (UNSTABLE).
 // - ORCA_GH_VIEW_DENY: logins whose token cannot see a repository (server/repos.ts tries the next).
+// - ORCA_GH_GRAPHQL_LIMITED / ORCA_GH_CORE_LIMITED: that budget is spent until the epoch second
+//   they hold — a 403 with GitHub's rate-limit headers. `GET /rate_limit` reports both (it is free).
+//   REST `GET …/pulls` lists the open-PR fixture in REST's shape (the GraphQL-spent fallback).
+//   ORCA_GH_GRAPHQL_RATE_ERROR: GraphQL answers 200 with a RATE_LIMITED error (no reset in it).
 const env = (k: string) => process.env[k];
 const read = async (k: string): Promise<string | undefined> => { const f = env(k); if (!f) return undefined; try { return await readFile(f, "utf8"); } catch { return undefined; } };
 const readJson = async (k: string, fallback: unknown): Promise<any> => { const t = await read(k); try { return t ? JSON.parse(t) : fallback; } catch { return fallback; } };
@@ -73,9 +77,18 @@ async function logLine(line: string): Promise<void> {
   if (f) await appendFile(f, `${line}\n`);
 }
 
+/** A spent budget's answer: 403 and the headers GitHub sends with it. */
+const limited = (resource: string, reset: string) => new R(JSON.stringify({ message: "API rate limit exceeded" }), {
+  status: 403, headers: { "content-type": "application/json", "x-ratelimit-limit": "5000", "x-ratelimit-remaining": "0", "x-ratelimit-reset": reset, "x-ratelimit-resource": resource },
+});
+const budget = (reset: string | undefined) => ({ limit: 5000, remaining: reset ? 0 : 4999, reset: Number(reset) || Math.floor(Date.now() / 1000) + 3600 });
+
 async function fakeGraphql(query: string, vars: Record<string, any>, token: string): Promise<Response> {
   const field = /\{\s*(\w+)/.exec(query)?.[1] ?? "";
   await logLine(`graphql ${field} ${JSON.stringify(vars)} ${query}`);
+  if (env("ORCA_GH_GRAPHQL_RATE_ERROR")) return gqlError("API rate limit already exceeded for user ID 4242.", "search", "RATE_LIMITED");
+  const spent = env("ORCA_GH_GRAPHQL_LIMITED");
+  if (spent) return limited("graphql", spent);
   if (/^\s*mutation/.test(query)) {
     const name = /\{\s*(\w+)\(/.exec(query)?.[1] ?? "";
     if (name === "enablePullRequestAutoMerge" && env("ORCA_GH_NO_AUTO")) return gqlError("Auto merge is not allowed for this repository", name);
@@ -111,6 +124,16 @@ async function fakeRest(req: Request, url: URL): Promise<Response> {
   await logLine(`${req.method} ${path}${text ? ` ${text}` : ""}`);
   const p = url.pathname;
   const token = (req.headers.get("authorization") ?? "").replace(/^Bearer /, "");
+  if (p === "/rate_limit") return json({ resources: { core: budget(env("ORCA_GH_CORE_LIMITED")), graphql: budget(env("ORCA_GH_GRAPHQL_LIMITED")), search: budget(undefined) } });
+  const spent = env("ORCA_GH_CORE_LIMITED");
+  if (spent) return limited("core", spent);
+  if (/\/pulls$/.test(p) && req.method === "GET") {
+    const list = await readJson("ORCA_PRLIST_FIXTURE", []) as any[];
+    return json(list.map((f) => ({
+      number: f.number, title: f.title, html_url: f.url, state: "open", draft: Boolean(f.isDraft), auto_merge: f.autoMergeRequest ?? null,
+      head: { ref: f.headRefName, sha: f.headRefOid }, base: { ref: f.baseRefName }, user: { login: f.author?.login ?? token.replace(/^tok-/, "") },
+    })));
+  }
   if (p === "/user") return json({ id: 4242, login: token.replace(/^tok-/, ""), name: "Finn P", email: null });
   if (p === "/user/orgs") return json(await readJson("ORCA_GH_ORGS_FIXTURE", []));
   if (req.method === "DELETE") return new R(null, { status: 204 });
