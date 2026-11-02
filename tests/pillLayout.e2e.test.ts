@@ -83,11 +83,11 @@ test("the PR-column pill and its badge siblings share one box: Pill vs Pill, Tip
   // the Tip wrapper must add no height and shift nothing.
   for (const p of [verified, changed]) { expect(p.h).toBeCloseTo(open.h, 1); expect(p.t).toBeCloseTo(open.t, 1); }
 
-  // The Badge-based condition chips beside the state-pill (CI, auto-merge) must match its box too —
-  // the real, measured difference this review flagged (ConditionBadges.tsx / PrPanels.tsx CiChip).
+  // The Badge-based condition chip beside the state-pill (CI) must match its box too — the real,
+  // measured difference this review flagged (ConditionBadges.tsx / PrPanels.tsx CiChip). The harness
+  // passes `showAutoMerge={false}`, as Agents.tsx does, so there is no auto-merge Badge to measure:
+  // that state shows only on the pill (Finn: a Badge beside it repeated the same word).
   const openCi = item(lines.get("open")!, "badge:CI");
-  const autoMergeBadge = item(lines.get("auto-merge")!, "badge:Auto-merge");
   expect(openCi.h).toBeCloseTo(open.h, 1);
   expect(openCi.t).toBeCloseTo(open.t, 1);
-  expect(autoMergeBadge.h).toBeCloseTo(open.h, 1);
 }, 20_000);

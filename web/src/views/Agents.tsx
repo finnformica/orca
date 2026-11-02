@@ -556,7 +556,8 @@ export function AgentRow({ row, fold = NO_FOLD, stacked = false }: { row: Row; f
   const menu = hasMenu && <WorkstreamActions row={row} hasWork={hasWork} compact menuOnly contextAt={menuAt} onContextClose={closeMenu} />;
   // The checks & review chips, one overflow item each: a chip that does not fit goes into the +N card.
   const signals: SublineItem[] = [
-    row.prNumber && !isDone && { key: "checks", sep: "none", part: "signals", node: <ConditionBadges row={row} /> },
+    // No auto-merge badge here: the PR cell's state pill right beside this already reads "Auto-merge".
+    row.prNumber && !isDone && { key: "checks", sep: "none", part: "signals", node: <ConditionBadges row={row} showAutoMerge={false} /> },
     row.prNumber && !isDone && { key: "review", sep: "none", part: "signals", node: <ReviewCluster row={row} /> },
     !row.prNumber && row.mergeClean === "conflict" && { key: "conflicts", sep: "none", part: "signals", node: <Pill tone="red">Conflicts</Pill> },
     browserKillLabel(row.browserKilled) && { key: "browser", sep: "none", part: "signals", node: <BrowserKillBadge record={row.browserKilled} /> },
@@ -619,7 +620,8 @@ export function AgentRow({ row, fold = NO_FOLD, stacked = false }: { row: Row; f
         {!isDone && <UpkeepNote upkeep={row.upkeep} running={row.agentStatus === "running"} />}
         <div role="cell" className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5">
           {pill.tooltip ? <Tip label={pill.tooltip}><Pill tone={pill.tone} slot="state-pill">{pill.label}</Pill></Tip> : <Pill tone={pill.tone} slot="state-pill">{pill.label}</Pill>}
-          {row.prNumber && !isDone && <ConditionBadges row={row} />}
+          {/* No auto-merge badge here either: the state pill just above already reads "Auto-merge". */}
+          {row.prNumber && !isDone && <ConditionBadges row={row} showAutoMerge={false} />}
           {row.prNumber && !isDone && <ReviewCluster row={row} />}
           {!row.prNumber && row.mergeClean === "conflict" && <Pill tone="red">Conflicts</Pill>}
           <BrowserKillBadge record={row.browserKilled} />

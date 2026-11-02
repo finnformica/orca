@@ -41,7 +41,7 @@ function Harness() {
         <div key={f.key} data-fixture={f.key} className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5 border-b py-2">
           <span className="w-24 shrink-0 text-xs text-muted-foreground">{f.key}</span>
           <StateCell row={f.row} />
-          <ConditionBadges row={f.row as Row} />
+          <ConditionBadges row={f.row as Row} showAutoMerge={false} />
         </div>
       ))}
     </div>
