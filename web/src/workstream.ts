@@ -3056,6 +3056,32 @@ export function approvers(s: ReviewSignal): string[] {
   return [...latest].filter(([, state]) => state === "APPROVED").map(([login]) => login);
 }
 
+/** A reviewer's CURRENT state, for the avatar hover card. No "pending" value: GitHub's requested-but-
+ *  not-yet-reviewed reviewers come from a different field reviewSignal does not fetch (none of the
+ *  UI's other callers need them), so a requested reviewer who has not yet reviewed is not listed. */
+export type ReviewerStatus = "APPROVED" | "CHANGES_REQUESTED" | "COMMENTED";
+export type Reviewer = { login: string; status: ReviewerStatus };
+
+/** Every PERSON (bots excluded, like humanComments) who submitted a review, with their current
+ *  state: the latest decisive review (APPROVED / CHANGES_REQUESTED) when they ever submitted one —
+ *  a later plain "commented" review does not withdraw it, same rule as `approvers` — else COMMENTED
+ *  for someone who only ever left plain review comments. A dismissed review drops them entirely,
+ *  as if they had never reviewed. */
+export function reviewers(s: ReviewSignal): Reviewer[] {
+  const latest = new Map<string, ReviewerStatus>();
+  for (const r of [...s.comments].sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
+    if (r.kind !== "review" || !r.author || !r.state || isBotAuthor(r.author, r.bot)) continue;
+    if (r.state === "DISMISSED") { latest.delete(r.author); continue; }
+    if (r.state !== "APPROVED" && r.state !== "CHANGES_REQUESTED" && r.state !== "COMMENTED") continue;
+    const decisive = r.state === "APPROVED" || r.state === "CHANGES_REQUESTED";
+    const prev = latest.get(r.author);
+    if (!decisive && (prev === "APPROVED" || prev === "CHANGES_REQUESTED")) continue; // doesn't withdraw a decision
+    latest.delete(r.author); // re-insert so the order is by latest decision
+    latest.set(r.author, r.state);
+  }
+  return [...latest].map(([login, status]) => ({ login, status }));
+}
+
 /** Comments and open threads from people (not bots / AI reviewers). */
 export const humanComments = (s: ReviewSignal): ReviewItem[] => reviewItems(s).filter((i) => !i.bot);
 
@@ -3096,14 +3122,14 @@ export const unhandedActionable = (s: ReviewSignal, handed: readonly string[] = 
   s.threads.filter((t) => isActionableThread(s, t) && !handed.includes(t.id)).length;
 
 export type ReviewDigest = {
-  approvers: string[]; human: ReviewItem[]; severe: ReviewItem[];
+  approvers: string[]; reviewers: Reviewer[]; human: ReviewItem[]; severe: ReviewItem[];
   unresolved: { count: number; nits: number }; worst?: Severity;
 };
 
 export function reviewDigest(s: ReviewSignal): ReviewDigest {
   const severe = severeAiComments(s);
   return {
-    approvers: approvers(s), human: humanComments(s), severe, unresolved: actionableUnresolved(s),
+    approvers: approvers(s), reviewers: reviewers(s), human: humanComments(s), severe, unresolved: actionableUnresolved(s),
     worst: severe.some((i) => i.severity === "critical") ? "critical" : severe.length ? "warning" : undefined,
   };
 }
