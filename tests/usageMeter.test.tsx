@@ -674,7 +674,7 @@ test("usageGroups + headerUsage: a login with no 5-hour window", async () => {
   const mixed = usageGroups({ claude: null, codex: null, profiles: [ultra, work] });
   const login = mixed.find((g) => g.key === "login:ultra")!.rows;
   expect(login.map((r) => [r.label, r.value, r.resetNote ?? r.resetsIn])).toEqual([
-    ["5-hour window", "—", "no 5-hour limit"], ["Weekly", "6%", "starts on next use"], ["Fable weekly", "8%", "starts on next use"],
+    ["5-hour window", "—", "no 5-hour limit"], ["Weekly", "6%", null], ["Fable weekly", "8%", null], // used, no reset known: no note
   ]);
   expect(mixed.find((g) => g.key === "fleet")!.rows.find((r) => r.key === "fleet:fiveHour")!.pct).toBe(40); // work's only
   expect(headerUsage({ claude: null, codex: null, profiles: [ultra, work] })!.pct).toBe(40);
@@ -691,7 +691,7 @@ test("the Usage card draws a weekly-only login: 'no 5-hour limit' in its 5-hour 
   expect(rows("fleet")[0]).toBe("5-hour window no 5-hour limit — / —");
   await act(async () => { card().querySelector("[data-slot='usage-toggle']")!.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
   expect(rows("login:ultra")).toEqual([
-    "5-hour window no 5-hour limit — / —", "Weekly starts on next use 6% / 100%", "Fable weekly starts on next use 8% / 100%",
+    "5-hour window no 5-hour limit — / —", "Weekly 6% / 100%", "Fable weekly 8% / 100%",
   ]);
   expect(group("login:ultra")!.querySelector("[data-slot='usage-state']")).toBeNull(); // ok: no state pill
 });
