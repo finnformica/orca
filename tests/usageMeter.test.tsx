@@ -677,11 +677,33 @@ test("usageGroups + headerUsage: a login with no 5-hour window", async () => {
     ["5-hour window", "—", "no 5-hour limit"], ["Weekly", "6%", null], ["Fable weekly", "8%", null], // used, no reset known: no note
   ]);
   expect(mixed.find((g) => g.key === "fleet")!.rows.find((r) => r.key === "fleet:fiveHour")!.pct).toBe(40); // work's only
-  expect(headerUsage({ claude: null, codex: null, profiles: [ultra, work] })!.pct).toBe(40);
+  // ultra has no 5-hour window, so the 5-hour mean (40) describes only work, not the fleet — the
+  // header falls back to weekly (mean of ultra's 6 and work's 20 = 13), not work's 5-hour figure.
+  expect(headerUsage({ claude: null, codex: null, profiles: [ultra, work] })).toEqual({ pct: 13, tooltip: "Weekly · 2 logins in rotation" });
   // Every login weekly-only: the fleet slot says "no 5-hour limit" and the header reads the weekly mean.
   const only = { claude: null, codex: null, profiles: [ultra] };
   expect(usageGroups(only).find((g) => g.key === "fleet")!.rows[0]!.resetNote).toBe("no 5-hour limit");
   expect(headerUsage(only)).toEqual({ pct: 6, tooltip: "Weekly · 1 login in rotation" });
+});
+
+test("headerUsage: one login in rotation with no 5-hour window pulls the header off the 5-hour mean, even with others at 90%", async () => {
+  const { headerUsage } = await import("../web/src/workstream");
+  const w = (utilization: number) => ({ utilization, resetsAt: null });
+  const work = { name: "work", state: "ok", usage: { fiveHour: w(90), sevenDay: w(10), extra: null, fable: null } };
+  const finnformica = { name: "finnformica", state: "ok", usage: { fiveHour: null, sevenDay: w(6), extra: null, fable: w(8) } };
+  const formicsoftware = { name: "formicsoftware", state: "ok", usage: { fiveHour: null, sevenDay: w(20), extra: null, fable: null } };
+  const u = { claude: null, codex: null, profiles: [work, finnformica, formicsoftware] };
+  // Showing work's 90% would read as the whole fleet at 90% when two of three logins have no
+  // 5-hour limit at all — the weekly mean (10+6+20)/3 = 12 is what every login actually shares.
+  expect(headerUsage(u)).toEqual({ pct: 12, tooltip: "Weekly · 3 logins in rotation" });
+});
+
+test("headerUsage: every login in rotation has a 5-hour window — the 5-hour row stays the headline", async () => {
+  const { headerUsage } = await import("../web/src/workstream");
+  const w = (utilization: number) => ({ utilization, resetsAt: null });
+  const profile = (name: string, pct: number) => ({ name, state: "ok", usage: { fiveHour: w(pct), sevenDay: w(5), extra: null, fable: null } });
+  const u = { claude: null, codex: null, profiles: [profile("work", 90), profile("personal", 10), profile("side", 20)] };
+  expect(headerUsage(u)).toEqual({ pct: 40, tooltip: "5-hour window · 3 logins in rotation" });
 });
 
 test("the Usage card draws a weekly-only login: 'no 5-hour limit' in its 5-hour slot, then its weekly and Fable rows", async () => {
