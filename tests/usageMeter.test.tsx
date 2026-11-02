@@ -663,3 +663,35 @@ test("hovering (or focusing) the header meter opens a HoverCard with the SAME Us
   expect(panel.textContent).toContain("38%");
   await blurMeter();
 });
+
+// An Ultra login has no 5-hour window (fiveHour null): its slot says so, the fleet's 5-hour mean
+// counts only the logins that have the window, and the header falls back to the weekly window.
+test("usageGroups + headerUsage: a login with no 5-hour window", async () => {
+  const { headerUsage, usageGroups } = await import("../web/src/workstream");
+  const w = (utilization: number) => ({ utilization, resetsAt: null });
+  const ultra = { name: "ultra", state: "ok", usage: { fiveHour: null, sevenDay: w(6), extra: null, fable: w(8) } };
+  const work = { name: "work", state: "ok", usage: { fiveHour: w(40), sevenDay: w(20), extra: null, fable: null } };
+  const mixed = usageGroups({ claude: null, codex: null, profiles: [ultra, work] });
+  const login = mixed.find((g) => g.key === "login:ultra")!.rows;
+  expect(login.map((r) => [r.label, r.value, r.resetNote ?? r.resetsIn])).toEqual([
+    ["5-hour window", "—", "no 5-hour limit"], ["Weekly", "6%", "starts on next use"], ["Fable weekly", "8%", "starts on next use"],
+  ]);
+  expect(mixed.find((g) => g.key === "fleet")!.rows.find((r) => r.key === "fleet:fiveHour")!.pct).toBe(40); // work's only
+  expect(headerUsage({ claude: null, codex: null, profiles: [ultra, work] })!.pct).toBe(40);
+  // Every login weekly-only: the fleet slot says "no 5-hour limit" and the header reads the weekly mean.
+  const only = { claude: null, codex: null, profiles: [ultra] };
+  expect(usageGroups(only).find((g) => g.key === "fleet")!.rows[0]!.resetNote).toBe("no 5-hour limit");
+  expect(headerUsage(only)).toEqual({ pct: 6, tooltip: "Weekly · 1 login in rotation" });
+});
+
+test("the Usage card draws a weekly-only login: 'no 5-hour limit' in its 5-hour slot, then its weekly and Fable rows", async () => {
+  const w = (utilization: number) => ({ utilization, resetsAt: null });
+  apiFake.usageData = { claude: null, codex: null, profiles: [{ name: "ultra", state: "ok", usage: { fiveHour: null, sevenDay: w(6), extra: null, fable: w(8) } }] };
+  await mount("/");
+  expect(rows("fleet")[0]).toBe("5-hour window no 5-hour limit — / —");
+  await act(async () => { card().querySelector("[data-slot='usage-toggle']")!.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+  expect(rows("login:ultra")).toEqual([
+    "5-hour window no 5-hour limit — / —", "Weekly starts on next use 6% / 100%", "Fable weekly starts on next use 8% / 100%",
+  ]);
+  expect(group("login:ultra")!.querySelector("[data-slot='usage-state']")).toBeNull(); // ok: no state pill
+});

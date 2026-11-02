@@ -22,8 +22,9 @@ export type UsageWindow = { utilization: number; resetsAt: string | null };
 // carried in MINOR units (pence/cents) + exponent so the client formats it exactly, no float drift.
 export type ExtraUsage = { usedMinor: number; limitMinor: number; currency: string; exponent: number; utilization: number };
 /** `fable` is the per-model weekly window (only hydra's `limits[]` parse exposes it); null/absent
- *  when the account has none or the reading came from the bare endpoint shape. */
-export type ClaudeUsage = { fiveHour: UsageWindow; sevenDay: UsageWindow; extra: ExtraUsage | null; fable?: UsageWindow | null };
+ *  when the account has none or the reading came from the bare endpoint shape. `fiveHour` is null
+ *  when the account has no 5-hour limit (the Ultra plan since late October 2026: weekly only). */
+export type ClaudeUsage = { fiveHour: UsageWindow | null; sevenDay: UsageWindow; extra: ExtraUsage | null; fable?: UsageWindow | null };
 export type CodexUsageWindow = UsageWindow & { label: string; durationMinutes: number | null };
 export type CodexUsage = { windows: CodexUsageWindow[] };
 /** One Claude login as hydra reports it. `usage` is null with no reading yet (not signed in on this
@@ -62,7 +63,7 @@ export function shapeUsage(raw: any): ClaudeUsage {
     exponent: Number.isInteger(eu.decimal_places) ? eu.decimal_places : 2,
     utilization: Math.max(0, Math.min(100, Math.round(Number(eu.utilization) || 0))),
   } : null;
-  return { fiveHour: win(raw?.five_hour), sevenDay: win(raw?.seven_day), extra };
+  return { fiveHour: raw && raw.five_hour === null ? null : win(raw?.five_hour), sevenDay: win(raw?.seven_day), extra };
 }
 
 function codexWindowLabel(minutes: number | null, fallback: string): string {
@@ -95,8 +96,10 @@ export function shapeCodexUsage(rateRaw: any): CodexUsage | null {
 
 /** Shape `hydra status --json` into per-profile usage. Pure. hydra's buckets carry `pct` (int or
  *  null) and `resets` (epoch SECONDS, or null); a null bucket means the account has no such window.
- *  A profile with no session reading has `usage: null` but keeps its `state`, so the meter can still
- *  say why (disabled / not signed in here / no data yet). */
+ *  A profile with no reading in any window has `usage: null` but keeps its `state`, so the meter can
+ *  still say why (disabled / not signed in here / no data yet). A profile with weekly windows but no
+ *  session window (an Ultra account: no 5-hour limit) has `fiveHour: null`; hydra calls that "no
+ *  usage data yet" whenever session is null, so with a reading in hand the state is "ok". */
 export function shapeHydraStatus(raw: any): ProfileUsage[] {
   const win = (b: any): UsageWindow | null => b && typeof b === "object" ? {
     utilization: Math.max(0, Math.min(100, Math.round(Number(b.pct) || 0))),
@@ -107,12 +110,13 @@ export function shapeHydraStatus(raw: any): ProfileUsage[] {
   return profiles
     .filter((p: any) => p && typeof p.name === "string")
     .map((p: any): ProfileUsage => {
-      const session = win(p.session);
-      const usage: ClaudeUsage | null = session
-        ? { fiveHour: session, sevenDay: win(p.weekly) ?? zero, extra: null, fable: win(p.fable) }
+      const session = win(p.session), weekly = win(p.weekly), fable = win(p.fable);
+      const usage: ClaudeUsage | null = session || weekly || fable
+        ? { fiveHour: session, sevenDay: weekly ?? zero, extra: null, fable }
         : null;
       const fetchedAt = Number.isFinite(Number(p.fetched_at)) && Number(p.fetched_at) > 0 ? Number(p.fetched_at) * 1000 : null;
-      return { name: p.name, usage, state: typeof p.state === "string" ? p.state : undefined, email: typeof p.email === "string" && p.email ? p.email : undefined, fetchedAt };
+      const state = typeof p.state === "string" ? (usage && !session && p.state === "no usage data yet" ? "ok" : p.state) : undefined;
+      return { name: p.name, usage, state, email: typeof p.email === "string" && p.email ? p.email : undefined, fetchedAt };
     });
 }
 
