@@ -13,14 +13,22 @@ afterEach(() => { visibility = "visible"; });
 test("a slow request is never overlapped: the next tick waits for it to settle", async () => {
   let started = 0, inFlight = 0, maxInFlight = 0;
   let release: () => void = () => {};
+  let onCall: (() => void) | undefined;
   const stop = poll(() => {
     started++; inFlight++; maxInFlight = Math.max(maxInFlight, inFlight);
+    onCall?.();
     return new Promise<void>((r) => { release = () => { inFlight--; r(); }; });
   }, 5);
   await Bun.sleep(60); // twelve intervals' worth of clock while the request hangs
   expect(started).toBe(1);
+  // Wait on the second call itself, not a guessed delay — a busy box can take longer than one
+  // 5 ms interval to run the timer and its microtasks.
+  const second = new Promise<void>((resolve) => { onCall = resolve; });
   release();
-  await Bun.sleep(30);
+  await Promise.race([
+    second,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("the next tick never started")), 5_000)),
+  ]);
   expect(started).toBe(2); // the next one only after it came back
   expect(maxInFlight).toBe(1);
   stop(); release();
