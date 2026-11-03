@@ -714,6 +714,16 @@ export function withAttachments(prompt: string, paths: string[]): string {
   return `${prompt}\n\n${ATTACHED_FILES_HEADER}\n${list}`;
 }
 
+/** A message with no words, only attachments (the composer allows this): the prompt gets this
+ *  instead of a blank line, so it never reads as the user saying nothing. */
+export const NO_TEXT_PLACEHOLDER = "(no text, attachments only)";
+
+/** The text a prompt uses for a message: what was typed, or `NO_TEXT_PLACEHOLDER` when there is
+ *  none but at least one attachment carries the content instead. */
+export function textOrPlaceholder(text: string, hasAttachments: boolean): string {
+  return text.trim() ? text : hasAttachments ? NO_TEXT_PLACEHOLDER : text;
+}
+
 /** One stored attachment a message carried: its id (served at `/api/attachments/<id>`) and name. */
 export type AttachmentRef = { id: string; name: string };
 

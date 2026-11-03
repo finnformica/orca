@@ -11,7 +11,7 @@ import { api, type LiveAgent, type PreviewSvc, type RepoInfo } from "./api";
 import type { CiStatus, ConversationComment, Mergeable, MergedPr, PrSummary, ReviewStatus, ReviewThreadEvidence } from "../../server/gh";
 import {
   addressNeedsAgent, addressPrPrompt, chatPrompt, continuation, deriveKanbanState, followDecision, mergedPrIsHistory, newestMergedPerBranch, followUpPrompt, instanceOrder, launchPrompt,
-  mergeSettled, newDraftMessage, rerunFailedPrompt, resolveConflictsPrompt, reviewDigest, rowTitle, slackApiText, slackClipboard, titleFromPrompt, verifiedLane, verifiedMark, verifiedState, withAttachments,
+  mergeSettled, newDraftMessage, rerunFailedPrompt, resolveConflictsPrompt, reviewDigest, rowTitle, slackApiText, slackClipboard, textOrPlaceholder, titleFromPrompt, verifiedLane, verifiedMark, verifiedState, withAttachments,
 } from "./workstream";
 import type { MergeMark, VerifiedMark } from "./workstream";
 import type { BridgeInfo, ReviewDigest, TerminalTargetContext } from "./workstream";
@@ -815,7 +815,8 @@ export function createWorkstream(repo: string, prompt: string, images: File[] = 
         await api.discardWorktree(repo, worktreePath, branch, true).catch(() => {});
         deleteEnrich(repo, branch);
       } else {
-        const first = opts.chat ? chatPrompt(prompt) : launchPrompt({ title, branch, prompt }, baseBranch(repo));
+        const promptText = textOrPlaceholder(prompt, paths.length > 0);
+        const first = opts.chat ? chatPrompt(promptText) : launchPrompt({ title, branch, prompt: promptText }, baseBranch(repo));
         void api.runAgent(worktreePath, withAttachments(first, paths), provider, { branch, action: opts.chat ? "followup" : "launch", instruction: prompt, model, instance: created.instance ?? instance })
           .then((receipt) => patchEnrich(repo, branch, { agentProvider: provider, sessionId: receipt.sessionId }))
           .catch(() => {});
@@ -1120,7 +1121,7 @@ export async function followUp(
   // (Fix CI, Resolve conflicts, Follow up) still issue a work order.
   // If a run is in flight the bridge queues `instruction` as typed (see /api/agent) and rebuilds the
   // prompt — with its own mergeWhenGreen note — at dispatch time, so this flag only matters here.
-  await launchOnRow(row, wt, withAttachments(chatPrompt(instruction, { mergeWhenGreen: Boolean(row.mergeWhenGreen), prNumber: row.prNumber }), paths), options.provider ?? providerFor(row), { action: "followup", attachments: paths, instruction });
+  await launchOnRow(row, wt, withAttachments(chatPrompt(textOrPlaceholder(instruction, paths.length > 0), { mergeWhenGreen: Boolean(row.mergeWhenGreen), prNumber: row.prNumber }), paths), options.provider ?? providerFor(row), { action: "followup", attachments: paths, instruction });
   // Not awaited: the chat drops its "sending…" bubble when this resolves, and re-reads its own turns
   // and queue for that. Waiting on the whole board (every repo's agents, PRs and merged history)
   // kept a message the bridge had already queued in "sending…" for seconds.

@@ -115,6 +115,25 @@ describe("the composer's chips", () => {
     expect(localStorage.getItem("orca.test.chips")).toBeNull();
   });
 
+  test("an attachment with no text: Send and Enter work; with neither text nor an attachment, Send stays disabled", async () => {
+    const sent: { text: string; files: File[] }[] = [];
+    await render(<ChatComposer onSubmit={async (text, files) => { sent.push({ text, files }); }} />);
+    const el = q<HTMLTextAreaElement>("textarea")!;
+    const send = q<HTMLButtonElement>("button[aria-label=Send]")!;
+    expect(send.disabled).toBe(true); // nothing typed, nothing attached
+    const png = new File(["png"], "sheet.png", { type: "image/png" });
+    await paste(el, { files: [png] });
+    expect(send.disabled).toBe(false); // an attachment alone is enough to send
+    await click(send);
+    expect(sent).toEqual([{ text: "", files: [png] }]);
+    expect(el.value).toBe("");
+
+    const csv = new File(["a,b"], "rows.csv", { type: "text/csv" });
+    await paste(el, { files: [csv] });
+    await act(async () => { el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); await flush(); });
+    expect(sent).toEqual([{ text: "", files: [png] }, { text: "", files: [csv] }]);
+  });
+
   test("a secret chip alone can be sent, and its remove button takes it off", async () => {
     const sent: string[] = [];
     await render(<ChatComposer onSubmit={async (text) => { sent.push(text); }} />);
