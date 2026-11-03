@@ -1480,7 +1480,10 @@ reduced to its name and marked unavailable — another machine's temp path never
 The chat shows a message's files (`/api/turns` decorates each turn with `attachments`, read off its
 stored prompt; `Attachments` in `views/Chat.tsx`: a thumbnail for an image, a named chip otherwise),
 each opening `GET /api/attachments/<id>` — served from Postgres by any instance, sandboxed and
-`nosniff`. **The orchestrator forwards them:** its wake prompt lists the ids under `## Attachments`,
+`nosniff`. **The reverse:** an agent reply that names a file under the attachments dir (a `shot: <path>` line,
+a bare path, a markdown image of one; never in code) carries it as `turn.replyAttachments`
+(`replyAttachments` in `workstream.ts`, linked by id, never copied; a shot keeps `/api/screenshots/<id>`), drawn
+under the reply by the same `Attachments` chips. **The orchestrator forwards them:** its wake prompt lists the ids under `## Attachments`,
 and `orca spawn` / `orca send` take `--attach <id|path>` (repeatable; `bin/orca` collects a repeated
 flag) — an id, or a file on its own machine, which is stored like an upload (`attachments.forward`) —
 appended to the brief / message as references, so the worker's instance materialises them at launch.

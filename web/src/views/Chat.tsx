@@ -54,7 +54,7 @@ import { onOrchestratorDelivered, useOrchestratorOutbox } from "@/lib/orchestrat
 import { ChatControls, type ChatControlsProps } from "@/components/ChatControls";
 import type { OrchestratorPrefill } from "@/lib/atoms";
 import { apiUrl } from "@/lib/server";
-import { remarkInlineImages, THUMB_ATTR } from "@/lib/inlineImages";
+import { remarkOrcaImages } from "@/lib/orcaImages";
 
 // How close to the bottom still counts as "following". A few pixels of slack absorbs sub-pixel
 // rounding and the composer resizing, so following doesn't switch off on its own.
@@ -78,11 +78,8 @@ const ChatSkeleton = ({ rows }: { rows: number }) => (
 /** A markdown image (a worker's `![…](/api/screenshots/<id>)` link, or any other image URL a reply
  *  embeds) through the same lightbox + copy button as every other image, instead of react-markdown's
  *  bare `<img>` — capped to a readable size inline, full size on click. */
-const markdownImg = ({ src, alt, ...rest }: { src?: string; alt?: string; [THUMB_ATTR]?: string }) =>
-  !src ? null : rest[THUMB_ATTR] !== undefined
-    // A bare Orca path (`shot: <path>`, remarkInlineImages): a thumbnail, like a report's shots.
-    ? <ExpandableImage src={apiUrl(src)} alt={alt ?? ""} className="me-2 inline-block align-top" imgClassName="h-24 w-40 rounded-md border object-cover object-top" />
-    : <ExpandableImage src={apiUrl(src)} alt={alt ?? ""} imgClassName="max-h-80 max-w-full rounded-md border object-contain" />;
+const markdownImg = ({ src, alt }: { src?: string; alt?: string }) =>
+  src ? <ExpandableImage src={apiUrl(src)} alt={alt ?? ""} imgClassName="max-h-80 max-w-full rounded-md border object-contain" /> : null;
 
 /** A markdown table wrapped so it scrolls sideways inside itself (overflow-x-auto, max-w-full)
  *  instead of squashing its columns or widening the page — a table of more than a couple of
@@ -141,7 +138,7 @@ const ChatMarkdown = memo(({ children, tone = "text-neutral-300", breaks, outsid
     "prose-blockquote:text-neutral-400", QUOTE_PILL,
     "prose-hr:border-neutral-800 prose-th:border-neutral-800 prose-td:border-neutral-800 prose-figcaption:text-neutral-500",
     tone)}>
-    <ReactMarkdown remarkPlugins={outside ? (breaks ? [remarkGfm, remarkBreaks] : [remarkGfm]) : breaks ? [remarkGfm, remarkBreaks, remarkInlineImages] : [remarkGfm, remarkInlineImages]} components={outside ? outsideComponents : chatComponents}>{children}</ReactMarkdown>
+    <ReactMarkdown remarkPlugins={outside ? (breaks ? [remarkGfm, remarkBreaks] : [remarkGfm]) : breaks ? [remarkGfm, remarkBreaks, remarkOrcaImages] : [remarkGfm, remarkOrcaImages]} components={outside ? outsideComponents : chatComponents}>{children}</ReactMarkdown>
   </div>
 ));
 
@@ -177,7 +174,7 @@ const FacetMarkdown = memo(({ children }: { children: string }) => (
     prose-pre:bg-neutral-900 prose-pre:text-[11px] prose-pre:text-neutral-200 prose-a:text-sky-400
     prose-blockquote:text-neutral-400 ${QUOTE_PILL}
     prose-hr:border-neutral-800 prose-th:border-neutral-800 prose-td:border-neutral-800 prose-figcaption:text-neutral-500`}>
-    <ReactMarkdown remarkPlugins={[remarkGfm, remarkInlineImages]} components={{ ...chatComponents, p: ({ children: c }) => <>{c}</> }}>{children}</ReactMarkdown>
+    <ReactMarkdown remarkPlugins={[remarkGfm, remarkOrcaImages]} components={{ ...chatComponents, p: ({ children: c }) => <>{c}</> }}>{children}</ReactMarkdown>
   </div>
 ));
 
@@ -406,11 +403,12 @@ const Facet = ({ title, items, tone }: { title: string; items: string[]; tone: s
 export function Attachments({ files, secrets = [], className = "" }: { files: AttachmentRef[]; secrets?: string[]; className?: string }) {
   if (!files.length && !secrets.length) return null;
   // Just the images, in order: the other images this message carried are this one's lightbox gallery.
-  const images = files.filter((f) => isImageName(f.name)).map((f) => ({ src: apiUrl(`/api/attachments/${f.id}`), alt: f.name }));
+  const hrefOf = (f: AttachmentRef) => apiUrl(f.url ?? `/api/attachments/${f.id}`);
+  const images = files.filter((f) => isImageName(f.name)).map((f) => ({ src: hrefOf(f), alt: f.name }));
   return (
     <div className={`flex flex-wrap gap-1.5 ${className}`} data-slot="message-attachments">
       {files.map((f) => {
-        const href = apiUrl(`/api/attachments/${f.id}`);
+        const href = hrefOf(f);
         const imgIndex = images.findIndex((im) => im.src === href);
         return <ComposerAttachment key={f.id} look="chip" item={isImageName(f.name)
           ? { kind: "image", name: f.name, src: href, gallery: images.length > 1 ? { images, index: imgIndex } : undefined }
@@ -645,6 +643,8 @@ function Reply({ turn, loadSteps, compact }: { turn: AgentTurn; loadSteps?: () =
         <>
           {/* An old turn (compact) shows its answer's first lines; the activity chip above stays outside. */}
           <Clamp on={Boolean(compact && longReply(turn))}><Output turn={turn} /></Clamp>
+          {/* The files the reply names (a shot, an attachment path), drawn like the user's own. */}
+          <Attachments files={turn.replyAttachments ?? []} className="mt-2" />
           {turn.check && <CheckVerdict check={turn.check} />}
         </>
       )}

@@ -148,6 +148,26 @@ test("uploaded through A's route, launched on B: B materialises the file first a
   expect((await fetch(`${B}/api/attachments/00000000-0000-0000-0000-000000000000`)).status).toBe(404);
 });
 
+// The reverse path: an agent reply that names files carries them the same way. The reply names the
+// file B materialised (a path under B's attachments dir) and a shot; a path in backticks does not count.
+test("a reply that names files under the attachments dir carries them as replyAttachments, served like the user's", async () => {
+  const { paths: [ref] } = await upload(A, [{ name: "design.png", type: "image/png", bytes: PNG }]).then((r) => r.json()) as { paths: string[] };
+  const id = ref!.split("/")[2]!;
+  const shot = join(box, "attachments", "shots", "shot-2026-11-03T10-00-00-000Z-0123abcd-after.png");
+  const response = [`Option A: ![A](${join(box, "attachments", id, "design.png")})`, `shot: ${shot}`, `Not this one: \`${join(box, "attachments", "shots", "shot-x.png")}\``].join("\n\n");
+  const runId = crypto.randomUUID();
+  await db.startTurn({ repo: "r", branch: "reply-files", runId, provider: "claude", instruction: "show me", prompt: "show me", startedAt: Date.now() });
+  await db.finishTurn(runId, { status: "done", response, finishedAt: Date.now() });
+  const { turns } = await fetch(`${A}/api/turns?repo=r&branch=reply-files&limit=50`).then((r) => r.json()) as { turns: { replyAttachments?: { id: string; name: string; url?: string }[] }[] };
+  expect(turns[0]!.replyAttachments).toEqual([
+    { id, name: "design.png" },
+    { id: "shot-2026-11-03T10-00-00-000Z-0123abcd-after", name: "shot-2026-11-03T10-00-00-000Z-0123abcd-after.png", url: "/api/screenshots/shot-2026-11-03T10-00-00-000Z-0123abcd-after" },
+  ]);
+  const file = await fetch(`${A}/api/attachments/${id}`);
+  expect(file.status).toBe(200);
+  expect(new Uint8Array(await file.arrayBuffer())).toEqual(PNG);
+});
+
 test("an orchestrator message sent to A is proxied to B (orchestratorOn) and its wake prompt names B's local path", async () => {
   const { paths: [ref] } = await upload(A, [{ name: "bug.png", type: "image/png", bytes: PNG }]).then((r) => r.json()) as { paths: string[] };
   const sent = await fetch(`${A}/api/orchestrator/message`, { method: "POST", body: JSON.stringify({ text: "orchestrator-relay: look at this", attachments: [ref] }) });
