@@ -76,9 +76,16 @@ test("a repo added this way can be spawned on: it gets the claude provider by de
   await fakeClaude();
   state = await mkdtemp(join(tmpdir(), "orca-repos-state-"));
   process.env.ORCA_STATE_DIR = state;
+  // Wait on the run's own finished signal, not a poll of isRunning — on a busy box the fake run can
+  // outlast a fixed poll window, and isRunning can flip false before the turn's write lands.
+  const finished = new Promise<void>((resolve) => { agent.onRunFinished(async () => { resolve(); }); });
   try {
-    const { branch, worktreePath } = await verbs.createWorkstream(cfg(), repo, { prompt: "add a feature" });
-    for (let i = 0; i < 400 && agent.isRunning(worktreePath); i++) await new Promise((r) => setTimeout(r, 25));
+    const { branch } = await verbs.createWorkstream(cfg(), repo, { prompt: "add a feature" });
+    await Promise.race([
+      finished,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("the run never finished")), 10_000)),
+    ]);
+    await agent.flushHistory(); // the finish write is fire-and-forget: wait for it before reading the turn
     const turns = await db.turns(repo.name, branch);
     expect(turns).toHaveLength(1);
     expect(turns[0]?.response).toBe("done"); // never refused as "the claude agent is not enabled"
