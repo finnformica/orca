@@ -112,7 +112,7 @@ Object.assign(api, {
 if (new URLSearchParams(location.search).has("ratelimited")) {
   Object.assign(api, {
     githubLimits: async () => ({ limited: [{ resource: "graphql", until: now + 25 * 60_000 }] }),
-    prs: async () => PRS.map((p) => ({ ...p, staleAt: min(12), staleReason: "GitHub rate limited" })),
+    prs: async () => PRS.map((p) => ({ ...p, syncedAt: min(12), staleAt: min(12) })),
   });
 }
 

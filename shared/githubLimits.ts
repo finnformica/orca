@@ -24,6 +24,6 @@ export function limitBanner(limits: GithubLimits | undefined, now: number, time:
   const names = live.map((l) => NAMES[l.resource] ?? l.resource).join(" and ");
   return {
     title: `GitHub rate limited until ${time(until)}`,
-    detail: `The ${names} budget is spent. PR state shows the last known values, marked stale.`,
+    detail: `The ${names} budget is spent. The PR state is from the last sync; cards show its age.`,
   };
 }

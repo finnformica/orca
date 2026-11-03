@@ -147,7 +147,14 @@ async function fakeRest(req: Request, url: URL): Promise<Response> {
   if (/\/pulls\/\d+$/.test(p)) {
     if (req.method !== "GET") return json({});
     if (/diff/.test(req.headers.get("accept") ?? "")) return new R("diff --git a/x.ts b/x.ts\n@@ -1 +1 @@\n+added line\n-removed line\n", { headers: { "content-type": "application/vnd.github.diff" } });
-    return json({ number: Number(p.split("/").at(-1)), body: (await readJson("ORCA_GH_FIXTURE", {})).body ?? "" });
+    const fx = await readJson("ORCA_GH_FIXTURE", {});
+    // Also how a PR ended (the PR-state sync's read of a PR that left the open list).
+    return json({
+      number: Number(p.split("/").at(-1)), body: fx.body ?? "", title: fx.title ?? "", html_url: fx.url ?? "", draft: Boolean(fx.isDraft),
+      state: !fx.state || fx.state === "OPEN" ? "open" : "closed", merged_at: fx.state === "MERGED" ? (fx.mergedAt ?? new Date().toISOString()) : null,
+      closed_at: fx.state && fx.state !== "OPEN" ? (fx.closedAt ?? fx.mergedAt ?? new Date().toISOString()) : null,
+      head: { ref: fx.headRefName ?? "", sha: fx.headRefOid ?? "" }, base: { ref: fx.baseRefName ?? "main" },
+    });
   }
   if (/\/issues\/\d+\/labels$/.test(p)) return json([]);
   return json({ message: `fake-github: unhandled ${req.method} ${path}` }, 404);

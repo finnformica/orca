@@ -1251,6 +1251,46 @@ export const MIGRATIONS: MigrationStep[] = [
     // shown, HIDDEN_FOREVER = archived. Not `archived_at`, which ends the workstream (Close).
     sql: `ALTER TABLE workstream ADD COLUMN IF NOT EXISTS hidden_until BIGINT;`,
   },
+  {
+    name: "20261103-pr-state",
+    idempotent: true,
+    // PR state as Orca knows it (server/prSync.ts): the ONE copy every reader reads. Only the sync
+    // job writes it, from GitHub; a rate limit only makes it older. `pr_state` is one row per PR
+    // (the columns readers filter on, plus the whole summary in `data`); `pr_sync` one row per repo:
+    // when its open list and its done list were last read, and the last error. Times are ms.
+    sql: `
+      CREATE TABLE IF NOT EXISTS pr_state (
+        user_id TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        number INTEGER NOT NULL,
+        branch TEXT NOT NULL,
+        base TEXT,
+        head_sha TEXT,
+        state TEXT NOT NULL,
+        is_draft BOOLEAN NOT NULL DEFAULT false,
+        ci_status TEXT,
+        review_status TEXT,
+        mergeable TEXT,
+        title TEXT NOT NULL DEFAULT '',
+        url TEXT NOT NULL DEFAULT '',
+        merged_at BIGINT,
+        closed_at BIGINT,
+        data JSONB NOT NULL DEFAULT '{}'::jsonb,
+        synced_at BIGINT NOT NULL,
+        PRIMARY KEY (user_id, repo, number)
+      );
+      CREATE INDEX IF NOT EXISTS pr_state_repo_state ON pr_state (user_id, repo, state);
+      CREATE INDEX IF NOT EXISTS pr_state_repo_branch ON pr_state (user_id, repo, branch);
+      CREATE TABLE IF NOT EXISTS pr_sync (
+        user_id TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        open_synced_at BIGINT,
+        done_synced_at BIGINT,
+        attempted_at BIGINT,
+        error TEXT,
+        PRIMARY KEY (user_id, repo)
+      );`,
+  },
 ];
 
 export type MigrationMismatch = { id: number; recorded: string; expected: string; idempotent: boolean };
@@ -1484,6 +1524,85 @@ export async function patchEnrichment(repo: string, branch: string, fields: Fiel
       if (v === undefined || v === null) delete current[k]; else current[k] = v;
     }
     await sql`UPDATE workstream SET data = ${current} WHERE id = ${id}`;
+  });
+}
+
+// ── PR state (server/prSync.ts writes it; every reader of PR state reads it) ──────────────────
+
+/** One PR as the sync job last read it. `data` is the whole summary (gh.ts PrSummary and, for a PR
+ *  the merge queue or a wake watches, its merge gate's files). */
+export type PrStateRow = {
+  repo: string; number: number; branch: string; base?: string; headSha?: string; state: string; isDraft: boolean;
+  ciStatus?: string; reviewStatus?: string; mergeable?: string; title: string; url: string;
+  mergedAt?: number; closedAt?: number; data: Fields; syncedAt: number;
+};
+const prRow = (r: Record<string, unknown>): PrStateRow => ({
+  repo: String(r.repo), number: Number(r.number), branch: String(r.branch), base: (r.base as string | null) ?? undefined,
+  headSha: (r.head_sha as string | null) ?? undefined, state: String(r.state), isDraft: Boolean(r.is_draft),
+  ciStatus: (r.ci_status as string | null) ?? undefined, reviewStatus: (r.review_status as string | null) ?? undefined,
+  mergeable: (r.mergeable as string | null) ?? undefined, title: String(r.title ?? ""), url: String(r.url ?? ""),
+  mergedAt: r.merged_at == null ? undefined : Number(r.merged_at), closedAt: r.closed_at == null ? undefined : Number(r.closed_at),
+  data: (typeof r.data === "string" ? JSON.parse(r.data) : r.data as Fields) ?? {}, syncedAt: Number(r.synced_at),
+});
+
+/** Write PR rows (insert or replace). The sync job's only write. */
+export async function upsertPrStates(rows: PrStateRow[]): Promise<void> {
+  if (!rows.length) return;
+  return withRetry(async (sql) => {
+    for (const r of rows) {
+      await sql`
+        INSERT INTO pr_state (user_id, repo, number, branch, base, head_sha, state, is_draft, ci_status, review_status, mergeable, title, url, merged_at, closed_at, data, synced_at)
+        VALUES (${currentUser()}, ${r.repo}, ${r.number}, ${r.branch}, ${r.base ?? null}, ${r.headSha ?? null}, ${r.state}, ${r.isDraft}, ${r.ciStatus ?? null}, ${r.reviewStatus ?? null},
+          ${r.mergeable ?? null}, ${r.title}, ${r.url}, ${r.mergedAt ?? null}, ${r.closedAt ?? null}, ${r.data}, ${r.syncedAt})
+        ON CONFLICT (user_id, repo, number) DO UPDATE SET
+          branch = EXCLUDED.branch, base = EXCLUDED.base, head_sha = EXCLUDED.head_sha, state = EXCLUDED.state, is_draft = EXCLUDED.is_draft,
+          ci_status = EXCLUDED.ci_status, review_status = EXCLUDED.review_status, mergeable = EXCLUDED.mergeable, title = EXCLUDED.title,
+          url = EXCLUDED.url, merged_at = EXCLUDED.merged_at, closed_at = EXCLUDED.closed_at, data = EXCLUDED.data, synced_at = EXCLUDED.synced_at`;
+    }
+  });
+}
+
+/** A repo's PR rows: `state` filters (OPEN, MERGED, CLOSED); `since` keeps rows merged or closed at
+ *  or after it (ms). Newest number first. */
+export async function prStates(repo: string, opts: { state?: string; since?: number } = {}): Promise<PrStateRow[]> {
+  return withRetry(async (sql) => {
+    const rows = await sql`
+      SELECT * FROM pr_state WHERE user_id = ${currentUser()} AND repo = ${repo}
+        AND (${opts.state ?? null}::text IS NULL OR state = ${opts.state ?? null})
+        AND (${opts.since ?? null}::bigint IS NULL OR COALESCE(merged_at, closed_at, 0) >= ${opts.since ?? null})
+      ORDER BY number DESC`;
+    return (rows as Record<string, unknown>[]).map(prRow);
+  });
+}
+
+/** One PR's row, or undefined. */
+export async function prState(repo: string, number: number): Promise<PrStateRow | undefined> {
+  return withRetry(async (sql) => {
+    const rows = await sql`SELECT * FROM pr_state WHERE user_id = ${currentUser()} AND repo = ${repo} AND number = ${number}`;
+    return rows.length ? prRow(rows[0] as Record<string, unknown>) : undefined;
+  });
+}
+
+/** When a repo's PR lists were last read, and the last sync error. */
+export type PrSyncStatus = { repo: string; openSyncedAt?: number; doneSyncedAt?: number; attemptedAt?: number; error?: string };
+export async function prSyncStatus(repo: string): Promise<PrSyncStatus> {
+  return withRetry(async (sql) => {
+    const rows = await sql`SELECT * FROM pr_sync WHERE user_id = ${currentUser()} AND repo = ${repo}`;
+    const r = rows[0] as Record<string, unknown> | undefined;
+    const n = (v: unknown) => (v == null ? undefined : Number(v));
+    return { repo, openSyncedAt: n(r?.open_synced_at), doneSyncedAt: n(r?.done_synced_at), attemptedAt: n(r?.attempted_at), error: (r?.error as string | null) ?? undefined };
+  });
+}
+/** Record a sync attempt: a field left undefined keeps its stored value; `error` null clears it. */
+export async function notePrSync(repo: string, s: { openSyncedAt?: number; doneSyncedAt?: number; attemptedAt: number; error: string | null }): Promise<void> {
+  return withRetry(async (sql) => {
+    await sql`
+      INSERT INTO pr_sync (user_id, repo, open_synced_at, done_synced_at, attempted_at, error)
+      VALUES (${currentUser()}, ${repo}, ${s.openSyncedAt ?? null}, ${s.doneSyncedAt ?? null}, ${s.attemptedAt}, ${s.error})
+      ON CONFLICT (user_id, repo) DO UPDATE SET
+        open_synced_at = COALESCE(EXCLUDED.open_synced_at, pr_sync.open_synced_at),
+        done_synced_at = COALESCE(EXCLUDED.done_synced_at, pr_sync.done_synced_at),
+        attempted_at = EXCLUDED.attempted_at, error = EXCLUDED.error`;
   });
 }
 

@@ -27,7 +27,7 @@ import {
   KEEP_PR_TEXT_IN_SYNC, MESSAGE_BREAK, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, WORKER_EVENT_MARKER, boardText, continuation, isUserMessage, isWorkerProblem, wakeFromUser, ladderStep, nextFailStreak, onlyCleanReports, orchestratorStatus, sessionHint, splitMessages, wakeExitReason,
   wakeProgress, wakeStoppedLine, workerEvent,
 } from "../web/src/workstream";
-import { installFakeGh, makeScratchRepo, setPrListFixture } from "./helpers";
+import { installFakeGh, makeScratchRepo, setPrListFixture, setViewFixture } from "./helpers";
 import { native } from "./happydom";
 import { freshSchema, type TestDb } from "./pg";
 
@@ -559,7 +559,7 @@ test("O7: send continues a workstream on its native session, queues behind a liv
   await expect(orchestrator.tool(cfg(), "address", { repo: "r", branch })).rejects.toThrow(`r/${branch} has no open PR to address`);
 });
 
-test("O7b: send carries KEEP_PR_TEXT_IN_SYNC only when it can find the branch's open PR; a failed lookup never blocks the send", async () => {
+test("O7b: send carries KEEP_PR_TEXT_IN_SYNC when the PR state shows the branch's open PR; a failed GitHub read never blocks the send", async () => {
   await orchestrator.tool(cfg(), "spawn", brief);
   const branch = Object.keys(await db.enrichment("r"))[0]!;
   await settled(() => db.turns("r", branch), 1);
@@ -570,12 +570,20 @@ test("O7b: send carries KEEP_PR_TEXT_IN_SYNC only when it can find the branch's 
   await settled(() => db.turns("r", branch), 2);
   expect((await launches())[1]).toContain(KEEP_PR_TEXT_IN_SYNC);
 
-  // The lookup fails (no PR-list fixture: the fake GitHub answers an error) — the send still
-  // succeeds, just with no PR-sync instruction.
+  // GitHub fails (no PR-list fixture: the fake GitHub answers an error). The send still succeeds, and
+  // the database still has the PR (server/prSync.ts: a failed sync keeps the last rows), so the
+  // instruction stays.
   delete process.env.ORCA_PRLIST_FIXTURE;
   expect(await orchestrator.tool(cfg(), "send", { repo: "r", branch, _: ["And one more thing"] })).toContain(`Sent to r/${branch}`);
   await settled(() => db.turns("r", branch), 3);
-  expect((await launches())[2]).not.toContain(KEEP_PR_TEXT_IN_SYNC);
+  expect((await launches())[2]).toContain(KEEP_PR_TEXT_IN_SYNC);
+
+  // The PR closes (an empty list, and GitHub says closed): no open PR on the branch, no instruction.
+  await setPrListFixture([]);
+  await setViewFixture({ state: "CLOSED", headRefName: branch });
+  expect(await orchestrator.tool(cfg(), "send", { repo: "r", branch, _: ["Last thing"] })).toContain(`Sent to r/${branch}`);
+  await settled(() => db.turns("r", branch), 4);
+  expect((await launches())[3]).not.toContain(KEEP_PR_TEXT_IN_SYNC);
 });
 
 test("O11: preview starts a workstream's preview on the board's path, and --status reports state + the log tail", async () => {
