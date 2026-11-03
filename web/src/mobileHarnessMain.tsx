@@ -104,7 +104,17 @@ Object.assign(api, {
   integrations: async () => ({ instance: "local", kinds: [], integrations: [], links: [], people: [], pairings: [], subscriptions: [], dead: [] }),
   handoffs: async () => ({ self: "here", packs: [] }),
   secretNames: async () => ({ secrets: [] }),
+  githubLimits: async () => ({ limited: [] }),
 });
+
+// `?ratelimited`: the GitHub GraphQL budget is spent for 25 more minutes; the PRs are the last known
+// state, read 12 minutes ago (the banner and the stale pills).
+if (new URLSearchParams(location.search).has("ratelimited")) {
+  Object.assign(api, {
+    githubLimits: async () => ({ limited: [{ resource: "graphql", until: now + 25 * 60_000 }] }),
+    prs: async () => PRS.map((p) => ({ ...p, staleAt: min(12), staleReason: "GitHub rate limited" })),
+  });
+}
 
 const path = new URLSearchParams(location.search).get("path") ?? "/";
 history.replaceState(null, "", path);

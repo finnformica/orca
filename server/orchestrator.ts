@@ -685,7 +685,7 @@ export async function board(cfg: OrcaConfig): Promise<BoardRow[]> {
       rows.push({
         repo: repo.name, branch, title: pr?.title ?? (e.title as string | undefined), worktreePath: worktreePath ?? (remote?.data.worktreePath as string | undefined),
         agent: agentState,
-        pr: pr ? { number: pr.number, isDraft: pr.isDraft, reviewStatus: pr.reviewStatus, ciStatus: pr.ciStatus, mergeable: pr.mergeable, verified: verifiedState(e.verified as VerifiedMark | undefined, pr.head, pr.number) } : done && { number: done.number, merged: true },
+        pr: pr ? { number: pr.number, isDraft: pr.isDraft, reviewStatus: pr.reviewStatus, ciStatus: pr.ciStatus, mergeable: pr.mergeable, verified: verifiedState(e.verified as VerifiedMark | undefined, pr.head, pr.number), ...(pr.staleAt ? { staleAt: pr.staleAt } : {}) } : done && { number: done.number, merged: true },
         check: run?.check?.ok ?? ((remote?.data.agentCheck as { ok?: boolean } | undefined)?.ok), orchestrated: Boolean(e.orchestrated),
         last: run?.structured?.outcome ?? run?.error ?? ((remote?.data.agentOutcome as { outcome?: string } | undefined)?.outcome),
         instance: several ? (remote?.instance ?? (worktreePath ? here : undefined)) : undefined,
@@ -1028,7 +1028,7 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       // GitHub failure (no token, bad auth) stop the send — it just means no PR-sync instruction.
       // Never cached on the workstream: a stale PR number could point at one already closed.
       const prNumber = verbs.repoHere(repo)
-        ? (await gh.listPrs(repo.repoPath).catch(() => [])).find((p) => p.branch === branch)?.number
+        ? (await gh.listPrs(repo.repoPath).catch(() => [])).find((p) => p.branch === branch && !p.staleAt)?.number // a stale row: the PR may be closed now
         : undefined;
       // A send that queues replaces this agent's own still-queued message on the branch, in its place
       // (db.queueMessage `replace`, one transaction on the worktree's instance): one message per agent

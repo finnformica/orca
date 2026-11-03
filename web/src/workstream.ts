@@ -1847,7 +1847,7 @@ export function orchStatusText(s: OrchStatus | undefined): string {
 /** One line of the board as the orchestrator reads it. */
 export type BoardRow = {
   repo: string; branch: string; title?: string; worktreePath?: string; agent: string;
-  pr?: { number: number; isDraft?: boolean; reviewStatus?: string; ciStatus?: string; mergeable?: string; merged?: boolean; verified?: VerifiedState };
+  pr?: { number: number; isDraft?: boolean; reviewStatus?: string; ciStatus?: string; mergeable?: string; merged?: boolean; verified?: VerifiedState; staleAt?: number };
   check?: boolean; orchestrated?: boolean; last?: string;
   /** The instance holding its worktree, when there is more than one instance. */
   instance?: string;
@@ -1860,7 +1860,7 @@ export function boardText(rows: BoardRow[]): string {
   if (!rows.length) return "(no workstreams)";
   return rows.map((r) => {
     const pr = r.pr
-      ? r.pr.merged ? `PR #${r.pr.number} merged` : `PR #${r.pr.number}${r.pr.isDraft ? " draft" : ""}${r.pr.reviewStatus ? ` review:${r.pr.reviewStatus}` : ""}${r.pr.ciStatus ? ` ci:${r.pr.ciStatus}` : ""}${r.pr.mergeable === "CONFLICTING" ? " CONFLICTS" : ""}${r.pr.verified === "verified" ? " verified-by-user" : r.pr.verified === "changed" ? " changed-since-user-verified" : ""}`
+      ? r.pr.merged ? `PR #${r.pr.number} merged` : `PR #${r.pr.number}${r.pr.isDraft ? " draft" : ""}${r.pr.reviewStatus ? ` review:${r.pr.reviewStatus}` : ""}${r.pr.ciStatus ? ` ci:${r.pr.ciStatus}` : ""}${r.pr.mergeable === "CONFLICTING" ? " CONFLICTS" : ""}${r.pr.verified === "verified" ? " verified-by-user" : r.pr.verified === "changed" ? " changed-since-user-verified" : ""}${r.pr.staleAt ? ` (stale: GitHub unavailable, last read ${new Date(r.pr.staleAt).toISOString().slice(11, 16)} UTC)` : ""}`
       : "no PR";
     return [
       `${r.repo}/${r.branch}${r.title ? ` "${r.title}"` : ""}`,

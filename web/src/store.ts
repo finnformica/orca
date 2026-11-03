@@ -456,6 +456,7 @@ function runFollowers() {
     for (const pr of rl.prs) {
       const e = enrichOf(rl.repo, pr.branch);
       if (!e.following) continue;
+      if (pr.staleAt) continue; // the last known state: never act on it
       if (wtByBranch.get(pr.branch)?.agentStatus === "running") continue; // let the current run finish
       const { action, sig } = followDecision(pr, e.followSig);
       if (e.followSig !== sig) patchEnrich(rl.repo, pr.branch, { followSig: sig }); // record before firing → no double-fire
@@ -526,6 +527,8 @@ export type Row = {
   ciStatus?: CiStatus;
   reviewStatus?: ReviewStatus;
   mergeable?: Mergeable;
+  /** The PR state is the last known one, read at this time (ms): GitHub was rate limited or down. */
+  prStaleAt?: number;
   autoMergeEnabled?: boolean;
   /** GitHub's own merge method for its auto-merge request (squash/merge/rebase) — the status
    *  pill's tooltip names it. */
@@ -766,6 +769,7 @@ export function assembleRows(): Row[] {
         prNumber: pr?.number, prBase: pr?.base, prAdditions: pr?.additions, prDeletions: pr?.deletions,
         prUrl: pr?.url, previewUrl: pr?.previewUrl, hasPreviewLabel: pr?.hasPreviewLabel, isDraft: pr?.isDraft,
         ciStatus: pr?.ciStatus, reviewStatus: pr?.reviewStatus, mergeable: pr?.mergeable, autoMergeEnabled: pr?.autoMergeEnabled, autoMergeMethod: pr?.autoMergeMethod,
+        prStaleAt: pr?.staleAt,
         following: e.following, followUps: e.followUps, orchestrated: e.orchestrated, orchStatus: e.orchStatus, grantScope: e.grantScope, upkeep: e.upkeep, previewInstance: e.previewInstance, mergeWhenGreen: e.mergeWhenGreen, verified: e.verified ?? undefined, hiddenUntil: e.hiddenUntil,
         failingChecks: pr?.failingChecks, prHead: pr?.head, cleanupBlocked: e.cleanupBlocked ?? undefined, browserKilled: e.browserKilled ?? undefined, feedback: pr?.feedback,
         slackNotifiedAt: e.slackNotifiedAt, slackLastBumpedAt: e.slackLastBumpedAt,
