@@ -161,6 +161,24 @@ test("an orchestrator message sent to A is proxied to B (orchestratorOn) and its
   expect(prompt).toContain(`- ${ref!.split("/")[2]}  bug.png`);
 });
 
+test("an orchestrator message with no text, only an attachment, is accepted: the wake prompt gets a placeholder, not a blank line", async () => {
+  const { paths: [ref] } = await upload(A, [{ name: "sheet.png", type: "image/png", bytes: PNG }]).then((r) => r.json()) as { paths: string[] };
+  const sent = await fetch(`${A}/api/orchestrator/message`, { method: "POST", body: JSON.stringify({ text: "", attachments: [ref] }) });
+  expect(sent.status).toBe(200);
+  const prompt = await promptWith("no text, attachments only");
+  assertBoxLocal(prompt);
+  expect(prompt).toContain("## From the user");
+  expect(prompt).toContain("(no text, attachments only)");
+  const path = listed(prompt).find((l) => l.endsWith("sheet.png"));
+  expect(path).toStartWith(join(box, "attachments"));
+});
+
+test("an orchestrator message with no text and no attachment is refused", async () => {
+  const res = await fetch(`${A}/api/orchestrator/message`, { method: "POST", body: JSON.stringify({ text: "   " }) });
+  expect(res.status).toBe(400);
+  expect((await res.json()).error).toContain("text or an attachment is required");
+});
+
 /** `orca …` exactly as the orchestrator runs it, against the box (where it lives). */
 async function orca(...argv: string[]): Promise<string> {
   const p = Bun.spawn(["bun", join(ROOT, "bin", "orca"), ...argv], { env: { ...process.env, ORCA_URL: B } as Record<string, string>, stdout: "pipe", stderr: "pipe" });

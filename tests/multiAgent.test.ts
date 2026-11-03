@@ -359,6 +359,15 @@ describe("cross-provider continuation", () => {
     expect(launch.history).toBeUndefined();
   });
 
+  test("a follow-up with no text, only an attachment, gets a placeholder instead of a blank prompt", async () => {
+    apiFake.uploadAttachmentsResult = ["orca-attachment://11111111-1111-1111-1111-111111111111/sheet.png"];
+    await store.followUp(row, "", [new File(["x"], "sheet.png")], { provider: "claude" });
+    const prompt = apiFake.agentLaunches.at(-1)!.prompt;
+    expect(prompt).toContain("(no text, attachments only)");
+    expect(prompt).toContain("Attached files (Read these for extra context):");
+    expect(prompt).toContain("orca-attachment://11111111-1111-1111-1111-111111111111/sheet.png");
+  });
+
   test("Run again resumes the current native session instead of replaying a fresh task", async () => {
     await store.rerunAgent(row);
     const launch = apiFake.agentLaunches.at(-1)!;

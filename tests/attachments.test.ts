@@ -10,7 +10,7 @@ import { join } from "node:path";
 import * as db from "../server/db";
 import * as agent from "../server/agent";
 import { AttachmentTooLarge, MAX_ATTACHMENT_BYTES, resolvePrompt, store } from "../server/attachments";
-import { attachmentRefs, withAttachments, withoutAttachmentList } from "../web/src/workstream";
+import { attachmentRefs, NO_TEXT_PLACEHOLDER, textOrPlaceholder, withAttachments, withoutAttachmentList } from "../web/src/workstream";
 import { makeScratchRepo } from "./helpers";
 import { freshSchema, type TestDb } from "./pg";
 
@@ -124,4 +124,11 @@ test("the chat's view of a message: its references parsed, the attachment list d
   // The orchestrator joins a wake's messages with a blank line: only the list goes, the rest stays.
   expect(withoutAttachmentList(`${sent}\n\n⚙ worker report`)).toBe("what's wrong here?\n\n⚙ worker report");
   expect(withoutAttachmentList("no files")).toBe("no files");
+});
+
+test("a message with no words but an attachment gets a placeholder instead of a blank prompt", () => {
+  expect(textOrPlaceholder("", true)).toBe(NO_TEXT_PLACEHOLDER);
+  expect(textOrPlaceholder("   ", true)).toBe(NO_TEXT_PLACEHOLDER);
+  expect(textOrPlaceholder("", false)).toBe(""); // no attachment either: nothing to say instead
+  expect(textOrPlaceholder("look at this", true)).toBe("look at this"); // text wins when there is any
 });
