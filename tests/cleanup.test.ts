@@ -119,6 +119,9 @@ test("C1b: a branch preview's read-only bridge never reaps a worktree", async ()
   await setDonePrListFixture([
     { number: 9, title: "Merged", url: "u9", headRefName: "merged-pb", headRefOid: merged.sha, mergedAt: iso(NOW - 3_600_000), closedAt: iso(NOW - 3_600_000) },
   ]);
+  // The real bridge migrated its database at boot. Open it here first: a preview bridge refuses to
+  // migrate, and a first open inside the window below would keep that refusal for this process.
+  await db.enrichment("r");
   process.env.ORCA_PREVIEW_BRIDGE = "1";
   try {
     expect(await verbs.cleanupRepo(repo, { now: NOW })).toEqual([]);
@@ -126,6 +129,7 @@ test("C1b: a branch preview's read-only bridge never reaps a worktree", async ()
   } finally {
     delete process.env.ORCA_PREVIEW_BRIDGE;
   }
+  expect((await db.prSyncStatus("r")).attemptedAt).toBeUndefined(); // the preview bridge synced nothing
   expect(existsSync(merged.worktreePath)).toBe(true);
   expect((await verbs.cleanupRepo(repo, { now: NOW })).map((c) => c.branch)).toEqual(["merged-pb"]); // the real bridge acts on it
 });

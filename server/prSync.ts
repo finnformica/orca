@@ -84,6 +84,8 @@ const again = new Map<string, Promise<SyncResult>>();
 /** Sync one repo now. A sync asked for while one runs runs once more after it (a write's refresh
  *  must not get the answer of a read that started before the write). */
 export function syncRepo(repo: RepoConfig, opts: { done?: boolean; gates?: number[] } = {}): Promise<SyncResult> {
+  // A branch preview's read-only bridge never syncs: it reads no GitHub and writes no pr_state row.
+  if (db.previewBridge()) return Promise.resolve({ open: false, rows: 0, events: [] });
   const cur = running.get(repo.name);
   if (cur) {
     const next = again.get(repo.name) ?? cur.catch(() => undefined).then(() => { again.delete(repo.name); return syncRepo(repo, opts); });
