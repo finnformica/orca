@@ -1025,7 +1025,7 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       // GitHub failure (no token, bad auth) stop the send — it just means no PR-sync instruction.
       // Never cached on the workstream: a stale PR number could point at one already closed.
       const prNumber = verbs.repoHere(repo)
-        ? (await gh.listPrs(repo.repoPath).catch(() => [])).find((p) => p.branch === branch)?.number
+        ? (await gh.listPrs(repo.repoPath).catch(() => [])).find((p) => p.branch === branch && !p.staleAt)?.number // a stale row: the PR may be closed now
         : undefined;
       // A send that queues replaces this agent's own still-queued message on the branch, in its place
       // (db.queueMessage `replace`, one transaction on the worktree's instance): one message per agent
