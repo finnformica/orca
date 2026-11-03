@@ -1112,8 +1112,9 @@ async function api(req: Request, url: URL): Promise<Response> {
       return json({ ok: true });
     }
     if (req.method === "POST" && p === "/api/orchestrator/message") {
-      if (typeof body.text !== "string" || !body.text.trim()) return json({ error: "text required" }, 400);
-      return json(await orchestrator.message(cfg, body.text, body.attachments ?? [], { ...(agentName ? { agent: agentName } : {}) }));
+      const attachments: string[] = Array.isArray(body.attachments) ? body.attachments : [];
+      if (typeof body.text !== "string" || (!body.text.trim() && !attachments.length)) return json({ error: "text or an attachment is required" }, 400);
+      return json(await orchestrator.message(cfg, body.text, attachments, { ...(agentName ? { agent: agentName } : {}) }));
     }
   } catch (e) {
     if (e instanceof Error && /^no agent |^the orchestrator runs on|^the name is|^an agent named|^--display|^--role|^"orchestrator" is|^tools|^the display name|^the role text| is the last agent: /.test(e.message)) return json({ error: e.message }, 400);

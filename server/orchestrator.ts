@@ -47,7 +47,7 @@ import * as policy from "./integrations/policy";
 import { featuresOf, runLimits, runsHere, type OrcaConfig, type RepoConfig } from "./config";
 import {
   MODEL_LADDER, NO_REPLY_PLACEHOLDER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, boardText, briefProblems, continuation, isUserMessage, isWorkerProblem, wakeFromUser, onlyCleanReports,
-  checkLine, handoffRef, joinMessages, ladderStep, mergedPrIsHistory, nextFailStreak, orchStatusText, orchStatusUpdate, verifiedMark, verifiedState, orchestratorPrompt, sessionHint, sweepText, turnSource, wakeExitReason, wakeProgress, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
+  checkLine, handoffRef, joinMessages, ladderStep, mergedPrIsHistory, nextFailStreak, orchStatusText, orchStatusUpdate, verifiedMark, verifiedState, orchestratorPrompt, sessionHint, sweepText, textOrPlaceholder, turnSource, wakeExitReason, wakeProgress, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
   hiddenNote, machineText, originQuote, parseHideFor, turnOrigin, type BoardRow, type FailStreak, type MachineReport, type OrchStatus, type VerifiedMark, type WakeExit,
 } from "../web/src/workstream";
 import { activityLines, type AgentTurn, type TurnOrigin } from "../shared/agent";
@@ -239,6 +239,9 @@ async function clearWaiting(ag: AgentRef): Promise<void> {
  *  of another grant, and that wake's `orca` verbs are checked against it. `person: false` (a webhook
  *  script, not a person) does not reset the wake count, so a script cannot keep it awake forever. */
 export async function message(cfg: OrcaConfig, text: string, attachments: string[] = [], opts: { grant?: Grant; person?: boolean; replyTo?: ReplyTo; agent?: string } = {}): Promise<{ status: "running" | "queued" }> {
+  // An attachment with no words: say so instead of leaving the wake a blank line where the user's
+  // text should be.
+  text = textOrPlaceholder(text, attachments.length > 0);
   const ag = await agentRef(opts.agent, cfg);
   const l = lane(ag);
   const grant = opts.grant && opts.grant.level !== "full" ? opts.grant : undefined;
