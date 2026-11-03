@@ -54,6 +54,7 @@ import { onOrchestratorDelivered, useOrchestratorOutbox } from "@/lib/orchestrat
 import { ChatControls, type ChatControlsProps } from "@/components/ChatControls";
 import type { OrchestratorPrefill } from "@/lib/atoms";
 import { apiUrl } from "@/lib/server";
+import { remarkInlineImages, THUMB_ATTR } from "@/lib/inlineImages";
 
 // How close to the bottom still counts as "following". A few pixels of slack absorbs sub-pixel
 // rounding and the composer resizing, so following doesn't switch off on its own.
@@ -77,8 +78,11 @@ const ChatSkeleton = ({ rows }: { rows: number }) => (
 /** A markdown image (a worker's `![…](/api/screenshots/<id>)` link, or any other image URL a reply
  *  embeds) through the same lightbox + copy button as every other image, instead of react-markdown's
  *  bare `<img>` — capped to a readable size inline, full size on click. */
-const markdownImg = ({ src, alt }: { src?: string; alt?: string }) =>
-  src ? <ExpandableImage src={apiUrl(src)} alt={alt ?? ""} imgClassName="max-h-80 max-w-full rounded-md border object-contain" /> : null;
+const markdownImg = ({ src, alt, ...rest }: { src?: string; alt?: string; [THUMB_ATTR]?: string }) =>
+  !src ? null : rest[THUMB_ATTR] !== undefined
+    // A bare Orca path (`shot: <path>`, remarkInlineImages): a thumbnail, like a report's shots.
+    ? <ExpandableImage src={apiUrl(src)} alt={alt ?? ""} className="me-2 inline-block align-top" imgClassName="h-24 w-40 rounded-md border object-cover object-top" />
+    : <ExpandableImage src={apiUrl(src)} alt={alt ?? ""} imgClassName="max-h-80 max-w-full rounded-md border object-contain" />;
 
 /** A markdown table wrapped so it scrolls sideways inside itself (overflow-x-auto, max-w-full)
  *  instead of squashing its columns or widening the page — a table of more than a couple of
@@ -137,7 +141,7 @@ const ChatMarkdown = memo(({ children, tone = "text-neutral-300", breaks, outsid
     "prose-blockquote:text-neutral-400", QUOTE_PILL,
     "prose-hr:border-neutral-800 prose-th:border-neutral-800 prose-td:border-neutral-800 prose-figcaption:text-neutral-500",
     tone)}>
-    <ReactMarkdown remarkPlugins={breaks ? [remarkGfm, remarkBreaks] : [remarkGfm]} components={outside ? outsideComponents : chatComponents}>{children}</ReactMarkdown>
+    <ReactMarkdown remarkPlugins={outside ? (breaks ? [remarkGfm, remarkBreaks] : [remarkGfm]) : breaks ? [remarkGfm, remarkBreaks, remarkInlineImages] : [remarkGfm, remarkInlineImages]} components={outside ? outsideComponents : chatComponents}>{children}</ReactMarkdown>
   </div>
 ));
 
@@ -173,7 +177,7 @@ const FacetMarkdown = memo(({ children }: { children: string }) => (
     prose-pre:bg-neutral-900 prose-pre:text-[11px] prose-pre:text-neutral-200 prose-a:text-sky-400
     prose-blockquote:text-neutral-400 ${QUOTE_PILL}
     prose-hr:border-neutral-800 prose-th:border-neutral-800 prose-td:border-neutral-800 prose-figcaption:text-neutral-500`}>
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ ...chatComponents, p: ({ children: c }) => <>{c}</> }}>{children}</ReactMarkdown>
+    <ReactMarkdown remarkPlugins={[remarkGfm, remarkInlineImages]} components={{ ...chatComponents, p: ({ children: c }) => <>{c}</> }}>{children}</ReactMarkdown>
   </div>
 ));
 

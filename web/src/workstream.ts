@@ -382,7 +382,10 @@ export const KEEP_PR_TEXT_IN_SYNC = "After your changes, read the PR's current t
 // The box can't afford a browser per worker (an OOM took it down), so the bridge runs ONE capped,
 // queued browser (server/screenshot.ts) and this is how a worker reaches it. Shot paths in the reply
 // ride into the orchestrator's report (`workerEvent`).
-export const SCREENSHOTS = "To see a UI, the ONLY allowed way to take a screenshot is `orca-shot <url> [--viewport 390x844] [--dark] [--wait-for <sel>] [--click <sel>] [--press <key>] [--type <text>] [--hover <sel>] [--scroll <y|sel>] [--label before|after] [--console]` (it queues on Orca's one memory-capped browser and prints `shot: <path>`; Read the PNG to look at it). If a page shows blank or a spinner, add `--console` to print its exceptions and failed requests. `--click` is a real mouse click, so it opens a Radix UI dropdown/menu trigger (those open on pointerdown, not plain `click`); `--press <key>` sends a named key (Enter, Escape, ArrowDown, …), repeatable and ordered with `--click`, for navigating a menu once it's open. `--type <text>` types into the focused field (`--click` it first). Never launch a browser yourself: chrome-devtools-mcp, playwright-mcp, @playwright/mcp, Playwright browser launches outside tests and puppeteer are banned. orca-shot is the only way to look at a page. Orca kills any other browser in an agent's scope and flags the workstream. Run Playwright e2e tests only in the test queue's e2e slot (`orca-run --kind e2e -- <command>`). Screenshots are optional: commit and push your work FIRST, then take one only if it helps; if it times out or the queue is busy, give up and move on rather than retrying. For a UI change, list each before/after `shot: <path>` line in your Verification. To run Orca itself for a screenshot, use `scripts/preview-orca.sh` (a read-only preview bridge) — never start `server/index.ts` or `bun run dev` directly: a full bridge left running from a worktree acts on the shared database with stale code. If the repo deploys a remote PR preview, take the final screenshots from that preview: commit and push first, then run `orca-shot --preview [/path] [--pr N] [the same flags]` with a Bash timeout of 10 minutes (it waits for the deploy of your pushed head commit and signs in). Use a local stack only to debug, never for the final screenshots. If it says there is no open PR, do not open one: say in Remaining that the preview screenshots wait on a PR, and the orchestrator opens a draft PR early and asks you for them. If it says the repo has no remotePreview, shoot a URL as above.";
+/** How to show an image in the Orca chat (lib/inlineImages.ts draws it). In SCREENSHOTS, so every
+ *  worker has it, and in every orchestrator wake. */
+export const CHAT_IMAGES = "The Orca chat shows an image inline for a `shot: <path>` line, a bare `orca-shot` path or attachment image path, or a markdown image of one (`![label](<path>)`). A path in backticks or a code block stays text. To show the user a screenshot, put its path in your reply like that; do not upload it elsewhere for them.";
+export const SCREENSHOTS = "To see a UI, the ONLY allowed way to take a screenshot is `orca-shot <url> [--viewport 390x844] [--dark] [--wait-for <sel>] [--click <sel>] [--press <key>] [--type <text>] [--hover <sel>] [--scroll <y|sel>] [--label before|after] [--console]` (it queues on Orca's one memory-capped browser and prints `shot: <path>`; Read the PNG to look at it). If a page shows blank or a spinner, add `--console` to print its exceptions and failed requests. `--click` is a real mouse click, so it opens a Radix UI dropdown/menu trigger (those open on pointerdown, not plain `click`); `--press <key>` sends a named key (Enter, Escape, ArrowDown, …), repeatable and ordered with `--click`, for navigating a menu once it's open. `--type <text>` types into the focused field (`--click` it first). Never launch a browser yourself: chrome-devtools-mcp, playwright-mcp, @playwright/mcp, Playwright browser launches outside tests and puppeteer are banned. orca-shot is the only way to look at a page. Orca kills any other browser in an agent's scope and flags the workstream. Run Playwright e2e tests only in the test queue's e2e slot (`orca-run --kind e2e -- <command>`). Screenshots are optional: commit and push your work FIRST, then take one only if it helps; if it times out or the queue is busy, give up and move on rather than retrying. For a UI change, list each before/after `shot: <path>` line in your Verification. To run Orca itself for a screenshot, use `scripts/preview-orca.sh` (a read-only preview bridge) — never start `server/index.ts` or `bun run dev` directly: a full bridge left running from a worktree acts on the shared database with stale code. If the repo deploys a remote PR preview, take the final screenshots from that preview: commit and push first, then run `orca-shot --preview [/path] [--pr N] [the same flags]` with a Bash timeout of 10 minutes (it waits for the deploy of your pushed head commit and signs in). Use a local stack only to debug, never for the final screenshots. If it says there is no open PR, do not open one: say in Remaining that the preview screenshots wait on a PR, and the orchestrator opens a draft PR early and asks you for them. If it says the repo has no remotePreview, shoot a URL as above. " + CHAT_IMAGES;
 
 // A headless run narrates almost nothing by default: one real run produced 11 text blocks against 97
 // tool calls, so the chat showed a list of commands and nothing about why. Claude's own reasoning is
@@ -1456,6 +1459,49 @@ export function shotRefs(text: string): ShotRef[] {
 }
 export const shotUrl = (id: string) => `/api/screenshots/${id}`;
 
+// ---- Orca images inline in a chat message ----
+
+const IMAGE_EXT = "png|jpe?g|gif|webp|avif";
+const SHOT_FILE = /\/shots\/(shot-[\w-]+)\.png$/;
+// A file under `<state dir>/attachments/<id>/` is the local copy of a stored attachment (an upload,
+// `orca gmail attachment`); `/api/attachments/<id>` serves its bytes from the database.
+const ATTACHMENT_FILE = new RegExp(`/attachments/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/[^/]+\\.(?:${IMAGE_EXT})$`, "i");
+/** The URL the bridge serves an Orca image path from: an `orca-shot` PNG
+ *  (`/…/attachments/shots/shot-….png` → `/api/screenshots/<id>`) or an image attachment
+ *  (`/…/attachments/<uuid>/<name>.png` → `/api/attachments/<uuid>`). Only a local path (`/` or `~`)
+ *  counts, never a URL or a relative path; the route takes an id, never a path, so nothing outside
+ *  the attachments dir is reachable. Undefined for anything else. Pure. */
+export function servedImageUrl(path: string): string | undefined {
+  if (!/^[/~]/.test(path) || /\s|\.\.|\/\//.test(path)) return undefined;
+  const shot = path.match(SHOT_FILE)?.[1];
+  if (shot) return shotUrl(shot);
+  const att = path.match(ATTACHMENT_FILE)?.[1];
+  return att ? `/api/attachments/${att.toLowerCase()}` : undefined;
+}
+/** One Orca image a text names: its served URL, the path as written and a short alt text. */
+export type InlineImage = { src: string; path: string; alt: string };
+// A path: starts at `/` or `~` not inside a word, URL or other path, ends at an image extension that
+// is not followed by more of a name (`a.png.bak`). A sentence's last `.` or a `)` is not part of it.
+const IMAGE_PATH = new RegExp(`(?<![\\w.:/~-])[/~][^\\s()\\[\\]<>"'\`]*?\\.(?:${IMAGE_EXT})(?![\\w/-]|\\.\\w)`, "gi");
+/** `text` cut into plain strings and the Orca images it names as bare paths (a `shot: <path>` line,
+ *  a path in a sentence). A path the bridge does not serve stays in the text. The caller passes
+ *  only prose: code spans and fences never reach here, so a path in backticks stays text. Pure. */
+export function inlineImageParts(text: string): (string | InlineImage)[] {
+  const out: (string | InlineImage)[] = [];
+  let last = 0;
+  for (const m of text.matchAll(IMAGE_PATH)) {
+    const src = servedImageUrl(m[0]);
+    if (!src) continue;
+    if (m.index > last) out.push(text.slice(last, m.index));
+    const name = m[0].split("/").at(-1)!;
+    const shot = name.match(/^(shot-[\w-]+)\.png$/)?.[1];
+    out.push({ src, path: m[0], alt: shot ? (shot.match(SHOT_ID)?.[2] ?? "screenshot") : name });
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+}
+
 /** The shots one turn reported. */
 export type TurnShots = { runId: string; at?: number; shots: ShotRef[] };
 /** Every screenshot a workstream's turns reported — its reply and its Verification section —
@@ -2193,6 +2239,7 @@ export function orchestratorPrompt(input: { fresh: boolean; role?: string; verbs
     // Every wake as well: a resumed session sees the role once, and the user wants STE ALWAYS.
     "", WRITING_STYLE,
     "", SNIPPETS,
+    "", CHAT_IMAGES,
     // The notes until the user moves them into memory (server/memory.ts migrateNotes); then memory alone.
     // Only the Chief of Staff has notes: they are the orchestrator's.
     ...(input.notesMoved || !chief ? [] : ["", "## Your notes", input.notes?.trim() || "(empty)"]),
