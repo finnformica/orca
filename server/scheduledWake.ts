@@ -158,7 +158,10 @@ export async function watchPrs(cfg: OrcaConfig, now = Date.now()): Promise<void>
   }
   // The sync job keeps each watched PR's row fresh (server/prSync.ts); this reads the rows only.
   const byRepo = new Map<string, Set<number>>();
-  for (const { repo, pr } of want.values()) byRepo.set(repo, new Set([...(byRepo.get(repo) ?? []), pr]));
+  for (const { repo: name, pr } of want.values()) {
+    const repo = cfg.repos.find((r) => r.name === name);
+    if (repo) byRepo.set(prSync.repoKey(repo), new Set([...(byRepo.get(prSync.repoKey(repo)) ?? []), pr]));
+  }
   prSync.watch("scheduledWake", byRepo);
   for (const { repo: name, pr } of want.values()) {
     const repo = cfg.repos.find((r) => r.name === name);

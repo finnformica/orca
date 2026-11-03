@@ -85,7 +85,7 @@ export async function tick(cfg: OrcaConfig): Promise<void> {
   try {
     for (const repo of queueRepos(cfg)) {
       const marked = Object.entries(await db.enrichment(repo.name)).filter(([, e]) => markOf(e));
-      watching.set(repo.name, new Set(marked.map(([, e]) => markOf(e)!.pr).filter((n): n is number => Boolean(n))));
+      watching.set(prSync.repoKey(repo), new Set(marked.map(([, e]) => markOf(e)!.pr).filter((n): n is number => Boolean(n))));
       if (!marked.length) continue;
       // A branch marked before its PR existed picks the PR up here.
       const open = marked.some(([, e]) => !markOf(e)!.pr) ? await prSync.openPrs(repo).catch(() => []) : [];

@@ -64,9 +64,13 @@ const same = (a: db.PrStateRow, b: db.PrStateRow) =>
 // PR numbers a caller needs fresh although they may not be in the account's open list (a pending
 // `pr:` wake on another person's PR, a PR the merge queue marked): source → repo → numbers.
 const watched = new Map<string, Map<string, Set<number>>>();
+/** The key of this process's state for a checkout (watches, gate reads, the mirror, the running sync):
+ *  its name AND path. The table is keyed by name, but two checkouts of one name (a test file's scratch
+ *  repo after another's) must not share a watch: one once hid the other's merge. */
+export const repoKey = (repo: RepoConfig): string => `${repo.name}\0${repo.repoPath}`;
 /** Replace what `source` watches (scheduledWake.watchPrs, the merge queue). */
-export function watch(source: string, byRepo: Map<string, Set<number>>): void { watched.set(source, byRepo); }
-const watchedIn = (repo: string): Set<number> => {
+export function watch(source: string, byRepo: Map<string, Set<number>>): void { watched.set(source, byRepo); } // keys: repoKey
+const watchedIn = (repo: string): Set<number> => { // repo: repoKey
   const out = new Set<number>();
   for (const m of watched.values()) for (const n of m.get(repo) ?? []) out.add(n);
   return out;
@@ -86,25 +90,26 @@ const again = new Map<string, Promise<SyncResult>>();
 export function syncRepo(repo: RepoConfig, opts: { done?: boolean; gates?: number[] } = {}): Promise<SyncResult> {
   // A branch preview's read-only bridge never syncs: it reads no GitHub and writes no pr_state row.
   if (db.previewBridge()) return Promise.resolve({ open: false, rows: 0, events: [] });
-  const cur = running.get(repo.name);
+  const key = repoKey(repo);
+  const cur = running.get(key);
   if (cur) {
-    const next = again.get(repo.name) ?? cur.catch(() => undefined).then(() => { again.delete(repo.name); return syncRepo(repo, opts); });
-    again.set(repo.name, next);
+    const next = again.get(key) ?? cur.catch(() => undefined).then(() => { again.delete(key); return syncRepo(repo, opts); });
+    again.set(key, next);
     return next;
   }
-  const p = runSync(repo, opts).finally(() => running.delete(repo.name));
-  running.set(repo.name, p);
+  const p = runSync(repo, opts).finally(() => running.delete(key));
+  running.set(key, p);
   return p;
 }
 
-async function oldRows(repo: string): Promise<db.PrStateRow[]> {
-  try { return await db.prStates(repo); } catch { return [...(mirror.get(repo)?.values() ?? [])]; }
+async function oldRows(repo: RepoConfig): Promise<db.PrStateRow[]> {
+  try { return await db.prStates(repo.name); } catch { return [...(mirror.get(repoKey(repo))?.values() ?? [])]; }
 }
 
 const gateAt = new Map<string, number>(); // repo#pr → when its merge gate was last read
 async function runSync(repo: RepoConfig, opts: { done?: boolean; gates?: number[] }): Promise<SyncResult> {
   const now = Date.now();
-  const old = await oldRows(repo.name);
+  const old = await oldRows(repo);
   const before = new Map(old.map((r) => [r.number, r]));
   const next = new Map<number, db.PrStateRow>();
   let error: string | undefined;
@@ -164,8 +169,8 @@ async function runSync(repo: RepoConfig, opts: { done?: boolean; gates?: number[
 
   // 4. Watched PRs (a merge mark, a `pr:` wake, a command's refresh): one merge-gate read each, at most
   //    once a normal interval unless forced. It carries the files the merge queue's deny paths need.
-  for (const n of watchedIn(repo.name)) {
-    const key = `${repo.name}#${n}`;
+  for (const n of watchedIn(repoKey(repo))) {
+    const key = `${repoKey(repo)}#${n}`;
     if (!opts.gates?.includes(n) && now - (gateAt.get(key) ?? 0) < normalMs()) {
       const old = before.get(n);
       const cur = next.get(n);
@@ -183,9 +188,9 @@ async function runSync(repo: RepoConfig, opts: { done?: boolean; gates?: number[
 
   // 5. Write the changed rows (an open row always: its synced_at is the news), then the events.
   const write = [...next.values()].filter((r) => r.state === "OPEN" ? r.syncedAt === now || !before.has(r.number) : !before.get(r.number) || !same(before.get(r.number)!, r));
-  const m = mirror.get(repo.name) ?? new Map<number, db.PrStateRow>();
+  const m = mirror.get(repoKey(repo)) ?? new Map<number, db.PrStateRow>();
   for (const r of next.values()) m.set(r.number, r);
-  mirror.set(repo.name, m);
+  mirror.set(repoKey(repo), m);
   await db.upsertPrStates(write).catch(db.logUnlessDown(`orca: PR state write failed for ${repo.name}`));
   await db.notePrSync(repo.name, {
     openSyncedAt: openRead ? now : undefined, doneSyncedAt: doneOk ? now : undefined, attemptedAt: now, error: error ?? null,
@@ -210,7 +215,7 @@ async function runSync(repo: RepoConfig, opts: { done?: boolean; gates?: number[
  *  no open PR is idle. */
 async function loadOf(repo: RepoConfig): Promise<SyncLoad> {
   const ench = await db.enrichment(repo.name).catch(() => ({}) as Record<string, db.Fields>);
-  if (watchedIn(repo.name).size || Object.values(ench).some((e) => e?.mergeWhenGreen)) return "fast";
+  if (watchedIn(repoKey(repo)).size || Object.values(ench).some((e) => e?.mergeWhenGreen)) return "fast";
   const wts = await git.listWorktrees(repo.repoPath, repo.worktreeRoot).catch(() => []);
   if (wts.some((w) => agent.isRunning(w.worktreePath))) return "fast";
   const open = (await db.prStates(repo.name, { state: "OPEN" }).catch(() => [])).length;
@@ -245,8 +250,9 @@ gh.setWriteHook(afterWrite);
 /** A command about to act on PR state (Merge, merge-when-green): read these PRs from GitHub now. */
 export async function refresh(repo: RepoConfig, prs: number[] = []): Promise<void> {
   if (!here(repo)) return;
-  if (prs.length) watch(`refresh:${repo.name}`, new Map([[repo.name, new Set(prs)]]));
-  try { await syncRepo(repo, { gates: prs }); } finally { if (prs.length) watched.delete(`refresh:${repo.name}`); }
+  const key = repoKey(repo);
+  if (prs.length) watch(`refresh:${key}`, new Map([[key, new Set(prs)]]));
+  try { await syncRepo(repo, { gates: prs }); } finally { if (prs.length) watched.delete(`refresh:${key}`); }
 }
 
 // ── readers: the database only ────────────────────────────────────────────────────────────────
@@ -254,7 +260,7 @@ export async function refresh(repo: RepoConfig, prs: number[] = []): Promise<voi
 async function rows(repo: RepoConfig, opts: { state?: string; since?: number } = {}): Promise<db.PrStateRow[]> {
   if (inline() && here(repo)) await syncRepo(repo, { done: true }).catch(() => undefined);
   try { return await db.prStates(repo.name, opts); } catch (e) {
-    const m = mirror.get(repo.name);
+    const m = mirror.get(repoKey(repo));
     if (!m) throw e;
     return [...m.values()].filter((r) => (!opts.state || r.state === opts.state) && (opts.since === undefined || (r.mergedAt ?? r.closedAt ?? 0) >= opts.since)).sort((a, b) => b.number - a.number);
   }
@@ -287,7 +293,7 @@ export async function donePrs(repo: RepoConfig): Promise<Map<string, gh.DonePr>>
 /** One PR of a repo, any state, as last synced. */
 export async function prByNumber(repo: RepoConfig, pr: number): Promise<gh.PrSummary | undefined> {
   if (inline() && here(repo)) await refresh(repo, [pr]).catch(() => undefined);
-  const r = await db.prState(repo.name, pr).catch(() => mirror.get(repo.name)?.get(pr));
+  const r = await db.prState(repo.name, pr).catch(() => mirror.get(repoKey(repo))?.get(pr));
   return r && summaryOf(r);
 }
 
@@ -295,7 +301,7 @@ export async function prByNumber(repo: RepoConfig, pr: number): Promise<gh.PrSum
  *  two sync intervals, or has no file list (a deny-path check needs one): the queue then waits. */
 export async function mergeGate(repo: RepoConfig, pr: number, now = Date.now()): Promise<gh.PrMergeGate | undefined> {
   if (inline() && here(repo)) await refresh(repo, [pr]).catch(() => undefined);
-  const r = await db.prState(repo.name, pr).catch(() => mirror.get(repo.name)?.get(pr));
+  const r = await db.prState(repo.name, pr).catch(() => mirror.get(repoKey(repo))?.get(pr));
   if (!r || now - r.syncedAt > staleAfterMs(normalMs())) return undefined;
   const s = summaryOf(r, now);
   if (r.state === "OPEN" && !s.files) return undefined;
