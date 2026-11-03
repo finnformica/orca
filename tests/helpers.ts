@@ -140,6 +140,7 @@ async function fakeRest(req: Request, url: URL): Promise<Response> {
   if (/\/merge-async/.test(p)) return new R(env("ORCA_GH_MERGE_ASYNC") || '{"status":"merged"}', { headers: { "content-type": "application/json" } });
   if (/\/rules\/branches\//.test(p)) return json(await readJson("ORCA_GH_RULES_FIXTURE", []));
   if (/\/git\/matching-refs\//.test(p)) return json(await readJson("ORCA_GH_REFS_FIXTURE", []));
+  if (/\/commits\/[0-9a-f]+\/check-runs$/.test(p)) return json(await readJson("ORCA_GH_CHECK_RUNS_FIXTURE", { total_count: 0, check_runs: [] }));
   if (/\/actions\/runs\/\d+\/jobs$/.test(p)) return json({ jobs: [{ id: 1, name: "test", conclusion: "failure" }, { id: 2, name: "lint", conclusion: "success" }] });
   if (p.startsWith("/_logs/")) return req.headers.get("authorization") ? new R("token leaked to the log host", { status: 403 }) : new R(await read("ORCA_GH_RUN_LOG_FIXTURE") ?? "");
   if (/\/actions\/jobs\/\d+\/logs$/.test(p)) return new R(null, { status: 302, headers: { location: `${url.origin}/_logs${p}` } });

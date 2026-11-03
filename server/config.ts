@@ -50,6 +50,9 @@ export type RepoFeatures = {
  *  unconditionally; that's fine for your own repo and much less so for a client's, so it becomes a
  *  per-repo choice. `bypass` preserves today's behaviour. */
 export type AgentPermissionMode = "bypass" | "ask";
+/** Where a repo's check gate runs (`RepoConfig.check`). */
+export const REPO_CHECKS = ["local", "github"] as const;
+export type RepoCheck = (typeof REPO_CHECKS)[number];
 
 export type RepoConfig = {
   /** Short id used in the URL and repo switcher, e.g. "orca". */
@@ -105,6 +108,11 @@ export type RepoConfig = {
    *  run that committed, and recorded on the turn (server/check.ts). With `followAutomation` on, a
    *  failure queues one fix follow-up carrying the output. Unset = no gate. */
   checkCommand?: string;
+  /** Where the check gate runs. `local` (the default): Orca runs `checkCommand` on this box after a
+   *  run that committed. `github`: Orca runs nothing; it pushes, opens the PR of an orchestrated
+   *  workstream, and takes the verdict from the GitHub check runs of the head commit
+   *  (server/ciGate.ts). Workers are told to run only the tests of the files they touch. */
+  check?: RepoCheck;
   /** Cost ceiling for ONE agent run, in US dollars (Claude's `--max-budget-usd`). The run ends with
    *  stop reason `budget_reached` — a runaway run can't drain a login. Unset = no cap. */
   agentMaxBudgetUsd?: number;
@@ -334,6 +342,9 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
     }
     if (r.checkCommand !== undefined && (typeof r.checkCommand !== "string" || !r.checkCommand.trim())) {
       errors.push(`${where}.checkCommand must be a shell command`);
+    }
+    if (r.check !== undefined && !REPO_CHECKS.includes(r.check as RepoCheck)) {
+      errors.push(`${where}.check must be "local" or "github"`);
     }
     if (r.agentMaxBudgetUsd !== undefined && (typeof r.agentMaxBudgetUsd !== "number" || !(r.agentMaxBudgetUsd > 0))) {
       errors.push(`${where}.agentMaxBudgetUsd must be a positive number of dollars`);
@@ -705,6 +716,22 @@ export async function setUiOptions(ui: UiOptions): Promise<void> {
   const { config, errors } = parseConfigDocument(await configDocument());
   if (!config) throw new Error(`the stored config does not parse: ${errors.join("; ")}`);
   await saveConfigDocument({ ...config, ...(current.terminal ? { terminal: current.terminal } : {}), ui: { ...config.ui, ...ui } });
+}
+
+/** Set one repo's check gate (Settings > Repos): `local` removes the key (the default), `github` sets
+ *  it. Same path as `setUiOptions`, so nothing else in the document changes. */
+export async function setRepoCheck(name: string, check: RepoCheck): Promise<void> {
+  invalidateConfig();
+  const current = await loadConfig();
+  const { config, errors } = parseConfigDocument(await configDocument());
+  if (!config) throw new Error(`the stored config does not parse: ${errors.join("; ")}`);
+  if (!config.repos.some((r) => r.name === name)) throw new Error(`no repo named "${name}"`);
+  const repos = config.repos.map((r) => {
+    if (r.name !== name) return r;
+    const { check: _old, ...rest } = r;
+    return check === "github" ? { ...rest, check } : rest;
+  });
+  await saveConfigDocument({ ...config, ...(current.terminal ? { terminal: current.terminal } : {}), repos });
 }
 
 /** Set the default agent (Settings > Agents): one key of `agents`, the rest of the document unchanged.

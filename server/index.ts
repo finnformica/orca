@@ -1,5 +1,5 @@
 import {
-  API_PORT, configDocument, featuresOf, invalidateConfig, loadConfig, setInstanceTerminal, setServerIdentity, setUiOptions, setDefaultAgent, modelFor, parseConfigDocument,
+  API_PORT, configDocument, featuresOf, invalidateConfig, loadConfig, setInstanceTerminal, setServerIdentity, setUiOptions, setRepoCheck, REPO_CHECKS, setDefaultAgent, modelFor, parseConfigDocument,
   providerAllowed, providersFor, repoOf, runsHere, saveConfigDocument, type OrcaConfig, type RepoConfig,
 } from "./config";
 import * as git from "./git";
@@ -45,6 +45,7 @@ import { handleMemory } from "./memoryRoutes";
 import * as primary from "./primary";
 import { scrubbedEnv } from "./env";
 import * as mergeQueue from "./mergeQueue";
+import * as ciGate from "./ciGate";
 import * as upkeep from "./upkeep";
 import * as browserWatch from "./browserWatch";
 import * as notify from "./notify";
@@ -224,7 +225,13 @@ agent.onRunFinished(async (run) => {
   if (!primary.held()) return; // a secondary reports nothing — the primary's hooks are the one voice
   await notify.onRunFinished(run);
   const cfg = await loadConfig();
-  await orchestrator.onRunFinished(cfg, run);
+  let held: string | undefined;
+  try {
+    held = await orchestrator.onRunFinished(cfg, run);
+  } finally {
+    // GitHub CI is the repo's gate: push, then wait for the head's check runs (the report waits too).
+    if (run.ciPending) await ciGate.begin(cfg, run, held);
+  }
   // Any run on a branch whose PR is already open may leave the workstream's newest shots unsynced.
   void prShots.afterRun(cfg.repos.find((r) => r.name === run.options.repo), run.options.branch);
 });
@@ -237,6 +244,13 @@ if (!PREVIEW_BRIDGE) setInterval(() => {
 // The merge queue (server/mergeQueue.ts): every marked PR this instance drives, once a minute. A red
 // or refused PR the orchestrator owns is reported to it like a worker's problem; a merge, like a finish.
 mergeQueue.onReport(async (text) => orchestrator.report(await loadConfig(), text));
+// GitHub CI as the check gate (server/ciGate.ts): each due gate's commit, once a minute; a verdict
+// goes to the orchestrator like a box check's.
+ciGate.onSettled(async (s) => orchestrator.onCiSettled(await loadConfig(), s));
+setInterval(() => {
+  if (!primary.held() || PREVIEW_BRIDGE) return;
+  void loadConfig().then((cfg) => ciGate.tick(cfg)).catch(db.logUnlessDown("orca: CI gate pass failed"));
+}, 60_000).unref();
 setInterval(() => {
   if (!primary.held()) return;
   void loadConfig().then((cfg) => mergeQueue.tick(cfg)).catch(db.logUnlessDown("orca: merge queue pass failed"));
@@ -468,7 +482,7 @@ const DATABASE_ONLY = new Set([
   // what that merge fetches from a PEER — always this host's own, unmerged, never forwarded (a repo's
   // placement must not send it chasing a worktree that has nothing to do with hydra).
   "/api/usage", "/api/usage/local", "/api/diagnostics", "/api/turns/steps", "/api/queued", "/api/queued/cancel", "/api/health",
-  "/api/health/history", "/api/health/live", "/api/machine", "/api/github/limits", "/api/config/instance-rate", "/api/config/terminal", "/api/config/identity", "/api/config/ui",
+  "/api/health/history", "/api/health/live", "/api/machine", "/api/github/limits", "/api/config/instance-rate", "/api/config/terminal", "/api/config/identity", "/api/config/ui", "/api/config/repo-check",
   // A workstream's reported screenshots, read off its turns (the files are served per shot).
   "/api/shots",
   // Answered by EVERY instance: its own worktrees (if the repo is checked out here) plus what the
@@ -1319,6 +1333,17 @@ async function api(req: Request, url: URL): Promise<Response> {
     await setUiOptions({ showBoard: body.showBoard });
     return json({ ok: true });
   }
+  if (req.method === "POST" && p === "/api/config/repo-check") {
+    // Settings' Repos rows: where a repo's check gate runs (this box, or GitHub CI).
+    const repoName = typeof body.repo === "string" ? body.repo : "";
+    if (!repoName || !REPO_CHECKS.includes(body.check)) return json({ error: `repo and check (${REPO_CHECKS.join(" or ")}) are required` }, 400);
+    try {
+      await setRepoCheck(repoName, body.check);
+    } catch (e) {
+      return json({ error: e instanceof Error ? e.message : String(e) }, 400);
+    }
+    return json({ ok: true });
+  }
   if (req.method === "POST" && p === "/api/config/terminal") {
     // Settings' Terminal row: one instance's web terminal on or off. It hands out a shell, so it is
     // gated like the terminal itself — the owner only, never a cross-origin page.
@@ -1335,6 +1360,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     const repos = await Promise.all(cfg.repos.map(async (r) => ({
       name: r.name, baseBranch: r.baseBranch, slackChannel: r.slackChannel, prLabels: r.prLabels,
       previewLabel: r.previewLabel,
+      check: r.check ?? "local", // Settings' Repos rows: the check gate
       mergePolicy: r.mergePolicy, // so the actions bar can show Merge when green disabled with the queue's own refusal
       hasRemote: await git.hasRemote(r.repoPath),
       owner: (await git.remoteNameWithOwner(r.repoPath).catch(() => "")).split("/")[0] || undefined, // the switcher prefixes it when repos span accounts

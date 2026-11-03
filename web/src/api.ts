@@ -121,6 +121,8 @@ export type GithubAccount = { login: string; active: boolean; name?: string; ema
 export type RepoInfo = {
   name: string; baseBranch: string; slackChannel?: string; hasRemote: boolean; prLabels?: { name: string; default?: boolean }[];
   previewLabel?: string; mergePolicy?: MergePolicy;
+  /** Where the check gate runs: this box (`local`) or GitHub CI (`github`). */
+  check?: "local" | "github";
   defaultModel?: string; runsOn?: string; features?: RepoFeatures;
   /** GitHub owner from origin, when it has one. */
   owner?: string;
@@ -141,6 +143,7 @@ export const api = {
   setInstanceRate: (instance: string, hourlyUsd: number | null): Promise<{ ok: true }> => post("/api/config/instance-rate", { instance, hourlyUsd }),
   setInstanceTerminal: (instance: string, on: boolean): Promise<{ ok: true }> => post("/api/config/terminal", { instance, on }),
   setShowBoard: (showBoard: boolean): Promise<{ ok: true }> => post("/api/config/ui", { showBoard }),
+  setRepoCheck: (repo: string, check: "local" | "github"): Promise<{ ok: true }> => post("/api/config/repo-check", { repo, check }),
   setServerIdentity: (name: string, color: string): Promise<{ ok: true }> => post("/api/config/identity", { name, color }),
   usage: (): Promise<Usage | null> => get("/api/usage").then(res),
   /** The unified inbox (shared/inbox.ts): one window of rows, newest first, with the filter facets. */

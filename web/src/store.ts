@@ -141,6 +141,17 @@ export async function setShowBoard(showBoard: boolean): Promise<void> {
   cfg = { ...cfg, ui: { ...cfg.ui, showBoard } };
   notify();
 }
+/** Set where a repo's check gate runs, then in the config mirror. */
+export async function setRepoCheck(repo: string, check: "local" | "github"): Promise<void> {
+  await api.setRepoCheck(repo, check);
+  if (!cfg) return;
+  // On the repo's own object (a new array, so subscribers re-render): a copy would freeze the rest of
+  // its fields at this moment.
+  const info = cfg.repos.find((r) => r.name === repo);
+  if (info) info.check = check;
+  cfg = { ...cfg, repos: [...cfg.repos] };
+  notify();
+}
 /** This bridge's instance name, and every instance a workstream can be placed on, in display order
  *  (`instanceOrder`: cloud, then local, then any others alphabetically — not "this one first").
  *  Empty means a single machine — placement UI stays hidden. */

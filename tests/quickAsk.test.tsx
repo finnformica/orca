@@ -357,7 +357,7 @@ test("Q10: an Ask shows in the orchestrator's panel AT ONCE — as sending, then
   await act(async () => { s.set(orchestratorOpenAtom, true); await flush(); await flush(); });
   await act(async () => { s.set(orchestratorOpenAtom, false); await flush(); });
   await click($('[data-slot="quick-ask-pill"]')!);
-  apiFake.orchestratorMessageDelays = [80]; // the bridge takes its time answering
+  apiFake.holdOrchestratorMessage = true; // the bridge answers only when the test says so
   const text = "rebase the stack when you're free";
   await type(input(), text);
   await enter(input());
@@ -369,6 +369,7 @@ test("Q10: an Ask shows in the orchestrator's panel AT ONCE — as sending, then
   expect(occurrences()).toBe(1);
   // The bridge queues it (the orchestrator is mid-wake) — no event is published for that.
   apiFake.queuedData.set("orchestrator", [{ id: 7, repo: "@orca", branch: "orchestrator", instruction: text, attachments: [], createdAt: 3 }]);
+  await act(async () => { apiFake.releaseOrchestratorMessage?.(); await flush(); });
   await untilGone(() => panel().querySelector('[data-slot="chat-sending"]'));
   expect(panel().textContent).toContain("queued — sends when the current run finishes");
   expect(occurrences()).toBe(1); // reconciled, not duplicated

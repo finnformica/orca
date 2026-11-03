@@ -1527,6 +1527,10 @@ export function withScreenshotsSection(body: string, section: string): string {
   return `${before}${section}\n${after ? `\n${after}` : ""}`;
 }
 
+/** A worker report's second line: Orca's check verdict (isWorkerProblem reads "FAILED" there). */
+export const checkLine = (check: TurnCheck): string =>
+  `Orca's check \`${check.command}\` ${check.ok ? "passed" : `FAILED (exit ${check.exitCode}):\n${clip(check.output, 600)}`}`;
+
 /** A finished worker run, as the orchestrator hears about it: the condensed outcome (the 1–2k token
  *  summary a sub-agent hands back), Orca's own check verdict, and the run id as a reference to the
  *  full turn — never the transcript itself. */
@@ -1544,7 +1548,7 @@ export function workerEvent(input: {
   const list = (label: string, items: string[] | undefined) => (items?.length ? [`${label}:`, ...items.map((i) => `- ${i}`)] : []);
   return [
     `${WORKER_EVENT_MARKER} ${input.repo}/${input.branch}${input.title ? ` "${input.title}"` : ""} — ${input.stop ? runStopLabel(input.stop) : input.status}`,
-    ...(check ? [`Orca's check \`${check.command}\` ${check.ok ? "passed" : `FAILED (exit ${check.exitCode}):\n${clip(check.output, 600)}`}`] : []),
+    ...(check ? [checkLine(check)] : []),
     // After the check line: isWorkerProblem reads a failed check on line two.
     ...(input.unpushed ? [`${input.unpushed} commit${input.unpushed === 1 ? "" : "s"} not pushed`] : []),
     ...(input.stop ? ["Orca stopped this run. This is not a model failure: the model ladder does not count it. The work so far stands; continue it with orca send."] : []),
