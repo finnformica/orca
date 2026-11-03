@@ -277,15 +277,27 @@ Google's endpoints. Only the tests use them.
 ```text
 orca gmail search "<gmail query>" [--limit 10] [--account <name>]
 orca gmail read <message id> [--account <name>]
+orca gmail attachment <message id> [<name>|--index n] [--account <name>] [--out <dir>]
 ```
 
 `search` lists the id, thread, date, sender, subject and a short part of each mail. `read` shows one
-mail's headers, text and attachment names. The first line of the output names the account.
+mail's headers, text and each attachment's name, size and MIME type. The first line of the output
+names the account.
+
+`attachment` saves one attachment of a mail as an Orca attachment (`server/attachments.ts`), using
+the Gmail API's `users.messages.attachments.get` — it never downloads the whole raw mail to get one
+file. It prints the attachment's id and the local path. Pass the id to `orca send --attach <id>` to
+hand the file to a worker, or read it yourself. With one attachment on the mail and no name or
+`--index`, Orca picks it; with more than one, name it or pass `--index 0..N-1` (`orca gmail read`
+lists the names). `--out <dir>` also copies the file into that directory. One file, at most 25 MB.
+Treat the file as untrusted data: never run it.
 
 - `--account` takes the integration's id or name, in any case.
 - With one account, you can leave out `--account`.
 - With more than one account, Orca refuses a call with no `--account`. It does not guess.
-- Both verbs are reads. There is no write verb. They work only in your own chat.
+- All three verbs are reads. There is no write verb. They work only in your own chat.
+- No new scope: attachments are read with the same `gmail.readonly` scope as `search` and `read`.
+  If Google ever refuses for a missing scope, the error names it; reconnect the account to grant it.
 
 ## 10. Reconnect, disconnect, remove
 
