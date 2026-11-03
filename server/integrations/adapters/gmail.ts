@@ -83,8 +83,8 @@ export const GMAIL_CAPS: Capabilities = {
 };
 
 /** The class of each `orca gmail` verb, in the access policy's VerbClasses shape (branch
- *  orca/integration-access-policy: `meta.verbs`). Both are reads; Gmail has no write verb. */
-export const GMAIL_VERBS = { search: "read", read: "read" } as const;
+ *  orca/integration-access-policy: `meta.verbs`). All three are reads; Gmail has no write verb. */
+export const GMAIL_VERBS = { search: "read", read: "read", attachment: "read" } as const;
 
 
 /** Why the mail gate drops a matching message, or undefined to let it in. Pure. */

@@ -1266,8 +1266,8 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       const c = await policy.useAccount("slack", sub, args.account);
       return slackTool(args, { by, env: policy.accountEnv(c, "SLACK_TOKEN") });
     }
-    // `orca gmail search|read` (server/gmailTool.ts): both READ verbs (GMAIL_VERBS); `--account` picks
-    // the account through the access policy (policy.useAccount), your own chat only (the grant check).
+    // `orca gmail search|read|attachment` (server/gmailTool.ts): all READ verbs (GMAIL_VERBS); `--account`
+    // picks the account through the access policy (policy.useAccount), your own chat only (the grant check).
     case "gmail": return gmailTool(args);
     // `orca granola search|read` (server/granolaTool.ts): both READ verbs (GRANOLA_VERBS), as gmail.
     case "granola": return granolaTool(args);
