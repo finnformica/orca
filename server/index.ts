@@ -59,7 +59,7 @@ import * as verbs from "./verbs";
 import * as repos from "./repos";
 import { linkOrigins } from "./origin";
 import { BusyError, checkGate, compact, launchOptions, launchQueued, newWorktree, placement, removeWorktree, startPreview } from "./verbs";
-import { HIDDEN_FOREVER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, attachmentRefs, workstreamShots, mergeSafe, prDescriptionPrompt, sweepText, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
+import { HIDDEN_FOREVER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, attachmentRefs, replyAttachments, workstreamShots, mergeSafe, prDescriptionPrompt, sweepText, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
 import { AGENT_PROVIDERS, attachCommand, isAgentProvider, providerBinary, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn } from "../shared/agent";
 import { providerOfModel } from "../shared/models";
 import * as prShots from "./prShots";
@@ -1865,6 +1865,10 @@ async function api(req: Request, url: URL): Promise<Response> {
     for (const t of turns) {
       const files = attachmentRefs(`${t.instruction ?? ""}\n${t.prompt}`);
       if (files.length) t.attachments = files;
+      // The files the agent's reply names (a `shot: <path>` line, an image of an attachment path),
+      // linked by id, never copied: the chat draws them like the user's own.
+      const named = replyAttachments(t.response ?? "");
+      if (named.length) t.replyAttachments = named;
     }
     // The packs the orchestrator made (`orca handoff create`), linked by the id its tool result names:
     // the chat draws a review widget for each. A failed lookup only loses the widgets.

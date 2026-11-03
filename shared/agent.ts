@@ -197,6 +197,9 @@ export type AgentTurn = {
   stepSeq?: number;
   /** Files the message carried (stored attachments, `/api/attachments/<id>`) — server-decorated. */
   attachments?: { id: string; name: string }[];
+  /** Files the agent's reply names under the Orca attachments dir (`replyAttachments`): drawn like
+   *  `attachments`. `url` is set for an `orca-shot` PNG (`/api/screenshots/<id>`) — server-decorated. */
+  replyAttachments?: { id: string; name: string; url?: string }[];
   /** Handoff packs this turn made (`orca handoff create`), by id — server-decorated (handoff.linkTurns). */
   handoffs?: string[];
   /** Forms this turn asked (`orca ask-form`), by id — server-decorated (forms.linkTurns). */
