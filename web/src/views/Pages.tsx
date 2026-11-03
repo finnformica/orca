@@ -22,7 +22,7 @@ import { browserNotifyAtom, densityAtom, instanceScopeAtom, notifyDndAtom, repoF
 import { KIND_META, NOTIFICATION_KINDS, browserNotifyChecked, browserNotifyNote, browserPermission } from "../../../shared/notifications";
 import { navigate, useRoute } from "@/lib/route";
 import { useTheme, type Theme } from "@/lib/theme";
-import { instanceChoices, setInstanceRate, setInstanceTerminal, setShowBoard, staleHours, terminalContext, thisInstance, useAgentProviders, useInstanceRates, useInstanceTerminals, useRepos, useShowBoard, useWorkstreams } from "../store";
+import { instanceChoices, setInstanceRate, setInstanceTerminal, setRepoCheck, setShowBoard, staleHours, terminalContext, thisInstance, useAgentProviders, useInstanceRates, useInstanceTerminals, useRepos, useShowBoard, useWorkstreams } from "../store";
 import { terminalMachines, useOpenTerminal } from "@/components/InstanceTerminal";
 import { ago, repoSummaries, terminalBlocked } from "../workstream";
 import { Detail, Empty, Pill, SectionTitle, Segmented, StatusDot, VCard } from "@/components/console";
@@ -52,9 +52,9 @@ function ReposSection() {
             {summaries.map((s) => {
               const info = repos.find((r) => r.name === s.repo)!;
               return (
-                <li key={s.repo}>
+                <li key={s.repo} className="hover:bg-accent/40 flex items-center gap-2 pr-4">
                   <button type="button" data-slot="repo-row" onClick={() => { setRepo(s.repo); navigate("/agents"); }}
-                    className="hover:bg-accent/40 grid w-full grid-cols-[minmax(12rem,1.5fr)_repeat(4,6rem)_7rem] items-center gap-4 px-4 py-3 text-left text-sm">
+                    className="grid min-w-0 flex-1 grid-cols-[minmax(12rem,1.5fr)_repeat(4,6rem)_7rem] items-center gap-4 px-4 py-3 text-left text-sm">
                     <span className="flex min-w-0 items-center gap-2.5">
                       <span className="bg-muted inline-flex size-8 shrink-0 items-center justify-center rounded-md border"><FolderGit2 className="size-4" /></span>
                       <span className="min-w-0">
@@ -68,6 +68,7 @@ function ReposSection() {
                     <Count label="Merged today" n={s.mergedToday} />
                     <span className="text-muted-foreground text-right text-xs">{s.lastActivity ? ago(s.lastActivity) : "no activity"}</span>
                   </button>
+                  {info.hasRemote && <RepoCheckToggle repo={s.repo} value={info.check ?? "local"} />}
                 </li>
               );
             })}
@@ -75,6 +76,30 @@ function ReposSection() {
         )}
       </VCard>
     </SettingsSection>
+  );
+}
+
+/** Where a repo's check gate runs: Orca's check command on this box, or the PR's GitHub CI. */
+function RepoCheckToggle({ repo, value }: { repo: string; value: "local" | "github" }) {
+  const set = async (check: "local" | "github") => {
+    if (check === value) return;
+    try { await setRepoCheck(repo, check); }
+    catch (e) {
+      const error = e instanceof Error ? e.message : String(e);
+      notifyLocal({
+        kind: "action_failed", repo, title: repo, label: "Check gate setting failed", body: error,
+        copy: `Action: set the check gate of ${repo} to ${check}\nError:\n${error}`,
+        ask: `Setting the check gate of ${repo} to ${check} failed: ${error}. Please investigate and fix.`,
+      });
+    }
+  };
+  return (
+    <Tip wrap label="Check gate. Box: Orca runs the check command here after a run. GitHub CI: Orca takes the verdict from the checks of the pushed commit.">
+      <span data-slot="repo-check" className="shrink-0">
+        <Segmented label={`Check gate of ${repo}`} size="sm" value={value} onChange={(v) => void set(v)}
+          options={[{ value: "local", label: "Box" }, { value: "github", label: "GitHub CI" }]} />
+      </span>
+    </Tip>
   );
 }
 

@@ -6,6 +6,7 @@ import { retryTitle } from "./title";
 import { autofixInstruction, backgroundResumeInstruction, handoffPrompt, hydraLogin, idleExpired, isAutofix, isBackgroundResume, LIMIT_CONTINUE_PROMPT, LIMIT_MIN_HOLD_MS, limitHeldLine, limitPlan, limitRetryLine, parseAgentOutcome, runStopLabel, usageLimitHit, withoutHydraLines, type LimitTried, type UsageLimitHit, type UnfinishedTask, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn, type RunStop, type StopReason, type TurnCheck, type TurnOrigin, type TurnSource } from "../shared/agent";
 import type { Side } from "../shared/rooms";
 import { runCheck } from "./check";
+import { CI_GATE_GUIDANCE } from "../shared/ciGate";
 import { run, runCmd } from "./run";
 import { agentEnv, githubEnv } from "./env";
 import * as procs from "./proc";
@@ -139,8 +140,9 @@ export type LaunchOptions = {
   maxBudgetUsd?: number; // claude only: the repo's per-run cost cap (`--max-budget-usd`)
   /** The repo's `checkCommand`, run in the worktree after a run that committed (server/check.ts).
    *  `autofix`: queue a follow-up with the failure as evidence — once; a fix attempt that fails
-   *  again stops there (isAutofix). */
-  check?: { command: string; autofix: boolean };
+   *  again stops there (isAutofix). `via: "github"` (the repo's `check: "github"`): nothing runs on
+   *  the box; the run ends with `ciPending` and server/ciGate.ts reads GitHub CI's verdict. */
+  check?: { command: string; autofix: boolean; via?: "github" };
   /** claude only: `--allowedTools`, for a run that must act without `bypassPermissions` (the
    *  orchestrator, which may run the `orca` command and nothing else). */
   allowedTools?: string[];
@@ -181,6 +183,9 @@ export type RunFinished = {
   exit: { code: number; timedOut: boolean; budgetReached: boolean; stderr: string; stop?: RunStop; usageLimit?: boolean };
   /** A queued follow-up (an autofix, a typed instruction) launched straight after: not idle yet. */
   continued: boolean;
+  /** The run committed in a repo whose gate is GitHub CI: its verdict for `sha` comes later
+   *  (server/ciGate.ts), so `check` is unset and the worker report waits for it. */
+  ciPending?: { sha: string };
 };
 
 // Orca's own secrets never reach the agent's process (server/env.ts); re-exported for callers.
@@ -859,7 +864,7 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
   // have been uploaded on another machine.
   const effectivePrompt = await resolvePrompt(!options.resume && (options.handoffFrom || options.history?.length)
     ? handoffPrompt(options.history ?? [], prompt, options.handoffFrom, provider)
-    : prompt);
+    : prompt) + (options.check?.via === "github" && !chain ? `\n\n${CI_GATE_GUIDANCE}` : "");
   const runId = chain?.runId ?? crypto.randomUUID();
   const startedAt = chain?.startedAt ?? Date.now(); // the TURN's start: a retry continues it
   const launchedAt = Date.now();
@@ -1082,7 +1087,11 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
     // the result lands on the turn as evidence. Only a successful run is checked — a failed one has
     // its own error, and a stopped one is mid-work by definition.
     let check: TurnCheck | undefined;
-    if (ok && options.check && headBefore !== undefined && (await headOf(cwd)) !== headBefore) {
+    let ciPending: { sha: string } | undefined;
+    const headAfter = ok && options.check && headBefore !== undefined ? await headOf(cwd) : undefined;
+    // GitHub CI is the gate: nothing runs on the box. The verdict for this head comes later.
+    if (headAfter && headAfter !== headBefore && options.check?.via === "github") ciPending = { sha: headAfter };
+    else if (ok && options.check && headBefore !== undefined && headAfter !== headBefore) {
       check = await runCheck(cwd, options.check.command, { repo: options.repo, branch: options.branch });
       // Awaited (the run is over; this only delays the status flip by one round trip), so a run that
       // reads as finished has its verdict on the turn — a reader that polls "finished, then fetch"
@@ -1118,7 +1127,7 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
     try {
       await runFinished?.({
         key, cwd, runId, options, status: wasStopped ? "stopped" : ok ? "done" : "error",
-        sessionId: resolvedSessionId, result: result ?? error, structured, check, meta, continued,
+        sessionId: resolvedSessionId, result: result ?? error, structured, check, meta, continued, ...(ciPending ? { ciPending } : {}),
         exit: { code, timedOut: stop !== undefined, budgetReached, stderr: err.trim().slice(-300), ...(stop && !wasStopped ? { stop } : {}), ...(limitHit ? { usageLimit: true } : {}) },
       });
     } catch (e) {
@@ -1308,8 +1317,8 @@ export function onQueuedMessage(fn: (message: db.QueuedMessage) => Promise<void>
 
 // Set by index.ts: the orchestrator's wake loop listens here. A hook for the same reason as the
 // queued launcher — agent.ts knows nothing about who cares that a run ended.
-let runFinished: ((run: RunFinished) => Promise<void>) | undefined;
-export function onRunFinished(fn: ((run: RunFinished) => Promise<void>) | undefined): void {
+let runFinished: ((run: RunFinished) => Promise<unknown>) | undefined;
+export function onRunFinished(fn: ((run: RunFinished) => Promise<unknown>) | undefined): void {
   runFinished = fn;
 }
 
@@ -1498,6 +1507,13 @@ export async function detectRunning(branches: string[], worktreeOf: Record<strin
   // Union in leased branches: the lease records the branch explicitly.
   for (const b of lease.liveBranches(branches)) found.add(b);
   return found;
+}
+
+/** GitHub CI's verdict landed for a finished run (server/ciGate.ts): the card reads it from here, as
+ *  it reads the box check. Only while the run is still the worktree's newest. */
+export function setRunCheck(key: string, runId: string, check: TurnCheck): void {
+  const r = runs.get(key);
+  if (r?.runId === runId && r.status !== "running") r.check = check;
 }
 
 export const status = (key: string): RunState => {

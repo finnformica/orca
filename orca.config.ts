@@ -121,6 +121,8 @@ const config: OrcaConfig = {
       repoPath: `${DEV}/orca`,
       worktreeRoot: `${DEV}/orca/.worktrees`,
       baseBranch: "main",
+      // GitHub CI is the check gate: the box runs no full check after a run (server/ciGate.ts).
+      check: "github",
       // No slackChannel: Orca's own PRs aren't announced to the team channel. (This file only seeds
       // an unconfigured database now — leaving a channel here would seed Slack back on for this repo
       // if the DB were ever rebuilt, since the backfill enables Slack wherever a channel is set.)

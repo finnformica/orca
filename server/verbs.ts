@@ -21,7 +21,7 @@ import * as prShots from "./prShots";
 import { featuresOf, modelFor, providerAllowed, runLimits, type OrcaConfig, type RepoConfig } from "./config";
 import { addressNeedsAgent, addressPrPrompt, chatPrompt, cleanupDecision, continuation, followUpPrompt, launchPrompt, mergeSettled, mergedPrIsHistory, slugifyBranch, titleFromPrompt, withAttachments, workerPrBody, type MechanicalMerge, type SweepReport } from "../web/src/workstream";
 import { providerOfModel } from "../shared/models";
-import { isAgentProvider, type AgentOutcome, type AgentProvider, type TurnOrigin } from "../shared/agent";
+import { GITHUB_CHECK, isAgentProvider, type AgentOutcome, type AgentProvider, type TurnOrigin } from "../shared/agent";
 import type { Side } from "../shared/rooms";
 
 /** The --model for a run: the card's pinned model, else the config's default — a Claude id, so it
@@ -30,9 +30,11 @@ export const runModel = (cfg: OrcaConfig, repo: RepoConfig, provider: AgentProvi
   pinned || (provider === "claude" ? modelFor(cfg, repo) : undefined);
 
 /** The verification gate for a repo's runs: its check command, auto-fixing only where the repo has
- *  opted into follow automation (an unasked-for agent run is that feature's whole question). */
-export const checkGate = (repo: RepoConfig): { command: string; autofix: boolean } | undefined =>
-  repo.checkCommand ? { command: repo.checkCommand, autofix: featuresOf(repo).followAutomation } : undefined;
+ *  opted into follow automation (an unasked-for agent run is that feature's whole question). A repo
+ *  with `check: "github"` runs nothing on the box: GitHub CI gives the verdict (server/ciGate.ts). */
+export const checkGate = (repo: RepoConfig): agent.LaunchOptions["check"] =>
+  repo.check === "github" ? { command: GITHUB_CHECK, autofix: featuresOf(repo).followAutomation, via: "github" }
+  : repo.checkCommand ? { command: repo.checkCommand, autofix: featuresOf(repo).followAutomation } : undefined;
 
 /** The permission mode for a workstream's runs: the repo's, but always "scoped" for one an outside
  *  sender's wake started or steered (`grantScope` on its enrichment, server/integrations §3.7). A

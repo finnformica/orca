@@ -801,7 +801,18 @@ verdict with the output folded under it. This is Orca's evidence, deliberately s
 agent's self-reported Verification section: "looks done" is the only signal a model has without
 it. With `followAutomation` on, a failure queues ONE fix follow-up whose instruction starts with
 `AUTOFIX_MARKER` and carries the output; a fix attempt that fails again stops there (`isAutofix`),
-so the gate can never loop. The conversational prompts also open with a session-start ritual
+so the gate can never loop. **GitHub CI as the gate** (Finn 2026-11-03: the box ran each change's
+full check up to three times and builds queued behind each other): a repo with `check: "github"`
+(Settings > Repos, Box | GitHub CI; default `local`) runs no `checkCommand` after a run. The run ends
+with `ciPending`; `server/ciGate.ts` pushes, the orchestrator opens an orchestrated worker's PR
+(`autoPr`, a pull_request workflow needs one), and the gate (enrichment `ciGate`) reads the head's
+`commits/<sha>/check-runs` from the minute tick: ONE call a look, 1 min then ×1.5 up to 5 min, a
+rate limit waits for its reset. The verdict (`shared/ciGate.ts` `ciVerdict`: required checks only,
+a failure decides at once) is a `TurnCheck` with `via: "github"` and command `GitHub CI`, the failing
+check's name and job log tail as output; the worker report is held and sent with the same check line.
+No check in 15 min, or none finished in 2 h, sends it with a "gave no verdict" line. Workers of such a
+repo get `CI_GATE_GUIDANCE` (only the touched tests, then push). Once #494's PR-state sync lands, the
+look should read its rows first. The conversational prompts also open with a session-start ritual
 (`SESSION_START` in `workstream.ts`: git log, git status, the prior Remaining/Decisions, one thing).
 
 - **Mark ready** (draft PR) = `gh pr ready`. **Merge**: PR → `gh pr merge`; local → guarded `git merge`.

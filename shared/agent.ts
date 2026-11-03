@@ -106,13 +106,23 @@ export type TurnSource = "human" | "agents";
 /** Orca's own verification of a run that committed: the repo's `checkCommand` run in the worktree
  *  afterwards (server/check.ts). Deterministic evidence, as opposed to the agent's self-reported
  *  Verification section. Absent when the run made no commit or the repo has no check command. */
-export type TurnCheck = { command: string; ok: boolean; exitCode: number; output: string; durationMs: number };
+export type TurnCheck = {
+  command: string; ok: boolean; exitCode: number; output: string; durationMs: number;
+  /** `github`: the verdict came from the PR's GitHub check runs, not a command on the box (the
+   *  repo's `check: "github"`, server/ciGate.ts). `command` is then GITHUB_CHECK. */
+  via?: "github";
+};
+/** The `command` of a check whose verdict is GitHub CI's (shared/ciGate.ts). */
+export const GITHUB_CHECK = "GitHub CI";
 
 // The first line of the follow-up Orca itself queues when a check fails. Also the loop guard: a
 // run whose instruction starts with it is already the fix attempt, and a second failure stops there.
 export const AUTOFIX_MARKER = "The repo's check command failed after your last commit.";
 export function autofixInstruction(check: TurnCheck): string {
-  return `${AUTOFIX_MARKER}\n\n\`${check.command}\` exited ${check.exitCode}:\n\n\`\`\`\n${check.output}\n\`\`\`\n\nFix the cause, run the same check until it passes, then commit.`;
+  const next = check.via === "github"
+    ? "Fix the cause. Run only the tests for the files you touch, then commit and push: GitHub CI checks the push again."
+    : "Fix the cause, run the same check until it passes, then commit.";
+  return `${AUTOFIX_MARKER}\n\n\`${check.command}\` exited ${check.exitCode}:\n\n\`\`\`\n${check.output}\n\`\`\`\n\n${next}`;
 }
 export const isAutofix = (instruction: string | undefined): boolean => Boolean(instruction?.startsWith(AUTOFIX_MARKER));
 

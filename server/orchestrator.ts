@@ -47,10 +47,12 @@ import * as policy from "./integrations/policy";
 import { featuresOf, runLimits, runsHere, type OrcaConfig, type RepoConfig } from "./config";
 import {
   MODEL_LADDER, NO_REPLY_PLACEHOLDER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, boardText, briefProblems, continuation, isUserMessage, isWorkerProblem, wakeFromUser, onlyCleanReports,
-  handoffRef, joinMessages, ladderStep, mergedPrIsHistory, nextFailStreak, orchStatusText, orchStatusUpdate, verifiedMark, verifiedState, orchestratorPrompt, sessionHint, sweepText, turnSource, wakeExitReason, wakeProgress, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
+  checkLine, handoffRef, joinMessages, ladderStep, mergedPrIsHistory, nextFailStreak, orchStatusText, orchStatusUpdate, verifiedMark, verifiedState, orchestratorPrompt, sessionHint, sweepText, turnSource, wakeExitReason, wakeProgress, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
   hiddenNote, machineText, originQuote, parseHideFor, turnOrigin, type BoardRow, type FailStreak, type MachineReport, type OrchStatus, type VerifiedMark, type WakeExit,
 } from "../web/src/workstream";
 import { activityLines, type AgentTurn, type TurnOrigin } from "../shared/agent";
+import { noVerdictLine, withSecondLine } from "../shared/ciGate";
+import type * as ciGate from "./ciGate";
 import { linkOrigins } from "./origin";
 import { CHIEF, REFLECTION, REFLECTION_MARKER, provenance, reflectionPrompt, reflectionReadCounts, reflectionRefusal, reflectionTrigger, reportWorkstream, tokensOf } from "../shared/memory";
 import { WRITING_STYLE } from "../shared/writingStyle";
@@ -313,8 +315,10 @@ export async function stop(cfg: OrcaConfig, name?: string): Promise<string | und
 }
 
 /** The run-finished hook (wired in index.ts). A worker the orchestrator is responsible for going
- *  idle wakes it with the outcome; its own run ending drains whatever arrived meanwhile. */
-export async function onRunFinished(cfg: OrcaConfig, run: agent.RunFinished): Promise<void> {
+ *  idle wakes it with the outcome; its own run ending drains whatever arrived meanwhile. A run whose
+ *  verdict is GitHub CI's (`run.ciPending`) is not reported here: the report is RETURNED, and
+ *  server/ciGate.ts holds it until the verdict (onCiSettled). */
+export async function onRunFinished(cfg: OrcaConfig, run: agent.RunFinished): Promise<string | undefined> {
   const { repo, branch } = run.options;
   if (!repo || !branch) return;
   if (repo === ORCHESTRATOR_REPO) {
@@ -357,7 +361,11 @@ export async function onRunFinished(cfg: OrcaConfig, run: agent.RunFinished): Pr
   // Codex and Cursor reveal their session id mid-run, and no browser may be open to record it.
   if (run.sessionId && e.sessionId !== run.sessionId) await db.patchEnrichment(repo, branch, { sessionId: run.sessionId });
   if (run.options.action === "compact") return; // housekeeping you asked for, not work to report
-  const step = await ladder(cfg, repo, branch, e, run); // counted even when an autofix takes over
+  // A stop, Orca's own stop or a usage limit says nothing about the model; a run waiting on GitHub CI
+  // is counted when the verdict lands (onCiSettled).
+  const counted = !(run.status === "stopped" || run.exit.stop || run.exit.usageLimit || (run.ciPending && run.status === "done"));
+  const failed = run.status === "error" || run.check?.ok === false;
+  const step = await ladder(cfg, repo, branch, e, counted ? failed : undefined, run.options.model, run.continued); // counted even when an autofix takes over
   if (run.continued) return; // a queued follow-up (an autofix) took over — not idle yet
   const opened = await autoPr(cfg, repo, branch, run);
   // After autoPr, which pushes: what is still only on this disk (a push that died with the run).
@@ -366,21 +374,32 @@ export async function onRunFinished(cfg: OrcaConfig, run: agent.RunFinished): Pr
     repo, branch, title: e.title as string | undefined, runId: run.runId, status: run.status,
     outcome: run.structured, response: run.result, check: run.check, denied: run.meta?.permissionDenials, unpushed, stop: run.exit.stop,
   }) + (opened ? `\n${opened}` : "") + (step ? `\n${step}` : "");
+  if (run.ciPending) return text; // held for GitHub CI's verdict (ciGate.begin)
   await report(cfg, text, run.key);
+}
+
+/** GitHub CI's verdict on a worker's commit (server/ciGate.ts): count it on the model ladder, then
+ *  send the held report with Orca's check line second, as a box check puts it. Nothing when a queued
+ *  autofix takes over: that run reports. */
+export async function onCiSettled(cfg: OrcaConfig, s: ciGate.CiSettled): Promise<void> {
+  const e = (await db.enrichment(s.repo))[s.branch] ?? {};
+  if (!e.orchestrated) return;
+  const step = s.check ? await ladder(cfg, s.repo, s.branch, e, !s.check.ok, s.gate.model, s.continued) : undefined;
+  if (s.continued || !s.gate.report) return;
+  const line = s.check ? checkLine(s.check) : noVerdictLine(s.noVerdict ?? "unknown");
+  await report(cfg, withSecondLine(s.gate.report, line) + (step ? `\n${step}` : ""), s.gate.worktreePath);
 }
 
 /** Model-ladder automation: keep the workstream's failure streak, and once it reaches the threshold
  *  on one model, suggest the next model up — or, with the repo's `modelEscalation: "apply"`, re-pin
  *  the workstream to it so the retry runs there. Returns the worker report's line, if any. Only at
  *  report time: an autofix taking over is counted, not escalated, so its own run is the retry. */
-async function ladder(cfg: OrcaConfig, repoName: string, branch: string, e: db.Fields, run: agent.RunFinished): Promise<string | undefined> {
+async function ladder(cfg: OrcaConfig, repoName: string, branch: string, e: db.Fields, failed: boolean | undefined, model: string | undefined, continued: boolean): Promise<string | undefined> {
   const prev = e.failStreak as FailStreak | undefined;
-  const failed = run.status === "error" || run.check?.ok === false;
-  // A run you stopped, or one Orca stopped (no progress, the hard ceiling), is not a model failure.
-  // A stop, Orca's own stop or a usage limit says nothing about the model.
-  const streak = run.status === "stopped" || run.exit.stop || run.exit.usageLimit ? prev : nextFailStreak(prev, run.options.model ?? (e.preferredModel as string | undefined), failed);
+  // `failed` undefined: not counted (a stop, Orca's own stop, a usage limit, a pending CI verdict).
+  const streak = failed === undefined ? prev : nextFailStreak(prev, model ?? (e.preferredModel as string | undefined), failed);
   if (JSON.stringify(streak) !== JSON.stringify(prev)) await db.patchEnrichment(repoName, branch, { failStreak: streak ?? null });
-  if (run.continued) return undefined;
+  if (continued) return undefined;
   const repo = cfg.repos.find((r) => r.name === repoName);
   const step = ladderStep(streak, repo?.modelEscalation ?? "suggest", { repo: repoName, branch });
   if (step?.moveTo) {
@@ -391,11 +410,12 @@ async function ladder(cfg: OrcaConfig, repoName: string, branch: string, e: db.F
 }
 
 /** The repo's `mergePolicy.autoPr`: a clean finish opens the branch's PR (verbs.openWorkerPr), and
- *  a branch marked merge-when-green before it had one joins the queue. Returns the line the worker
+ *  a branch marked merge-when-green before it had one joins the queue. A run waiting on GitHub CI
+ *  (`ciPending`) opens it too: a pull_request workflow runs only on a PR. Returns the line the worker
  *  report carries, or nothing. A failure is reported, never thrown — the report still goes. */
 async function autoPr(cfg: OrcaConfig, repoName: string, branch: string, run: agent.RunFinished): Promise<string | undefined> {
   const repo = cfg.repos.find((r) => r.name === repoName);
-  if (!repo?.mergePolicy?.autoPr || run.status !== "done" || run.check?.ok === false) return undefined;
+  if (!(repo?.mergePolicy?.autoPr || run.ciPending) || !repo || run.status !== "done" || run.check?.ok === false) return undefined;
   try {
     const pr = await verbs.openWorkerPr(repo, branch, run.key, { outcome: run.structured, response: run.result });
     if (!pr) return undefined;
