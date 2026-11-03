@@ -23,7 +23,7 @@ import * as lease from "./lease";
 import { writeHandoffFile } from "./state";
 import { metrics, countAgentPoll } from "./metrics";
 import { rateLimitState } from "./github";
-import { prMemory } from "./prMemory";
+import * as prSync from "./prSync";
 import { githubLimits } from "../shared/githubLimits";
 import { renderText, summarize } from "./diagnostics";
 import { postAsUser as slackPost } from "./integrations/adapters/slack";
@@ -134,15 +134,6 @@ async function resolvePrDescription(
 process.on("unhandledRejection", (e) => console.error("orca: unhandled rejection", e instanceof Error ? e.message : e));
 process.on("uncaughtException", (e) => console.error("orca: uncaught exception", e instanceof Error ? e.stack ?? e.message : e));
 const PREVIEW_BRIDGE = db.previewBridge();
-// The last known open PRs persist on each workstream's enrichment (server/prMemory.ts), so a board
-// read while GitHub is rate limited shows them stale, not gone. A preview bridge only reads them.
-{
-  const memory = prMemory(async (cwd) => (await loadConfig()).repos.find((r) => r.repoPath === cwd)?.name);
-  gh.setPrMemory(PREVIEW_BRIDGE ? { save: () => {}, load: memory.load } : {
-    save: (cwd, prs, at) => memory.save(cwd, prs, at)?.catch(db.logUnlessDown("orca: last known PR state write failed")),
-    load: memory.load,
-  });
-}
 // ORCA_REUSE_PORT=1 (the box's .env, deploy/bootstrap.sh): SO_REUSEPORT, so a deploy's NEW bridge
 // listens BESIDE the old one on the same port and the old is stopped only once the new answers
 // (deploy/autodeploy.sh reads `bridge.pid` off /api/config) — no second with nothing on 8787. Off by
@@ -237,6 +228,12 @@ agent.onRunFinished(async (run) => {
   // Any run on a branch whose PR is already open may leave the workstream's newest shots unsynced.
   void prShots.afterRun(cfg.repos.find((r) => r.name === run.options.repo), run.options.branch);
 });
+// The PR-state sync (server/prSync.ts): GitHub feeds the pr_state table, every reader reads the table.
+// The tick runs at the fast interval; each repo syncs only when its own interval is due.
+if (!PREVIEW_BRIDGE) setInterval(() => {
+  if (!primary.held()) return;
+  void loadConfig().then((cfg) => prSync.tick(cfg)).catch(db.logUnlessDown("orca: PR sync pass failed"));
+}, Math.max(1_000, Math.round(prSync.normalMs() / 3))).unref();
 // The merge queue (server/mergeQueue.ts): every marked PR this instance drives, once a minute. A red
 // or refused PR the orchestrator owns is reported to it like a worker's problem; a merge, like a finish.
 mergeQueue.onReport(async (text) => orchestrator.report(await loadConfig(), text));
@@ -1487,16 +1484,14 @@ async function api(req: Request, url: URL): Promise<Response> {
     return json(pr);
   }
   if (req.method === "GET" && p === "/api/prs") {
-    const prs = await gh.listPrs(repo.repoPath, repo.previewLabel ?? "preview"); // source of truth for the PR lanes
-    const fresh = prs.filter((p) => !p.staleAt); // a stale row is the last known state: no news in it
-    void notify.prs(repo.name, fresh); // CI failing / conflicts, once per PR — read off the list, no extra call
-    void notify.hiddenFeedback(repo.name, fresh).catch(db.logUnlessDown("orca: hidden PR feedback check failed"));
-    return json(prs);
+    // The PR lanes: the database's PR state (server/prSync.ts). No GitHub call: the sync job feeds the
+    // table and raises the CI / conflict notifications from its diffs.
+    return json(await prSync.openPrs(repo));
   }
   if (req.method === "GET" && p === "/api/prs/merged") {
-    // `since` is the client's local midnight in ms — see gh.listMerged.
+    // `since` is the client's local midnight in ms — see prSync.mergedPrs.
     const since = Number(url.searchParams.get("since"));
-    const merged = await gh.listMerged(repo.repoPath, Number.isFinite(since) && since > 0 ? since : undefined);
+    const merged = await prSync.mergedPrs(repo, Number.isFinite(since) && since > 0 ? since : undefined);
     // The browser has no git, so `headBehindPr` (mergedPrIsHistory's reuse-vs-behind fact) is
     // computed here, where the repo is actually checked out, and shipped down on each row.
     const heads = new Map((await git.listWorktrees(repo.repoPath, repo.worktreeRoot)).map((w) => [w.branch, w.head]));
@@ -1544,7 +1539,10 @@ async function api(req: Request, url: URL): Promise<Response> {
     }
   }
   if (req.method === "POST" && p === "/api/merge") {
-    const status = await gh.prStatus(repo.repoPath, body.pr);
+    // The merge guard reads the PR's row, read from GitHub just now (the sync job's refresh).
+    await prSync.refresh(repo, [body.pr]).catch(db.logUnlessDown(`orca: PR #${body.pr} refresh failed`));
+    const status = await prSync.prByNumber(repo, body.pr);
+    if (!status) return json({ error: `Can't merge — PR #${body.pr} is not known yet; try again in a minute` }, 409);
     if (!mergeSafe(status)) {
       const why = status.mergeable === "CONFLICTING" ? "has merge conflicts"
         : status.ciStatus === "failing" ? "CI is failing"

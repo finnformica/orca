@@ -86,7 +86,8 @@ test("PW1: a merge outside the queue that the poller sees fires each pending pr:
   await new Promise((r) => setTimeout(r, 150));
   expect(delivered).toHaveLength(2);
   const merged = (await db.notifications()).filter((n) => n.kind === "merged");
-  expect(merged.map((n) => [n.title, n.link?.pr]).sort()).toEqual([["Add cache", 8], ["finn/hand-fix", 7]]);
+  // The card's title, else the PR's own title (the PR-state row knows it), else the branch.
+  expect(merged.map((n) => [n.title, n.link?.pr]).sort()).toEqual([["Add cache", 8], ["Hand fix", 7]]);
 });
 
 test("PW2: a pending wake reads its own PR — a merge the poller never lists (another author, an old merge) fires it once; CI red fires a ci_failed wake", async () => {

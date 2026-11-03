@@ -52,6 +52,7 @@ import {
 } from "../web/src/workstream";
 import { activityLines, type AgentTurn, type TurnOrigin } from "../shared/agent";
 import { linkOrigins } from "./origin";
+import * as prSync from "./prSync";
 import { CHIEF, REFLECTION, REFLECTION_MARKER, provenance, reflectionPrompt, reflectionReadCounts, reflectionRefusal, reflectionTrigger, reportWorkstream, tokensOf } from "../shared/memory";
 import { WRITING_STYLE } from "../shared/writingStyle";
 import type { ReflectionTrigger } from "../shared/memory";
@@ -650,8 +651,8 @@ export async function board(cfg: OrcaConfig): Promise<BoardRow[]> {
     const local = verbs.repoHere(repo);
     const [worktrees, prs, merged, enrichment, inventory, queued] = await Promise.all([
       local ? git.listWorktrees(repo.repoPath, repo.worktreeRoot).catch(() => []) : Promise.resolve([]),
-      local ? gh.listPrs(repo.repoPath).catch(() => []) : Promise.resolve([]), // a local-only repo has no PRs
-      local ? gh.listMerged(repo.repoPath).catch(() => []) : Promise.resolve([]),
+      prSync.openPrs(repo).catch(() => []), // the database's PR state: any repo, here or not
+      prSync.mergedPrs(repo).catch(() => []),
       db.enrichment(repo.name),
       db.inventory(repo.name).catch(() => []),
       db.queuedCounts(repo.name).catch(() => new Map<string, number>()),
@@ -1024,12 +1025,9 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
         await db.patchEnrichment(repo.name, branch, { preferredModel: args.model, preferredProvider: provider });
       }
       if (Object.keys(steer).length) await db.patchEnrichment(repo.name, branch, steer);
-      // Same lookup as board() (~line 634): only when the repo is checked out here, and never let a
-      // GitHub failure (no token, bad auth) stop the send — it just means no PR-sync instruction.
-      // Never cached on the workstream: a stale PR number could point at one already closed.
-      const prNumber = verbs.repoHere(repo)
-        ? (await gh.listPrs(repo.repoPath).catch(() => [])).find((p) => p.branch === branch && !p.staleAt)?.number // a stale row: the PR may be closed now
-        : undefined;
+      // Same lookup as board(): the database's PR state, never GitHub. A failed read only means no
+      // PR-sync instruction; it never stops the send.
+      const prNumber = (await prSync.openPrs(repo).catch(() => [])).find((p) => p.branch === branch)?.number;
       // A send that queues replaces this agent's own still-queued message on the branch, in its place
       // (db.queueMessage `replace`, one transaction on the worktree's instance): one message per agent
       // in a queue. --replace says the same thing explicitly. A message a run took, the user's and
@@ -1478,7 +1476,7 @@ async function verifiedVerb(repo: RepoConfig, branch: string, on: boolean): Prom
     await db.patchEnrichment(repo.name, branch, { verified: null });
     return `Cleared the Verified marker of ${repo.name}/${branch}.`;
   }
-  const pr = verbs.repoHere(repo) ? (await gh.listPrs(repo.repoPath)).find((p) => p.branch === branch) : undefined;
+  const pr = (await prSync.openPrs(repo).catch(() => [])).find((p) => p.branch === branch);
   if (verbs.repoHere(repo) && !pr) throw new Error(`${repo.name}/${branch} has no open PR to mark verified`);
   await db.patchEnrichment(repo.name, branch, { verified: verifiedMark("orchestrator", pr?.head, pr?.number, new Date().toISOString()) });
   return pr
@@ -1489,7 +1487,7 @@ async function verifiedVerb(repo: RepoConfig, branch: string, on: boolean): Prom
 export async function mergeWhenGreen(cfg: OrcaConfig, repo: RepoConfig, body: { pr?: number; branch?: string; small?: boolean; by?: string; cancel?: boolean }): Promise<string> {
   const by = body.by === "orchestrator" ? "orchestrator" as const : "user" as const;
   if (body.cancel) {
-    const branch = body.branch ?? (body.pr ? (await gh.prMergeGate(repo.repoPath, body.pr)).branch : undefined);
+    const branch = body.branch ?? (body.pr ? (await prSync.prByNumber(repo, body.pr))?.branch : undefined);
     if (!branch) throw new Error("cancel needs --pr or --branch");
     await mergeQueue.cancel(repo, branch);
     return `Unmarked ${repo.name}/${branch}: it is no longer merged on green.`;

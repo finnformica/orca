@@ -50,7 +50,7 @@ test("rate limited: the banner names the reset in local time, and the stale PR k
   const hhmm = new Date(until).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   expect(banner?.textContent).toContain(`GitHub rate limited until ${hhmm}`);
   expect(banner?.textContent).toContain("GraphQL");
-  expect(container!.querySelector('[data-testid="pr-stale"]')?.textContent).toContain("Stale · 12m ago");
+  expect(container!.querySelector('[data-testid="pr-stale"]')?.textContent).toContain("Synced 12m ago");
   expect(container!.textContent).toContain("#7");
   expect(container!.textContent).toContain("Conflicts");
 });

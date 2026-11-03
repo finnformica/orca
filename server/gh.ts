@@ -107,10 +107,17 @@ async function mutatePr(cwd: string, pr: number, mutation: string, extra = ""): 
   return after(cwd, c.gql(`mutation($id:ID!){${mutation}(input:{pullRequestId:$id${extra}}){clientMutationId}}`, { id }));
 }
 
-/** A mutation's answer, and the repo's PR caches dropped whether it worked or not: the next read is fresh. */
+/** A mutation's answer, and the repo's PR caches dropped whether it worked or not: the next read is
+ *  fresh. Then the write hook runs (server/prSync.ts refreshes the repo's rows at once). */
 async function after<T>(cwd: string, p: Promise<T>): Promise<T> {
-  try { return await p; } finally { invalidatePrs(cwd); }
+  try { return await p; } finally {
+    invalidatePrs(cwd);
+    await writeHook?.(cwd).catch(() => {});
+  }
 }
+let writeHook: ((cwd: string) => Promise<void>) | undefined;
+/** Run after every PR write (create, edit, label, close, ready, draft, merge, auto-merge). */
+export function setWriteHook(f: ((cwd: string) => Promise<void>) | undefined): void { writeHook = f; }
 
 const REVIEW_BODY_LIMIT = 1_200;
 const REVIEW_TOTAL_LIMIT = 8_000;
@@ -337,10 +344,13 @@ export type PrSummary = PrStatus & {
   additions: number; deletions: number;
   /** The PR's head commit — what a CI notification is keyed on, and what cleanup calls "pushed". */
   head?: string;
-  /** Set when GitHub could not be asked: this row is the last known state, read at `staleAt` (ms).
-   *  A caller that ACTS on CI, review or conflicts (upkeep, notifications) skips such a row. */
+  /** Changed paths (at most 100) and their true count: the merge queue's deny-path check. */
+  files?: string[]; changedFiles?: number;
+  /** When the sync job last read this PR from GitHub (ms; server/prSync.ts). */
+  syncedAt?: number;
+  /** Set when that read is older than two sync intervals: the card shows its age. A caller that ACTS
+   *  on CI, review or conflicts (upkeep, followers) skips such a row. */
   staleAt?: number;
-  staleReason?: string;
 };
 
 /** Count HUMAN feedback on a PR: issue comments + reviews left by someone other than the author,
@@ -374,6 +384,7 @@ type RawPr = {
   comments?: Array<{ author?: { login?: string }; body?: string }>;
   reviews?: Array<{ author?: { login?: string }; state?: string; body?: string }>;
   labels?: Array<{ name?: string }>;
+  files?: Array<{ path: string }>; changedFiles?: number;
 };
 const checkName = (c: { name?: string; context?: string }) => c.name ?? c.context ?? "";
 /** Keep only the checks that GATE merge (GitHub's required set). Empty `required` → keep all, so a
@@ -413,24 +424,23 @@ const mapSummary = (j: RawPr, required: Set<string> = new Set(), previewLabelNam
     feedback: feedback.length ? feedback : undefined,
     additions: j.additions ?? 0,
     deletions: j.deletions ?? 0,
+    ...(j.files ? { files: j.files.map((f) => f.path), changedFiles: j.changedFiles ?? j.files.length } : {}),
   };
 };
 
-/** List the current user's open PRs with status — the source of truth for the kanban. Fetches CI,
- *  comments + reviews too (there are few of your own PRs) so the board shows checks, links the deploy
- *  preview, and "Follow PR" can react to new reviewer feedback.
+/** List the current user's open PRs with status, from GitHub. Fetches CI, comments + reviews too
+ *  (there are few of your own PRs) so the board shows checks, links the deploy preview, and "Follow
+ *  PR" can react to new reviewer feedback.
  *
- *  ONE read per repo serves every caller (each tab's board poll, upkeep, cleanup, the orchestrator's
- *  board, `orca send`): cached for `prCacheMs()` and shared while in flight. A mutation here drops it
- *  (`invalidatePrs`). When GitHub cannot be asked (rate limited, down), the answer is the LAST KNOWN
- *  state, each row marked `staleAt` — never an empty list, which the board drew as "no PR" / local. */
+ *  Only the PR-state sync job calls it (server/prSync.ts); every reader reads the `pr_state` table.
+ *  One read is shared while in flight and for `prCacheMs()`; a write here drops it. It throws when
+ *  GitHub cannot be asked: the database keeps the last known state. */
 export async function listPrs(cwd: string, previewLabelName = "preview"): Promise<PrSummary[]> {
   const entry = openCache.get(cwd) ?? {};
   openCache.set(cwd, entry);
   const map = (r: OpenRead) => r.raw.map((j) => mapSummary(j, (j.baseRefName && r.required.get(j.baseRefName)) || new Set(), previewLabelName));
   // A repo with no open PR is read 6× less often: 7 of 9 repos had none, polled like the busy ones.
   if (entry.read && Date.now() - entry.read.at < (entry.read.raw.length ? prCacheMs() : 6 * prCacheMs())) return map(entry.read);
-  const mine = !entry.inflight;
   const inflight = entry.inflight ??= readOpen(cwd)
     .then((r) => {
       // A PR left the open list (merged or closed, maybe outside Orca): the done lists are old now.
@@ -441,16 +451,7 @@ export async function listPrs(cwd: string, previewLabelName = "preview"): Promis
       return r;
     })
     .finally(() => { entry.inflight = undefined; });
-  try {
-    const read = await inflight;
-    const prs = map(read);
-    if (mine && memory) void Promise.resolve(memory.save(cwd, prs, read.at)).catch(() => {});
-    return prs;
-  } catch (e) {
-    const stale = await lastKnownPrs(cwd, entry.read, e, previewLabelName);
-    if (stale) return stale;
-    throw e;
-  }
+  return map(await inflight);
 }
 
 type OpenRead = { raw: RawPr[]; required: Map<string, Set<string>>; at: number };
@@ -490,40 +491,17 @@ export function resetPrCaches(): void {
   openCache.clear(); mergedCache.clear(); closedCache.clear(); mergedSinceCache.clear(); signalCache.clear(); requiredCache.clear(); viewers.clear();
 }
 
-/** Where the last known open PRs persist across a restart (server/prMemory.ts: each workstream's
- *  enrichment `lastPr`). Unset: memory only. */
-export type PrMemory = {
-  save(cwd: string, prs: PrSummary[], at: number): Promise<void> | void;
-  load(cwd: string): Promise<{ prs: PrSummary[] } | undefined>;
-};
-let memory: PrMemory | undefined;
-export function setPrMemory(m: PrMemory | undefined): void { memory = m; }
-
 /** An error that means "GitHub could not be asked now" (not "this repo has no GitHub remote"). */
 export function githubUnavailable(e: unknown): boolean {
   if (e instanceof GitHubRateLimitError) return true;
   return e instanceof GitHubError && e.path !== "" && (e.status === 0 || e.status >= 500);
 }
-const staleReason = (e: unknown) => e instanceof GitHubRateLimitError ? "GitHub rate limited" : "GitHub unreachable";
-
-async function lastKnownPrs(cwd: string, read: OpenRead | undefined, e: unknown, previewLabelName: string): Promise<PrSummary[] | undefined> {
-  if (!githubUnavailable(e)) return undefined;
-  const reason = staleReason(e);
-  const known: PrSummary[] | undefined = read
-    ? read.raw.map((j) => ({ ...mapSummary(j, (j.baseRefName && read.required.get(j.baseRefName)) || new Set(), previewLabelName), staleAt: read.at }))
-    : (await memory?.load(cwd).catch(() => undefined))?.prs;
-  // GraphQL spent but REST not: which PRs are open is fresh from REST; CI, review and mergeable stay
-  // the last known values (REST has them only per PR).
-  if (e instanceof GitHubRateLimitError && e.path === "graphql") {
-    const viaRest = await openPrsRest(cwd, known ?? []).catch(() => undefined);
-    if (viaRest) return viaRest.map((p) => ({ ...p, staleReason: reason }));
-  }
-  return known?.map((p) => ({ ...p, staleAt: p.staleAt ?? read?.at ?? Date.now(), staleReason: reason }));
-}
 
 const viewers = new Map<string, string>();
-/** The open PRs of the account by REST (`GET pulls`, ETag: a 304 is free), merged over `known`. */
-async function openPrsRest(cwd: string, known: PrSummary[]): Promise<PrSummary[]> {
+/** The open PRs of the account by REST (`GET pulls`, ETag: a 304 is free), merged over `known`: the
+ *  sync job's read while the GraphQL budget is spent. Which PRs are open, their heads and titles are
+ *  fresh; CI, review and mergeable stay the known values (REST has them only per PR). */
+export async function openPrsRest(cwd: string, known: PrSummary[]): Promise<PrSummary[]> {
   const c = await forRepo(cwd, "listPrsRest");
   const me = viewers.get(c.token) ?? (await c.rest<{ login: string }>("user")).login;
   viewers.set(c.token, me);
@@ -539,9 +517,18 @@ async function openPrsRest(cwd: string, known: PrSummary[]): Promise<PrSummary[]
       autoMergeEnabled: Boolean(p.auto_merge), autoMergeMethod: p.auto_merge?.merge_method || k?.autoMergeMethod,
       // A new head since the last known read: its CI and mergeable are unknown, not the old ones.
       ...(k && k.head && p.head?.sha && k.head !== p.head.sha ? { ciStatus: "pending" as const, failingChecks: undefined, mergeable: "UNKNOWN" as const } : {}),
-      staleAt: k?.staleAt ?? Date.now(),
     };
   });
+}
+
+/** One PR by REST (`GET pulls/<n>`, ETag): how a PR that left the open list ended, with no GraphQL. */
+export async function prRest(cwd: string, pr: number): Promise<{ number: number; state: "OPEN" | "MERGED" | "CLOSED"; branch: string; head?: string; base?: string; title: string; url: string; isDraft: boolean; mergedAt?: number; closedAt?: number }> {
+  const p = await (await forRepo(cwd, "prRest")).rest<any>(`{repo}/pulls/${pr}`);
+  const ms = (iso?: string | null) => (iso && Number.isFinite(Date.parse(iso)) ? Date.parse(iso) : undefined);
+  return {
+    number: p.number ?? pr, state: p.merged_at ? "MERGED" : p.state === "closed" ? "CLOSED" : "OPEN", branch: p.head?.ref ?? "", head: p.head?.sha || undefined,
+    base: p.base?.ref || undefined, title: p.title ?? "", url: p.html_url ?? "", isDraft: Boolean(p.draft), mergedAt: ms(p.merged_at), closedAt: ms(p.closed_at),
+  };
 }
 
 const REQUIRED_TTL_MS = 5 * 60_000;
@@ -844,6 +831,7 @@ async function mergeAsync(cwd: string, pr: number, auto: boolean): Promise<void>
     res = await c.rest(`{repo}/pulls/${pr}/merge-async/${res.details.uuid}`);
   }
   invalidatePrs(cwd);
+  await writeHook?.(cwd).catch(() => {});
   if (res.status === "failed") throw new Error(`stacked merge of PR #${pr} failed: ${res.details?.message ?? "see the PR on GitHub"}`);
 }
 

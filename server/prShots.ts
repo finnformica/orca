@@ -9,7 +9,7 @@
 // when the PR is merged or closed (verbs.reapWorktree).
 import { readFileSync } from "fs";
 import * as db from "./db";
-import * as gh from "./gh";
+import * as prSync from "./prSync";
 import * as git from "./git";
 import { forRepo } from "./github";
 import { diskStore } from "./screenshot";
@@ -80,7 +80,7 @@ export function attachPrShots(repo: RepoConfig, branch: string, opts: { pr?: num
   const key = `${repo.name}::${branch}`;
   const prev = busy.get(key) ?? Promise.resolve(undefined as unknown as PrShotsResult);
   const next = prev.catch(() => undefined).then(async () => {
-    const pr = opts.pr ?? (await gh.listPrs(repo.repoPath)).find((p) => p.branch === branch)?.number;
+    const pr = opts.pr ?? (await prSync.openPrs(repo)).find((p) => p.branch === branch)?.number;
     if (!pr) throw new Error(`${repo.name}/${branch} has no open PR`);
     const store = diskStore();
     const shots = newestShots(await db.turns(repo.name, branch))
@@ -101,7 +101,7 @@ export async function afterRun(repo: RepoConfig | undefined, branch: string | un
   if (!repo || !branch) return;
   try {
     if (!(await git.hasRemote(repo.repoPath))) return;
-    const pr = (await gh.listPrs(repo.repoPath)).find((p) => p.branch === branch)?.number;
+    const pr = (await prSync.openPrs(repo)).find((p) => p.branch === branch)?.number;
     if (pr) await attachPrShots(repo, branch, { pr });
   } catch (e) {
     console.warn(`orca: could not update ${repo.name}/${branch}'s PR screenshots: ${e instanceof Error ? e.message : String(e)}`);

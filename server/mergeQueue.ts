@@ -15,6 +15,7 @@ import * as agent from "./agent";
 import * as db from "./db";
 import * as primary from "./primary";
 import * as gh from "./gh";
+import * as prSync from "./prSync";
 import * as git from "./git";
 import * as notify from "./notify";
 import { runsHere, type OrcaConfig, type RepoConfig } from "./config";
@@ -51,8 +52,12 @@ export async function request(cfg: OrcaConfig, repo: RepoConfig, target: { pr?: 
   if (early) throw new Error(`Not queued: ${early}.`);
   let pr = target.pr;
   let branch = target.branch;
-  if (pr) branch = (await gh.prMergeGate(repo.repoPath, pr)).branch;
-  else if (branch) pr = (await gh.listPrs(repo.repoPath).catch(() => [])).find((p) => p.branch === branch)?.number;
+  // The database's PR state, read from GitHub just now (a command, so the sync job refreshes first).
+  await prSync.refresh(repo, pr ? [pr] : []).catch(db.logUnlessDown(`orca: merge queue refresh of ${repo.name} failed`));
+  if (pr) {
+    branch = (await prSync.prByNumber(repo, pr))?.branch;
+    if (!branch) throw new Error(`Not queued: ${repo.name} PR #${pr} is not known (no sync has read it).`);
+  } else if (branch) pr = (await prSync.openPrs(repo).catch(() => [])).find((p) => p.branch === branch)?.number;
   if (!branch) throw new Error("merge needs --pr <number> or --branch <branch>");
   const mark: MergeMark = { pr, small: opts.small || undefined, by: opts.by, at: Date.now(), exempt: opts.bypassPolicy || undefined };
   await db.patchEnrichment(repo.name, branch, { [MARK]: mark });
@@ -80,9 +85,10 @@ export async function tick(cfg: OrcaConfig): Promise<void> {
   try {
     for (const repo of queueRepos(cfg)) {
       const marked = Object.entries(await db.enrichment(repo.name)).filter(([, e]) => markOf(e));
+      watching.set(repo.name, new Set(marked.map(([, e]) => markOf(e)!.pr).filter((n): n is number => Boolean(n))));
       if (!marked.length) continue;
       // A branch marked before its PR existed picks the PR up here.
-      const open = marked.some(([, e]) => !markOf(e)!.pr) ? await gh.listPrs(repo.repoPath).catch(() => []) : [];
+      const open = marked.some(([, e]) => !markOf(e)!.pr) ? await prSync.openPrs(repo).catch(() => []) : [];
       for (const [branch, e] of marked) {
         let mark = markOf(e)!;
         if (!mark.pr) {
@@ -95,9 +101,11 @@ export async function tick(cfg: OrcaConfig): Promise<void> {
       }
     }
   } finally {
+    prSync.watch("mergeQueue", watching); // the sync job keeps every marked PR's row fresh (fast interval)
     ticking = false;
   }
 }
+const watching = new Map<string, Set<number>>();
 
 /** Whether the workstream's agent is running, or has a message queued behind it — either means its
  *  branch is about to change, so the queue must not merge the head it sees right now. */
@@ -111,7 +119,9 @@ async function agentActivity(repo: RepoConfig, branch: string): Promise<AgentAct
 /** Look at one marked PR and act on the verdict. */
 async function look(cfg: OrcaConfig, repo: RepoConfig, branch: string, mark: MergeMark): Promise<MergeVerdict> {
   const pr = mark.pr!;
-  const [gate, activity] = await Promise.all([gh.prMergeGate(repo.repoPath, pr), agentActivity(repo, branch)]);
+  // The PR's row (the sync job keeps a marked PR's row fresh). Missing or old: wait, never merge on it.
+  const [gate, activity] = await Promise.all([prSync.mergeGate(repo, pr), agentActivity(repo, branch)]);
+  if (!gate) return { action: "wait", why: "its PR state is not synced yet" };
   const verdict = mergeVerdict(repo.mergePolicy, mark, gate, activity);
   const e = (await db.enrichment(repo.name))[branch] ?? {};
   const title = (typeof e.title === "string" && e.title) || gate.title;
@@ -124,7 +134,7 @@ async function look(cfg: OrcaConfig, repo: RepoConfig, branch: string, mark: Mer
       if (mark.reportedSha === gate.headSha) return verdict; // already said, for this push
       await db.patchEnrichment(repo.name, branch, { [MARK]: { ...mark, reportedSha: gate.headSha } });
       // The same notification (and key) the PR list raises, so the bell shows one row, not two.
-      await notify.prs(repo.name, [{ ...gate, branch, title }]);
+      await notify.prs(repo.name, [{ ...gate, head: gate.headSha, branch, title }]);
       if (theirs) await reportHook?.(report(verdict));
       return verdict;
     }

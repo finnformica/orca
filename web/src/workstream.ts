@@ -1860,7 +1860,7 @@ export function boardText(rows: BoardRow[]): string {
   if (!rows.length) return "(no workstreams)";
   return rows.map((r) => {
     const pr = r.pr
-      ? r.pr.merged ? `PR #${r.pr.number} merged` : `PR #${r.pr.number}${r.pr.isDraft ? " draft" : ""}${r.pr.reviewStatus ? ` review:${r.pr.reviewStatus}` : ""}${r.pr.ciStatus ? ` ci:${r.pr.ciStatus}` : ""}${r.pr.mergeable === "CONFLICTING" ? " CONFLICTS" : ""}${r.pr.verified === "verified" ? " verified-by-user" : r.pr.verified === "changed" ? " changed-since-user-verified" : ""}${r.pr.staleAt ? ` (stale: GitHub unavailable, last read ${new Date(r.pr.staleAt).toISOString().slice(11, 16)} UTC)` : ""}`
+      ? r.pr.merged ? `PR #${r.pr.number} merged` : `PR #${r.pr.number}${r.pr.isDraft ? " draft" : ""}${r.pr.reviewStatus ? ` review:${r.pr.reviewStatus}` : ""}${r.pr.ciStatus ? ` ci:${r.pr.ciStatus}` : ""}${r.pr.mergeable === "CONFLICTING" ? " CONFLICTS" : ""}${r.pr.verified === "verified" ? " verified-by-user" : r.pr.verified === "changed" ? " changed-since-user-verified" : ""}${r.pr.staleAt ? ` (last synced ${new Date(r.pr.staleAt).toISOString().slice(11, 16)} UTC)` : ""}`
       : "no PR";
     return [
       `${r.repo}/${r.branch}${r.title ? ` "${r.title}"` : ""}`,

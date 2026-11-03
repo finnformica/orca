@@ -26,6 +26,10 @@ process.env.ORCA_DEV_ROOT ??= `${process.env.HOME}/Documents`;
 // gh.listPrs shares one read per repo for 20s; a test changes a fixture between calls and reads it
 // at once. A test of the cache sets its own value. Test bridges inherit it.
 process.env.ORCA_GH_PR_CACHE_MS ??= "0";
+// PR state is the database's, fed by a sync job on a timer (server/prSync.ts). In the tests a reader
+// syncs the repo first, so a fixture changed between calls reads at once. Test bridges inherit it.
+// tests/prSync.test.ts turns it off to prove the readers never call GitHub.
+process.env.ORCA_PR_SYNC_INLINE ??= "1";
 // server/preview.ts persists its registry to TMPDIR/orca-previews.json at import-time-resolved path,
 // and a test's start/stop rewrites it with only the test's previews — which once wiped the LIVE
 // bridge's registry. Every test process gets its own TMPDIR, set here before anything imports it.

@@ -26,11 +26,11 @@ export function ConditionBadges({ row, showAutoMerge = true }: { row: Row; showA
   );
 }
 
-/** The PR state is the last known one (GitHub rate limited or down): how old it is. */
+/** The PR state's last sync is older than the normal interval (GitHub rate limited or down): its age. */
 export function StaleBadge({ at, now = Date.now() }: { at: number; now?: number }) {
   return (
-    <Tip label={`GitHub could not be asked. This PR state was read at ${new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.`} wrap>
-      <Badge variant="outline" data-testid="pr-stale" className="h-6 border-transparent bg-amber-500/10 text-amber-700 dark:text-amber-400"><Clock />Stale · {ago(at, now)}</Badge>
+    <Tip label={`Orca last synced this PR from GitHub at ${new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.`} wrap>
+      <Badge variant="outline" data-testid="pr-stale" className="h-6 border-transparent bg-amber-500/10 text-amber-700 dark:text-amber-400"><Clock />Synced {ago(at, now)}</Badge>
     </Tip>
   );
 }

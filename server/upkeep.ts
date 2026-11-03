@@ -16,6 +16,7 @@ import * as agent from "./agent";
 import * as db from "./db";
 import * as primary from "./primary";
 import * as gh from "./gh";
+import * as prSync from "./prSync";
 import * as git from "./git";
 import * as notify from "./notify";
 import type { OrcaConfig, RepoConfig } from "./config";
@@ -53,7 +54,7 @@ export async function tick(cfg: OrcaConfig, now = Date.now()): Promise<Array<{ r
       if (!Object.values(enrichment).some((e) => e?.orchestrated)) continue; // no gh call for a repo with nothing to keep
       const worktrees = await git.listWorktrees(repo.repoPath, repo.worktreeRoot);
       if (!worktrees.length) continue; // every PR it keeps has its worktree here: no gh call without one
-      const prs = await gh.listPrs(repo.repoPath).catch(() => []);
+      const prs = await prSync.openPrs(repo).catch(() => []); // the database's PR state
       for (const pr of prs) {
         if (pr.staleAt) continue; // the last known state (GitHub rate limited): never act on it
         const e = enrichment[pr.branch];

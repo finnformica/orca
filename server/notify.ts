@@ -93,7 +93,7 @@ export async function hiddenFeedback(repo: string, list: { branch: string; exter
  *  forgets them; the row's key still dedupes. */
 const announced = new Set<string>();
 
-/** The merges the poller saw (gh.donePrs, read by the cleanup pass): each recent one is ONE `merged`
+/** The merges the poller saw (prSync.donePrs, read by the cleanup pass): each recent one is ONE `merged`
  *  event, the merge queue's own shape and key — so a PR merged in the GitHub UI or by another person
  *  fires a `pr:<repo>#<n>:merged` wake too. */
 export async function mergedSeen(repo: string, done: Map<string, { reason: string; at?: number; number?: number }>, now = Date.now()): Promise<void> {

@@ -9,6 +9,7 @@
 // point it at these when that duplication costs something.
 import * as git from "./git";
 import * as gh from "./gh";
+import * as prSync from "./prSync";
 import * as agent from "./agent";
 import * as db from "./db";
 import * as primary from "./primary";
@@ -276,9 +277,10 @@ export async function removeWorktree(repo: RepoConfig, worktreePath: string, bra
  *  workstream from the orchestrator, built from the same `removeWorktree` the Discard button runs. */
 export async function archiveWorkstream(repo: RepoConfig, branch: string): Promise<void> {
   await db.dropQueuedMessages(repo.name, branch); // before stopping, so a racing exit handler can't claim one
-  // A local verb: GitHub unknown (rate limited, down) never stops it. It keeps the branch, as for
-  // a PR — only a branch known to have no PR is deleted.
-  const hasPr = await gh.listPrs(repo.repoPath).then((prs) => prs.some((p) => p.branch === branch), () => true);
+  // A local verb: it reads the database's PR state, never GitHub. Only a branch the FRESH state shows
+  // with no open PR is deleted; an old sync or a failed read keeps it, as for a PR.
+  const hasPr = !(await prSync.openFresh(repo).catch(() => false))
+    || await prSync.openPrs(repo).then((prs) => prs.some((p) => p.branch === branch), () => true);
   const existing = (await git.listWorktrees(repo.repoPath, repo.worktreeRoot)).find((w) => w.branch === branch);
   if (existing) await removeWorktree(repo, existing.worktreePath, branch, !hasPr, "archive"); // no worktree, nothing can run in it
   await db.archive(repo.name, branch); // idempotent — a no-op if removeWorktree already archived it
@@ -315,7 +317,7 @@ export async function settleConflict(repo: RepoConfig, branch: string): Promise<
  *  with the evidence fetched immediately before launch. The manual form of the store's `addressPr`:
  *  every unresolved thread is sent, and the hand-over is recorded once the launch is accepted. */
 export async function addressPr(cfg: OrcaConfig, repo: RepoConfig, branch: string, opts: { origin?: TurnOrigin; sender?: Side } = {}): Promise<{ status: "running" | "queued" | "resolved"; pr: number; replacedId?: number }> {
-  const pr = (await gh.listPrs(repo.repoPath)).find((p) => p.branch === branch);
+  const pr = (await prSync.openPrs(repo)).find((p) => p.branch === branch);
   if (!pr) throw new Error(`${repo.name}/${branch} has no open PR to address`);
   const e = (await db.enrichment(repo.name))[branch] ?? {};
   // A changelog-only (or clean) merge of the base is Orca's job, not a run's.
@@ -384,7 +386,7 @@ export async function placement(
  *  has no commits of its own. */
 export async function openWorkerPr(repo: RepoConfig, branch: string, worktreePath: string, result: { outcome?: AgentOutcome; response?: string }): Promise<{ number: number; url: string } | undefined> {
   if (!(await git.hasRemote(repo.repoPath))) return undefined;
-  if ((await gh.listPrs(repo.repoPath)).some((p) => p.branch === branch)) return undefined;
+  if ((await prSync.openPrs(repo)).some((p) => p.branch === branch)) return undefined; // the database's PR state; a stale miss makes GitHub refuse the create
   const base = await git.resolveBase(repo.repoPath, repo.baseBranch);
   const { commits } = await git.changeSummary(worktreePath, base);
   if (!commits.length) return undefined;
@@ -490,9 +492,9 @@ export function cleanupRepo(repo: RepoConfig, opts: { now?: number; graceMs?: nu
   if (inflight) return inflight;
   const pass = (async () => {
     const worktrees = await git.listWorktrees(repo.repoPath, repo.worktreeRoot);
-    // Read even with no worktree: the done list also announces merges done outside the queue
-    // (`mergedSeen`). It is one search, cached 5 min (gh.donePrs), not two every 20s.
-    const done = await gh.donePrs(repo.repoPath).catch(() => new Map<string, gh.DonePr>()); // empty for local-only repos
+    // The done list is the database's (the sync job reads it from GitHub every 5 min). Read even with
+    // no worktree: it also announces merges done outside the queue (`mergedSeen`).
+    const done = await prSync.donePrs(repo).catch(() => new Map<string, gh.DonePr>()); // empty for local-only repos
     if (!done.size) return [];
     // A merge done outside the merge queue (the GitHub UI, another person) is the same `merged`
     // event the queue emits, so a `pr:<repo>#<n>:merged` wake fires for it too.
@@ -506,7 +508,8 @@ export function cleanupRepo(repo: RepoConfig, opts: { now?: number; graceMs?: nu
       if (!live) {
         // Open PRs unknown (a GitHub error) → reap nothing this pass: a branch reused for a new open
         // PR would read as finished, and its live worktree would go.
-        const open = await gh.listPrs(repo.repoPath).catch(() => null);
+        // The open list must be fresh too: a stale one misses a new PR on a reused branch.
+        const open = await prSync.openFresh(repo) ? await prSync.openPrs(repo).catch(() => null) : null;
         if (!open) return out;
         live = { open: new Set(open.map((p) => p.branch)), queued: await db.queuedCounts(repo.name).catch(() => new Map<string, number>()) };
       }
@@ -549,13 +552,16 @@ export async function sweep(cfg: OrcaConfig, opts: { confirm?: boolean; now?: nu
   const removing = new Map<string, () => Promise<void>>(); // worktree path → its reap
   for (const repo of cfg.repos.filter(repoHere)) {
     const [done, archived, ench, queued] = await Promise.all([
-      gh.donePrs(repo.repoPath).catch(() => new Map<string, gh.DonePr>()),
+      prSync.donePrs(repo).catch(() => new Map<string, gh.DonePr>()),
       db.archivedBranches(repo.name).catch(() => new Set<string>()),
       db.enrichment(repo.name).catch(() => ({}) as Record<string, db.Fields>),
       db.queuedCounts(repo.name).catch(() => new Map<string, number>()),
     ]);
     let open: Set<string>;
-    try { open = new Set((await gh.listPrs(repo.repoPath)).map((p) => p.branch)); }
+    try {
+      if (!(await prSync.openFresh(repo))) throw new Error("the PR state is not fresh");
+      open = new Set((await prSync.openPrs(repo)).map((p) => p.branch));
+    }
     catch (e) {
       if (await git.hasRemote(repo.repoPath)) {
         report.branches.push({ repo: repo.name, branch: "*", action: "keep", why: `skipped the repo: open PRs unknown (${e instanceof Error ? e.message.split("\n")[0] : String(e)})` });

@@ -7,7 +7,7 @@
 // its agent through `deliver` — the orchestrator's report path, so MAX_WAKES and a pause apply.
 import * as db from "./db";
 import * as primary from "./primary";
-import * as gh from "./gh";
+import * as prSync from "./prSync";
 import * as notify from "./notify";
 import { repoHere } from "./verbs";
 import type { OrcaConfig } from "./config";
@@ -156,11 +156,16 @@ export async function watchPrs(cfg: OrcaConfig, now = Date.now()): Promise<void>
     try { on = parseWakeOn(w.on); } catch { continue; }
     if (on.kind === "pr" && on.event !== "merge_refused") want.set(`${on.repo}#${on.pr}`, { repo: on.repo, pr: on.pr });
   }
+  // The sync job keeps each watched PR's row fresh (server/prSync.ts); this reads the rows only.
+  const byRepo = new Map<string, Set<number>>();
+  for (const { repo, pr } of want.values()) byRepo.set(repo, new Set([...(byRepo.get(repo) ?? []), pr]));
+  prSync.watch("scheduledWake", byRepo);
   for (const { repo: name, pr } of want.values()) {
     const repo = cfg.repos.find((r) => r.name === name);
     if (!repo || !repoHere(repo)) continue;
     try {
-      const gate = await gh.prMergeGate(repo.repoPath, pr);
+      const gate = await prSync.prByNumber(repo, pr);
+      if (!gate) continue; // not synced yet
       const title = (await db.enrichment(name).catch(() => ({}) as Record<string, db.Fields>))[gate.branch]?.title;
       const t = typeof title === "string" && title.trim() ? title.trim() : gate.title;
       if (gate.state === "MERGED") await notify.emit(mergedNotification(name, { number: pr, branch: gate.branch, title: t, by: "github" }));

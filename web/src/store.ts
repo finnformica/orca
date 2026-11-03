@@ -527,7 +527,7 @@ export type Row = {
   ciStatus?: CiStatus;
   reviewStatus?: ReviewStatus;
   mergeable?: Mergeable;
-  /** The PR state is the last known one, read at this time (ms): GitHub was rate limited or down. */
+  /** The PR state's last sync (ms), set only when it is older than the normal interval. */
   prStaleAt?: number;
   autoMergeEnabled?: boolean;
   /** GitHub's own merge method for its auto-merge request (squash/merge/rebase) — the status
