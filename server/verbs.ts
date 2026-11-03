@@ -278,7 +278,9 @@ export async function removeWorktree(repo: RepoConfig, worktreePath: string, bra
  *  workstream from the orchestrator, built from the same `removeWorktree` the Discard button runs. */
 export async function archiveWorkstream(repo: RepoConfig, branch: string): Promise<void> {
   await db.dropQueuedMessages(repo.name, branch); // before stopping, so a racing exit handler can't claim one
-  const hasPr = (await gh.listPrs(repo.repoPath)).some((p) => p.branch === branch);
+  // A local verb: GitHub unknown (rate limited, down) never stops it. It keeps the branch, as for
+  // a PR — only a branch known to have no PR is deleted.
+  const hasPr = await gh.listPrs(repo.repoPath).then((prs) => prs.some((p) => p.branch === branch), () => true);
   const existing = (await git.listWorktrees(repo.repoPath, repo.worktreeRoot)).find((w) => w.branch === branch);
   if (existing) await removeWorktree(repo, existing.worktreePath, branch, !hasPr, "archive"); // no worktree, nothing can run in it
   await db.archive(repo.name, branch); // idempotent — a no-op if removeWorktree already archived it
@@ -489,6 +491,9 @@ export function cleanupRepo(repo: RepoConfig, opts: { now?: number; graceMs?: nu
   const inflight = cleaning.get(repo.name);
   if (inflight) return inflight;
   const pass = (async () => {
+    const worktrees = await git.listWorktrees(repo.repoPath, repo.worktreeRoot);
+    // Read even with no worktree: the done list also announces merges done outside the queue
+    // (`mergedSeen`). It is one search, cached 5 min (gh.donePrs), not two every 20s.
     const done = await gh.donePrs(repo.repoPath).catch(() => new Map<string, gh.DonePr>()); // empty for local-only repos
     if (!done.size) return [];
     // A merge done outside the merge queue (the GitHub UI, another person) is the same `merged`
@@ -497,7 +502,7 @@ export function cleanupRepo(repo: RepoConfig, opts: { now?: number; graceMs?: nu
     const out: CleanupResult[] = [];
     let ench: Record<string, db.Fields> | undefined;
     let live: { open: Set<string>; queued: Map<string, number> } | undefined; // read once, only when a worktree has a done PR
-    for (const w of await git.listWorktrees(repo.repoPath, repo.worktreeRoot)) {
+    for (const w of worktrees) {
       const pr = done.get(w.branch);
       if (!pr) continue;
       if (!live) {

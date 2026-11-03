@@ -22,6 +22,9 @@ import { eventStream } from "./events";
 import * as lease from "./lease";
 import { writeHandoffFile } from "./state";
 import { metrics, countAgentPoll } from "./metrics";
+import { rateLimitState } from "./github";
+import { prMemory } from "./prMemory";
+import { githubLimits } from "../shared/githubLimits";
 import { renderText, summarize } from "./diagnostics";
 import { postAsUser as slackPost } from "./integrations/adapters/slack";
 import * as integrations from "./integrations/registry";
@@ -132,6 +135,15 @@ async function resolvePrDescription(
 process.on("unhandledRejection", (e) => console.error("orca: unhandled rejection", e instanceof Error ? e.message : e));
 process.on("uncaughtException", (e) => console.error("orca: uncaught exception", e instanceof Error ? e.stack ?? e.message : e));
 const PREVIEW_BRIDGE = db.previewBridge();
+// The last known open PRs persist on each workstream's enrichment (server/prMemory.ts), so a board
+// read while GitHub is rate limited shows them stale, not gone. A preview bridge only reads them.
+{
+  const memory = prMemory(async (cwd) => (await loadConfig()).repos.find((r) => r.repoPath === cwd)?.name);
+  gh.setPrMemory(PREVIEW_BRIDGE ? { save: () => {}, load: memory.load } : {
+    save: (cwd, prs, at) => memory.save(cwd, prs, at)?.catch(db.logUnlessDown("orca: last known PR state write failed")),
+    load: memory.load,
+  });
+}
 // ORCA_REUSE_PORT=1 (the box's .env, deploy/bootstrap.sh): SO_REUSEPORT, so a deploy's NEW bridge
 // listens BESIDE the old one on the same port and the old is stopped only once the new answers
 // (deploy/autodeploy.sh reads `bridge.pid` off /api/config) — no second with nothing on 8787. Off by
@@ -473,7 +485,7 @@ const DATABASE_ONLY = new Set([
   // what that merge fetches from a PEER — always this host's own, unmerged, never forwarded (a repo's
   // placement must not send it chasing a worktree that has nothing to do with hydra).
   "/api/usage", "/api/usage/local", "/api/diagnostics", "/api/turns/steps", "/api/queued", "/api/queued/cancel", "/api/health",
-  "/api/health/history", "/api/health/live", "/api/machine", "/api/config/instance-rate", "/api/config/terminal", "/api/config/identity", "/api/config/ui", "/api/config/repo-check",
+  "/api/health/history", "/api/health/live", "/api/machine", "/api/github/limits", "/api/config/instance-rate", "/api/config/terminal", "/api/config/identity", "/api/config/ui", "/api/config/repo-check",
   // A workstream's reported screenshots, read off its turns (the files are served per shot).
   "/api/shots",
   // Answered by EVERY instance: its own worktrees (if the repo is checked out here) plus what the
@@ -1153,6 +1165,9 @@ async function api(req: Request, url: URL): Promise<Response> {
   // The GitHub page: this host's signed-in `gh` accounts (per host, like /api/usage) and the commit
   // identity each carries; a save writes the shared config.
   if (req.method === "GET" && p === "/api/github/accounts") return json({ accounts: await repos.accountsHere(cfg) });
+  // The rate-limit banner: every GitHub budget this bridge is blocked on now, and until when (the
+  // reset header, confirmed by GET /rate_limit). No GitHub call: it reads what the last calls said.
+  if (req.method === "GET" && p === "/api/github/limits") return json(githubLimits(rateLimitState()));
   if (req.method === "POST" && p === "/api/github/accounts") {
     await repos.setAccount(cfg, String(body.login ?? ""), { name: body.name as string | undefined, email: body.email as string | undefined });
     return json({ accounts: await repos.accountsHere(await loadConfig()) });
@@ -1499,8 +1514,9 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   if (req.method === "GET" && p === "/api/prs") {
     const prs = await gh.listPrs(repo.repoPath, repo.previewLabel ?? "preview"); // source of truth for the PR lanes
-    void notify.prs(repo.name, prs); // CI failing / conflicts, once per PR — read off the list, no extra call
-    void notify.hiddenFeedback(repo.name, prs).catch(db.logUnlessDown("orca: hidden PR feedback check failed"));
+    const fresh = prs.filter((p) => !p.staleAt); // a stale row is the last known state: no news in it
+    void notify.prs(repo.name, fresh); // CI failing / conflicts, once per PR — read off the list, no extra call
+    void notify.hiddenFeedback(repo.name, fresh).catch(db.logUnlessDown("orca: hidden PR feedback check failed"));
     return json(prs);
   }
   if (req.method === "GET" && p === "/api/prs/merged") {

@@ -23,6 +23,9 @@ process.env.PATH = (process.env.PATH ?? "").split(":").filter((d) => d && !exist
 // files that import orca.config (e.g. previewPreflight.test.ts) don't throw at import time. Real
 // runs still require the operator to set it; this only covers the test process.
 process.env.ORCA_DEV_ROOT ??= `${process.env.HOME}/Documents`;
+// gh.listPrs shares one read per repo for 20s; a test changes a fixture between calls and reads it
+// at once. A test of the cache sets its own value. Test bridges inherit it.
+process.env.ORCA_GH_PR_CACHE_MS ??= "0";
 // server/preview.ts persists its registry to TMPDIR/orca-previews.json at import-time-resolved path,
 // and a test's start/stop rewrites it with only the test's previews — which once wiped the LIVE
 // bridge's registry. Every test process gets its own TMPDIR, set here before anything imports it.

@@ -51,8 +51,11 @@ export async function tick(cfg: OrcaConfig, now = Date.now()): Promise<Array<{ r
     for (const repo of cfg.repos.filter((r) => repoHere(r) && r.autoUpkeep !== false)) {
       const enrichment = await db.enrichment(repo.name);
       if (!Object.values(enrichment).some((e) => e?.orchestrated)) continue; // no gh call for a repo with nothing to keep
-      const [prs, worktrees] = await Promise.all([gh.listPrs(repo.repoPath).catch(() => []), git.listWorktrees(repo.repoPath, repo.worktreeRoot)]);
+      const worktrees = await git.listWorktrees(repo.repoPath, repo.worktreeRoot);
+      if (!worktrees.length) continue; // every PR it keeps has its worktree here: no gh call without one
+      const prs = await gh.listPrs(repo.repoPath).catch(() => []);
       for (const pr of prs) {
+        if (pr.staleAt) continue; // the last known state (GitHub rate limited): never act on it
         const e = enrichment[pr.branch];
         const wt = worktrees.find((w) => w.branch === pr.branch);
         if (!e?.orchestrated || !wt) continue; // its worktree is on another instance: that one keeps it

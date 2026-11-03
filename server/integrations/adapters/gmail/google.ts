@@ -77,6 +77,8 @@ export class GoogleError extends Error {
   constructor(message: string, readonly status: number, readonly opts: { reconnect?: boolean; retryable?: boolean; scope?: boolean } = {}) { super(message); }
   get reconnect(): boolean { return !!this.opts.reconnect; }
   get retryable(): boolean { return !!this.opts.retryable; }
+  /** A 403 that names a missing/insufficient OAuth scope, not a plain permission refusal. */
+  get scope(): boolean { return !!this.opts.scope; }
 }
 
 /** What a token endpoint error means. Only the error code and Google's short description go in the
@@ -128,11 +130,32 @@ export async function revoke(e: Pick<Endpoints, "revoke">, token: string): Promi
 
 export type GmailMessageRef = { id: string; threadId: string };
 export type GmailHeader = { name: string; value: string };
+/** One node of a message's MIME tree (`format=full`). A leaf with `filename` and `body.attachmentId`
+ *  is an attachment; its bytes are not inlined — fetch them with `Gmail.attachment`. */
+export type GmailPart = {
+  partId?: string; mimeType?: string; filename?: string; headers?: GmailHeader[];
+  body?: { attachmentId?: string; size?: number; data?: string };
+  parts?: GmailPart[];
+};
 export type GmailMessage = GmailMessageRef & {
   labelIds?: string[]; snippet?: string; internalDate?: string; historyId?: string; raw?: string;
-  payload?: { headers?: GmailHeader[] };
+  payload?: GmailPart;
 };
 export type GmailHistory = { id: string; messagesAdded?: { message: GmailMessage }[]; labelsAdded?: { message: GmailMessage; labelIds: string[] }[] };
+export type GmailAttachmentData = { attachmentId: string; size: number; data: string };
+
+/** One attachment's name, size and id, read off a message's `payload` tree (`format=full`),
+ *  depth first. Pure. An inline part (no `attachmentId`, e.g. the body text) is never an attachment. */
+export function listAttachments(payload?: GmailPart): { filename: string; mimeType: string; size: number; attachmentId: string }[] {
+  const out: { filename: string; mimeType: string; size: number; attachmentId: string }[] = [];
+  const walk = (p?: GmailPart) => {
+    if (!p) return;
+    if (p.filename && p.body?.attachmentId) out.push({ filename: p.filename, mimeType: p.mimeType || "application/octet-stream", size: p.body.size ?? 0, attachmentId: p.body.attachmentId });
+    for (const c of p.parts ?? []) walk(c);
+  };
+  walk(payload);
+  return out;
+}
 
 /** One Gmail API client for one account. `token()` gives a fresh access token; a 401 asks for a new
  *  one once (`token(true)`), since an access token can end before its expiry (a password change). */
@@ -173,6 +196,10 @@ export class Gmail {
   list = (q: string, maxResults: number, pageToken?: string) => this.call<{ messages?: GmailMessageRef[]; nextPageToken?: string; resultSizeEstimate?: number }>("GET", "messages", { query: { q, maxResults, pageToken } });
   metadata = (id: string, headers: string[]) => this.call<GmailMessage>("GET", `messages/${encodeURIComponent(id)}`, { query: { format: "metadata", metadataHeaders: headers } });
   raw = (id: string) => this.call<GmailMessage>("GET", `messages/${encodeURIComponent(id)}`, { query: { format: "raw" } });
+  /** The MIME tree (headers + parts, no attachment bytes) — for `listAttachments`. */
+  full = (id: string) => this.call<GmailMessage>("GET", `messages/${encodeURIComponent(id)}`, { query: { format: "full" } });
+  /** One attachment's bytes (base64url in `.data`), by the id `listAttachments` names. */
+  attachment = (id: string, attachmentId: string) => this.call<GmailAttachmentData>("GET", `messages/${encodeURIComponent(id)}/attachments/${encodeURIComponent(attachmentId)}`);
   thread = (id: string, headers: string[]) => this.call<{ id: string; messages?: GmailMessage[] }>("GET", `threads/${encodeURIComponent(id)}`, { query: { format: "metadata", metadataHeaders: headers } });
 }
 

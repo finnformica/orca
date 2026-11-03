@@ -9,8 +9,9 @@
 // The gate is enrichment `ciGate` on the branch (shared and restart-proof, like the merge queue's
 // mark); the instance that ran the agent looks at it, because the autofix it may queue runs there.
 //
-// When #494's DB-backed PR-state sync lands, `look` should read the head's check state from that
-// sync's rows first and call GitHub only when the sync has no row for the commit.
+// Not gh.listPrs (#494's shared, cached PR read): that is GraphQL, per PR, and may answer a stale
+// row from before the push. The gate needs THIS commit's check runs and their ids (a job's log), so
+// it reads REST, which #494 rate-limits apart from GraphQL.
 import * as agent from "./agent";
 import * as db from "./db";
 import * as gh from "./gh";

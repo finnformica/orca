@@ -3,6 +3,7 @@ import type { RepoFeatures } from "../../server/config";
 import type { ChangeSummary } from "../../server/git";
 import type { LiveAnswer } from "../../server/liveMetrics";
 export type { LiveAnswer, LiveSample } from "../../server/liveMetrics";
+import type { GithubLimits } from "../../shared/githubLimits";
 import type { CiFailureEvidence, ConversationComment, MergedPr, PrDetail, PrSummary, ReviewSignal, ReviewThreadEvidence } from "../../server/gh";
 import type { Usage } from "../../server/usage";
 import type { PackView, WirePack } from "../../server/handoff";
@@ -197,6 +198,7 @@ export const api = {
   exportHandoff: (id: string): Promise<WirePack> => apiFetch(`/api/handoffs/${encodeURIComponent(id)}/export`, { cache: "no-store" }).then(res),
   markHandoffSent: (id: string, to: string): Promise<{ ok: boolean }> => post(`/api/handoffs/${encodeURIComponent(id)}/sent`, { to }),
   handoffBadge: (): Promise<{ unsent: number }> => get("/api/handoffs/badge").then(res),
+  githubLimits: (): Promise<GithubLimits> => get("/api/github/limits").then(res),
   markHandoffsSeen: (): Promise<{ ok: boolean }> => post("/api/handoffs/seen", {}),
   deleteHandoff: (id: string): Promise<{ ok: boolean }> => apiFetch(`/api/handoffs/${encodeURIComponent(id)}`, { method: "DELETE" }).then(res),
   importHandoff: (targetUrl: string, pack: WirePack): Promise<{ duplicate: boolean; files: number }> =>

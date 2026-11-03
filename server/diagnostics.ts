@@ -26,7 +26,7 @@ export type Diagnostics = {
   modes: Record<RunMode, number>;
   avgEvidenceChars: number; // over runs that carried evidence
   prDescription: { total: number; avoided: number };
-  gh: { ghCalls: number; agentPolls: number; uptimeMs: number };
+  gh: { ghCalls: number; agentPolls: number; uptimeMs: number; byOp?: Record<string, { graphql: number; rest: number; notModified: number }> };
   /** Whether Claude launches are being routed across logins by hydra's shim (see usage.routingInfo). */
   routing?: Routing;
   /** This instance's last orphan-preview-db / stale-test-container reap (server/preview.ts's `reap`,
@@ -39,7 +39,7 @@ export type Diagnostics = {
 
 export function summarize(
   entries: LedgerEntry[],
-  gh: { ghCalls: number; agentPolls: number; uptimeMs: number },
+  gh: Diagnostics["gh"],
   routing?: Routing,
   reap?: Diagnostics["reap"],
   migrations?: { at: number; run: { id?: number; name: string }[]; mismatches: MigrationMismatch[]; unknown: RecordedStep[] },

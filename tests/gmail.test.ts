@@ -2,8 +2,9 @@
 // Google" (code + PKCE, the server's OAuth client, one account row per sign-in, the refresh token in
 // the secret store), the History API poll from a cursor
 // with Gmail's own query match, the mail gate, a reply in the Gmail thread, a revoked grant ("reconnect
-// needed") and `orca gmail search|read`. Real Postgres, the real registry, router, dispatcher and
-// secret store; Google is a fake OAuth + Gmail API on loopback (Bun.serve). No real Google call.
+// needed") and `orca gmail search|read|attachment`. Real Postgres, the real registry, router,
+// dispatcher and secret store; Google is a fake OAuth + Gmail API on loopback (Bun.serve). No real
+// Google call.
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -48,15 +49,24 @@ const until = async <T>(fn: () => Promise<T | undefined | false> | T | undefined
 
 const ACCOUNT = "finn@example.com";
 const b64url = (s: string) => Buffer.from(s, "utf8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const bytesB64url = (b: Uint8Array) => Buffer.from(b).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 const s256 = (v: string) => createHash("sha256").update(v).digest("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 
-/** One RFC 822 mail as Gmail's `raw` holds it. */
-function rfc822(o: { id: string; from?: string; to?: string; subject?: string; text?: string; auth?: string; extra?: string[] }): string {
-  return [
+/** One RFC 822 mail as Gmail's `raw` holds it. `attachments` makes it multipart/mixed. */
+function rfc822(o: { id: string; from?: string; to?: string; subject?: string; text?: string; auth?: string; extra?: string[]; attachments?: { filename: string; mimeType: string; data: string }[] }): string {
+  const head = [
     ...(o.auth === "" ? [] : [`Authentication-Results: mx.google.com; ${o.auth ?? "dkim=pass header.d=example.com; spf=pass smtp.mailfrom=example.com; dmarc=pass header.from=example.com"}`]),
     `From: ${o.from ?? "Ana Lee <ana@example.com>"}`, `To: ${o.to ?? "finn+orca@example.com"}`, `Subject: ${o.subject ?? "Fix the login"}`,
-    `Date: Sat, 24 Oct 2026 10:00:00 +0000`, `Message-ID: ${o.id}`, ...(o.extra ?? []), "Content-Type: text/plain; charset=utf-8", "", o.text ?? "The login form is broken. Please look.",
-  ].join("\r\n");
+    `Date: Sat, 24 Oct 2026 10:00:00 +0000`, `Message-ID: ${o.id}`, ...(o.extra ?? []),
+  ];
+  if (!o.attachments?.length) return [...head, "Content-Type: text/plain; charset=utf-8", "", o.text ?? "The login form is broken. Please look."].join("\r\n");
+  const boundary = `BOUNDARY-${o.id.replace(/[^\w]/g, "")}`;
+  const body = [
+    `--${boundary}`, "Content-Type: text/plain; charset=utf-8", "", o.text ?? "See attached.",
+    ...o.attachments.flatMap((a) => [`--${boundary}`, `Content-Type: ${a.mimeType}; name="${a.filename}"`, `Content-Disposition: attachment; filename="${a.filename}"`, "Content-Transfer-Encoding: base64", "", a.data]),
+    `--${boundary}--`,
+  ];
+  return [...head, `Content-Type: multipart/mixed; boundary="${boundary}"`, "", ...body].join("\r\n");
 }
 
 type FakeMsg = { id: string; threadId: string; labelIds: string[]; raw: string; messageId: string; matches: boolean; internalDate: string };
@@ -76,6 +86,7 @@ function fakeGoogle() {
     account: ACCOUNT, // the account the user picks at Google
 
     expireHistory: false,
+    scopeInsufficient: false,
     n: 0,
   };
   const server = Bun.serve({
@@ -139,12 +150,28 @@ function fakeGoogle() {
         st.messages.push({ id, threadId, labelIds: ["SENT"], raw: b.raw, messageId: mid, matches: false, internalDate: String(Date.now()) });
         return Response.json({ id, threadId, labelIds: ["SENT"] });
       }
+      const att = /^messages\/([\w-]+)\/attachments\/([\w-]+)$/.exec(path);
+      if (att) {
+        const m = st.messages.find((x) => x.id === att[1]);
+        if (!m) return Response.json({ error: { code: 404, message: "Not Found" } }, { status: 404 });
+        if (st.scopeInsufficient) return Response.json({ error: { code: 403, message: "Request had insufficient authentication scopes.", status: "PERMISSION_DENIED", errors: [{ reason: "insufficientPermissions" }] } }, { status: 403 });
+        const idx = Number(att[2]!.slice(m.id.length + 1));
+        const a = parseMail(fromBase64Url(m.raw)).attachments[idx];
+        if (!a) return Response.json({ error: { code: 404, message: "Not Found" } }, { status: 404 });
+        return Response.json({ attachmentId: att[2], size: a.bytes.byteLength, data: bytesB64url(a.bytes) });
+      }
       const one = /^messages\/([\w-]+)$/.exec(path);
       if (one) {
         const m = st.messages.find((x) => x.id === one[1]);
         if (!m) return Response.json({ error: { code: 404, message: "Not Found" } }, { status: 404 });
         const base = { id: m.id, threadId: m.threadId, labelIds: m.labelIds, internalDate: m.internalDate, snippet: "The login form is broken" };
         if (u.searchParams.get("format") === "raw") return Response.json({ ...base, raw: m.raw });
+        if (u.searchParams.get("format") === "full") {
+          if (st.scopeInsufficient) return Response.json({ error: { code: 403, message: "Request had insufficient authentication scopes.", status: "PERMISSION_DENIED", errors: [{ reason: "insufficientPermissions" }] } }, { status: 403 });
+          const parsed = parseMail(fromBase64Url(m.raw));
+          const parts = parsed.attachments.map((a, i) => ({ partId: String(i), mimeType: a.mimeType, filename: a.filename, body: { attachmentId: `${m.id}_${i}`, size: a.bytes.byteLength } }));
+          return Response.json({ ...base, payload: { mimeType: "multipart/mixed", parts } });
+        }
         const raw = Buffer.from(fromBase64Url(m.raw)).toString("utf8");
         const names = u.searchParams.getAll("metadataHeaders").map((h) => h.toLowerCase());
         const headers = raw.split("\r\n\r\n")[0]!.split("\r\n").map((l) => { const i = l.indexOf(":"); return { name: l.slice(0, i), value: l.slice(i + 1).trim() }; }).filter((h) => names.includes(h.name.toLowerCase()));
@@ -204,7 +231,7 @@ describe("decisions (pure)", () => {
     expect(oauth.gmailAccess({ kind: "gmail" })).toBe("read");
     expect(oauth.gmailAccess({ kind: "gmail", access: "read-write" })).toBe("read-write");
     expect(GMAIL_CAPS.outbound).toBe(false);
-    expect(GMAIL_VERBS).toEqual({ search: "read", read: "read" });
+    expect(GMAIL_VERBS).toEqual({ search: "read", read: "read", attachment: "read" });
   });
 
   test("incremental consent: a switch to read-write asks Google only for gmail.send; a first or refused grant asks for all", () => {
@@ -232,9 +259,9 @@ describe("decisions (pure)", () => {
     expect(connectOriginProblem(undefined)).toContain("is not one");
   });
 
-  test("the core's account policy: Gmail declares both verbs as reads, and a read account still searches and reads", () => {
-    expect(registry.verbsFor("gmail")).toEqual({ search: "read", read: "read" });
-    for (const verb of ["search", "read"]) expect(integrationAccessRefusal({ id: "gm", kind: "gmail", access: "read" }, verb, registry.verbsFor("gmail"))).toBeUndefined();
+  test("the core's account policy: Gmail declares all three verbs as reads, and a read account still searches, reads and fetches attachments", () => {
+    expect(registry.verbsFor("gmail")).toEqual({ search: "read", read: "read", attachment: "read" });
+    for (const verb of ["search", "read", "attachment"]) expect(integrationAccessRefusal({ id: "gm", kind: "gmail", access: "read" }, verb, registry.verbsFor("gmail"))).toBeUndefined();
     expect(integrationAccessRefusal({ id: "gm", kind: "gmail", access: "read" }, "send", registry.verbsFor("gmail"))).toContain("has read access");
   });
 
@@ -736,5 +763,59 @@ describe("against a fake Google", () => {
     // Through the orchestrator's tool route: your own chat may, an outside sender may not.
     const cfg = { repos: [], portRange: [0, 0], staleHours: 1 } as never;
     expect(await orchestrator.tool(cfg, "gmail", { _: ["read", "m1"], account: "personal" })).toContain("Subject: Fix the login");
+  });
+
+  test("orca gmail attachment: fetches one attachment via users.messages.attachments.get, never the whole raw mail", async () => {
+    const b64 = (s: string) => Buffer.from(s, "utf8").toString("base64");
+    await setup();
+    g.deliver({
+      gid: "m-single", id: "<single@example.com>", subject: "Invoice",
+      attachments: [{ filename: "invoice.pdf", mimeType: "application/pdf", data: b64("%PDF-1.4 fake invoice bytes") }],
+    });
+    g.deliver({
+      gid: "m-multi", id: "<multi@example.com>", subject: "Report and photo",
+      attachments: [
+        { filename: "report.csv", mimeType: "text/csv", data: b64("a,b,c\n1,2,3\n") },
+        { filename: "photo.png", mimeType: "image/png", data: b64("fake png bytes") },
+      ],
+    });
+    await connect();
+    // The read-only account path: a plain `read`-access account, like search and read, needs no new scope.
+    expect((await store.integration("gm"))!.access).toBe("read");
+
+    // Single-attachment default: no name needed.
+    const one = await gmailTool({ _: ["attachment", "m-single"] });
+    expect(one.split("\n")[0]).toBe("Gmail account smfstudio (gm)");
+    expect(one).toContain("name: invoice.pdf");
+    expect(one).toContain("type: application/pdf");
+    const attId = one.split("\n").find((l) => l.startsWith("attachment: "))!.slice("attachment: ".length);
+    expect(await db.attachment(attId)).toMatchObject({ filename: "invoice.pdf", mimeType: "application/pdf" });
+    // Through the dedicated endpoint, never the whole raw mail.
+    expect(g.st.log).toContain("GET messages/m-single full");
+    expect(g.st.log.some((l) => l.startsWith("GET messages/m-single/attachments/"))).toBe(true);
+    expect(g.st.log).not.toContain("GET messages/m-single raw");
+
+    // A name match picks that attachment of several.
+    const named = await gmailTool({ _: ["attachment", "m-multi", "photo.png"] });
+    expect(named).toContain("name: photo.png");
+    expect(named).toContain("type: image/png");
+
+    // --index picks by position.
+    expect(await gmailTool({ _: ["attachment", "m-multi"], index: "0" })).toContain("name: report.csv");
+
+    // No name, no --index, more than one attachment: Orca refuses rather than guessing.
+    await expect(gmailTool({ _: ["attachment", "m-multi"] })).rejects.toThrow("has 2 attachments: report.csv");
+
+    // A missing name error: a clear message naming what IS on the mail.
+    await expect(gmailTool({ _: ["attachment", "m-multi", "nope.txt"] })).rejects.toThrow('no attachment named "nope.txt" on message m-multi. Attachments: report.csv');
+
+    // A mail with no attachments.
+    g.deliver({ gid: "m-plain", id: "<plain@example.com>" });
+    await expect(gmailTool({ _: ["attachment", "m-plain"] })).rejects.toThrow("has no attachments");
+
+    // Google refuses the scope: Orca names it and stops, rather than guessing at a workaround.
+    g.st.scopeInsufficient = true;
+    await expect(gmailTool({ _: ["attachment", "m-single"] })).rejects.toThrow("gmail.readonly");
+    g.st.scopeInsufficient = false;
   });
 });
