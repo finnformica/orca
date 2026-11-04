@@ -367,7 +367,7 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
             {heavyRows.map((r) => (
               <li key={r.id} data-slot="heavy-row" data-state={r.state} className="flex items-center gap-2 py-1.5 text-[13px] whitespace-nowrap">
                 <StatusDot tone={r.state === "queued" ? "queued" : "building"} />
-                <span className="text-muted-foreground w-16 shrink-0 text-xs" title={r.state === "serving" ? "Started; it gave its slot back and still runs" : undefined}>{r.state === "queued" ? `queued #${r.position}` : r.state}</span>
+                <span className="text-muted-foreground w-16 shrink-0 text-xs">{r.state === "queued" ? `queued #${r.position}` : r.state}</span>
                 <span className="w-14 shrink-0 text-xs">{r.kind}</span>
                 {/* The Tip's own wrapper must shrink too, or a long command pushes the row past the card. */}
                 <Tip label={r.command} className={cn(!narrow && "min-w-0 flex-1")}><span data-slot="heavy-command" className={cn("font-mono text-xs", !narrow && "min-w-0 truncate")}>{r.command}</span></Tip>
