@@ -182,6 +182,8 @@ export const api = {
   saveSecret: (body: { name: string; scope?: string; value: string }): Promise<{ ref: string; created: boolean }> => post("/api/orchestrator/secrets", body),
   /** The stored secrets' names (never a value), for a picker such as the Cloudflare Connect form's. */
   secretNames: (): Promise<{ secrets: { scope: string; name: string }[] }> => get("/api/orchestrator/secrets").then(res),
+  /** Deletes a secret the chat composer itself stored (never one a `/secret` card chip only refers to). */
+  deleteSecret: (ref: string): Promise<{ deleted: string }> => apiFetch(`/api/orchestrator/secrets?name=${encodeURIComponent(ref)}`, { method: "DELETE" }).then(res),
   // The Memory page (server/memoryRoutes.ts). `search` is the page's own query string (shared/memory.ts).
   memories: (search: string): Promise<MemoryList> => get(`/api/memory${search}`).then(res),
   memory: (id: number): Promise<MemoryDetail> => get(`/api/memory/${id}`).then(res),

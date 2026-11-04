@@ -129,6 +129,12 @@ export function ChatComposer({
   const [secrets, setSecretsState] = useState<string[]>(() => (persistKey ? loadDraft(persistKey).secrets : []));
   const latestSecrets = useRef(secrets);
   const setSecrets = (v: string[]) => { latestSecrets.current = v; setSecretsState(v); };
+  // The subset of `secrets` THIS composer itself stored (via "Save as secret"), never one a `/secret`
+  // card chip only refers to (`insert.secrets`, below) — Remove deletes the stored secret only for
+  // one of these, and only before it is sent (a send clears both lists together).
+  const [ownSecrets, setOwnSecretsState] = useState<string[]>(() => (persistKey ? loadDraft(persistKey).ownSecrets : []));
+  const latestOwnSecrets = useRef(ownSecrets);
+  const setOwnSecrets = (v: string[]) => { latestOwnSecrets.current = v; setOwnSecretsState(v); };
   // Recipient chips: the names of the agents picked from the `@` picker. Not part of the draft.
   const [recipients, setRecipientsState] = useState<string[]>([]);
   const latestRecipients = useRef(recipients);
@@ -333,8 +339,8 @@ export function ChatComposer({
   // otherwise land after the clear-on-send and put the sent message back in the reopened box.
   const saves = useRef(Promise.resolve());
   useEffect(() => {
-    if (persistKey && hydrated) saves.current = saves.current.then(() => saveDraft(persistKey, value, images, secrets));
-  }, [persistKey, hydrated, value, images, secrets]);
+    if (persistKey && hydrated) saves.current = saves.current.then(() => saveDraft(persistKey, value, images, secrets, ownSecrets));
+  }, [persistKey, hydrated, value, images, secrets, ownSecrets]);
 
   // Any file type — images, xml, docx, csv… the agent Reads them by path.
   const addImages = (files: Iterable<File>) => {
@@ -382,11 +388,13 @@ export function ChatComposer({
     // Clear NOW, not after onSubmit resolves: a box still holding the text you just sent reads as
     // "it didn't go". On failure the text (and attachments) come back — into the box if it is still
     // empty, else into the error line, so neither what you sent nor what you're typing is lost.
-    // Every chip goes with the message (the bubble draws them), so the box clears them all.
-    const sent = { text: typed, images, secrets: chips, recipients: to };
+    // Every chip goes with the message (the bubble draws them), so the box clears them all — the
+    // message now holds the secret too (`[secret <ref> stored]`), so Remove can never delete it.
+    const sent = { text: typed, images, secrets: chips, ownSecrets: latestOwnSecrets.current, recipients: to };
     setValue("");
     setImages([]);
     setSecrets([]);
+    setOwnSecrets([]);
     setRecipients([]);
     setSentTo(null);
     walk.current = NO_WALK;
@@ -399,7 +407,7 @@ export function ChatComposer({
       const msg = err instanceof Error ? err.message : String(err);
       const empty = !latest.current.trim() && !latestSecrets.current.length;
       setError(empty ? msg : `${msg} — not sent: “${sent.text}”`);
-      if (empty) { setValue(sent.text); setImages(sent.images); setSecrets(sent.secrets); }
+      if (empty) { setValue(sent.text); setImages(sent.images); setSecrets(sent.secrets); setOwnSecrets(sent.ownSecrets); }
       if (!latestRecipients.current.length) setRecipients(sent.recipients);
     }
   };
@@ -423,6 +431,8 @@ export function ChatComposer({
       const chips = [...latestSecrets.current, ...refs.filter((r) => !latestSecrets.current.includes(r))];
       setValue(next);
       setSecrets(chips);
+      // This composer made these — Remove deletes them too, unlike a `/secret` card's chip.
+      setOwnSecrets([...latestOwnSecrets.current, ...refs.filter((r) => !latestOwnSecrets.current.includes(r))]);
       setGuarded(false);
       setSecretName("");
       const pending = guardSend.current;
@@ -431,6 +441,20 @@ export function ChatComposer({
     } catch (err) {
       setGuardError(err instanceof Error ? err.message : String(err));
     } finally { setGuardBusy(false); }
+  };
+  // Remove on a secret chip always takes it out of the box. For one THIS composer stored itself
+  // (ownSecrets — "Save as secret", above) and no sent message holds yet, it also deletes the
+  // stored secret: Remove is how you take back a name you gave by mistake. A chip that only
+  // refers to a secret that existed before (`insert.secrets`) is left stored — detach only.
+  const removeSecret = (ref: string) => {
+    const own = latestOwnSecrets.current.includes(ref);
+    setSecrets(latestSecrets.current.filter((r) => r !== ref));
+    if (own) setOwnSecrets(latestOwnSecrets.current.filter((r) => r !== ref));
+    if (!own) return;
+    void api.deleteSecret(ref).then(
+      () => notifyLocal({ kind: "secret_deleted", repo: repo ?? "", title: "Secret deleted", body: `Secret ${ref} deleted.` }),
+      (err) => notifyLocal({ kind: "action_failed", repo: repo ?? "", title: "Secret deleted", label: "Delete failed", body: err instanceof Error ? err.message : String(err) }),
+    );
   };
   const guardBar = held.length > 0 && (
     <div data-slot="paste-guard" role="alert" className="bg-geist-amber/10 mx-2 mt-2 cursor-auto space-y-2 rounded-md px-3 py-2 text-xs" onMouseDown={(e) => e.stopPropagation()}>
@@ -660,7 +684,7 @@ export function ChatComposer({
           <div data-slot="chat-composer-attachments" className="flex flex-wrap items-center gap-2 p-2 pb-0">
             {recipients.map((name) => <ComposerAttachment key={`agent:${name}`} item={{ kind: "agent", name, label: agentLabel(name) }} onRemove={() => setRecipients(latestRecipients.current.filter((r) => r !== name))} />)}
             {images.map((f, i) => <FileChip key={i} file={f} onRemove={() => setImages((p) => p.filter((_, j) => j !== i))} />)}
-            {secrets.map((ref) => <ComposerAttachment key={ref} item={{ kind: "secret", name: ref }} onRemove={() => setSecrets(latestSecrets.current.filter((r) => r !== ref))} />)}
+            {secrets.map((ref) => <ComposerAttachment key={ref} item={{ kind: "secret", name: ref }} onRemove={() => removeSecret(ref)} />)}
           </div>
         )}
         {quick ? (
