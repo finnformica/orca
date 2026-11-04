@@ -2,9 +2,12 @@
 // reload never loses what you were typing. Images are stored as data URLs and rehydrated into
 // File objects on load. Used by ChatComposer via its `persistKey` prop — one place, every box.
 // `secrets`: the references of the secret chips (`chat/<name>`), never a value.
-export type StoredDraft = { text: string; images: { name: string; type: string; dataUrl: string }[]; secrets: string[] };
+// `ownSecrets`: the subset of `secrets` THIS composer stored with "Save as secret" — Remove deletes
+// the stored secret only for one of these, never for a chip the `/secret` card added for a secret
+// that already existed.
+export type StoredDraft = { text: string; images: { name: string; type: string; dataUrl: string }[]; secrets: string[]; ownSecrets: string[] };
 
-const empty: StoredDraft = { text: "", images: [], secrets: [] };
+const empty: StoredDraft = { text: "", images: [], secrets: [], ownSecrets: [] };
 
 export function loadDraft(key: string): StoredDraft {
   try { return { ...empty, ...JSON.parse(localStorage.getItem(key) ?? "{}") }; } catch { return empty; }
@@ -19,16 +22,16 @@ export function clearDraft(key: string) {
   localStorage.removeItem(key);
 }
 
-export async function saveDraft(key: string, text: string, images: File[], secrets: string[] = []) {
+export async function saveDraft(key: string, text: string, images: File[], secrets: string[] = [], ownSecrets: string[] = []) {
   if (!text.trim() && !images.length && !secrets.length) return clearDraft(key);
   // One attachment that fails to encode (a FileReader error) must not drop the whole draft, or
   // leave the composer's save chain rejected — which would stop every later save too. Keep the
   // text and whatever attachments did encode, the same fallback as the quota case below.
   const encoded = await Promise.allSettled(images.map(toStored));
-  const stored: StoredDraft = { text, images: encoded.filter((r) => r.status === "fulfilled").map((r) => r.value), secrets };
+  const stored: StoredDraft = { text, images: encoded.filter((r) => r.status === "fulfilled").map((r) => r.value), secrets, ownSecrets };
   // Attachments can blow the ~5MB quota; if so, keep at least the text so it isn't lost.
   try { localStorage.setItem(key, JSON.stringify(stored)); }
-  catch { try { localStorage.setItem(key, JSON.stringify({ text, images: [], secrets })); } catch { /* full */ } }
+  catch { try { localStorage.setItem(key, JSON.stringify({ text, images: [], secrets, ownSecrets })); } catch { /* full */ } }
 }
 
 export async function draftFiles(key: string): Promise<File[]> {

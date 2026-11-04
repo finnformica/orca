@@ -134,7 +134,7 @@ describe("the composer's chips", () => {
     expect(sent).toEqual([{ text: "", files: [png] }, { text: "", files: [csv] }]);
   });
 
-  test("a secret chip alone can be sent, and its remove button takes it off", async () => {
+  test("a secret chip alone can be sent, and its remove button takes it off (and deletes it)", async () => {
     const sent: string[] = [];
     await render(<ChatComposer onSubmit={async (text) => { sent.push(text); }} />);
     const el = q<HTMLTextAreaElement>("textarea")!;
@@ -143,11 +143,15 @@ describe("the composer's chips", () => {
     expect(qa("[data-attachment=secret]").map((c) => c.textContent)).toEqual(["a", "b"]);
     await click(q("[aria-label='Remove Secret chat/a']")!);
     expect(qa("[data-attachment=secret]").map((c) => c.textContent)).toEqual(["b"]);
+    // "a" was stored by this composer's own "Save as secret", so Remove deleted it too.
+    expect(apiFake.secretDeletes).toEqual(["chat/a"]);
     const send = q<HTMLButtonElement>("button[aria-label=Send]")!;
     expect(send.disabled).toBe(false);
     await click(send);
     expect(sent).toEqual(["[secret chat/b stored]"]);
     expect(qa("[data-attachment=secret]")).toHaveLength(0);
+    // The sent one is never deleted: the message now holds it.
+    expect(apiFake.secretDeletes).toEqual(["chat/a"]);
   });
 
   test("a failed send gives the chips back to an empty box", async () => {
@@ -159,6 +163,48 @@ describe("the composer's chips", () => {
     expect(el.value).toBe("use");
     expect(qa("[data-attachment=secret]").map((c) => c.textContent)).toEqual(["k"]);
     expect(q("[data-slot=chat-composer-error]")!.textContent).toBe("bridge down");
+  });
+});
+
+describe("Remove on a secret chip: delete only what this composer stored itself", () => {
+  test("remove keeps a chip for a secret that already existed (not made by this composer's own save)", async () => {
+    // The same mechanism a cancelled queued message's chip comes back through (ChatComposer's
+    // `insert`): the reference existed before this draft, so Remove must only detach it.
+    await render(<ChatComposer onSubmit={async () => {}} insert={{ text: "", seq: 1, secrets: ["chat/old-key"] }} />);
+    expect(qa("[data-attachment=secret]").map((c) => c.textContent)).toEqual(["old-key"]);
+    await click(q("[aria-label='Remove Secret chat/old-key']")!);
+    expect(qa("[data-attachment=secret]")).toHaveLength(0);
+    expect(apiFake.secretDeletes).toEqual([]);
+  });
+
+  test("a reload keeps the self-stored list, so a later remove still deletes it", async () => {
+    const key = "orca.test.ownSecrets";
+    await render(<ChatComposer persistKey={key} onSubmit={async () => {}} />);
+    const el = q<HTMLTextAreaElement>("textarea")!;
+    await pasteSecret(el, "reload-key");
+    await act(async () => { await flush(); await flush(); });
+    expect(loadDraft(key).secrets).toEqual(["chat/reload-key"]);
+    expect(loadDraft(key).ownSecrets).toEqual(["chat/reload-key"]);
+
+    // Simulate a page reload: unmount, then mount a fresh composer on the same draft key.
+    const firstContainer = container;
+    act(() => root!.unmount());
+    firstContainer?.remove();
+    await render(<ChatComposer persistKey={key} onSubmit={async () => {}} />);
+    expect(qa("[data-attachment=secret]").map((c) => c.textContent)).toEqual(["reload-key"]);
+    await click(q("[aria-label='Remove Secret chat/reload-key']")!);
+    expect(apiFake.secretDeletes).toEqual(["chat/reload-key"]);
+    expect(loadDraft(key).ownSecrets).toEqual([]);
+  });
+
+  test("a failed delete shows the error and still detaches the chip", async () => {
+    apiFake.secretDeleteError = "could not reach the secret store";
+    await render(<ChatComposer onSubmit={async () => {}} />);
+    const el = q<HTMLTextAreaElement>("textarea")!;
+    await pasteSecret(el, "flaky");
+    await click(q("[aria-label='Remove Secret chat/flaky']")!);
+    expect(qa("[data-attachment=secret]")).toHaveLength(0);
+    expect(apiFake.secretDeletes).toEqual(["chat/flaky"]);
   });
 });
 

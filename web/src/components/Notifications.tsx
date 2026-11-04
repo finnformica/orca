@@ -17,7 +17,7 @@ import { afterDockMotion } from "@/lib/dock";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
-  AlertTriangle, ArrowUpRight, Bell, BellOff, Bot, Check, CheckCheck, CircleAlert, CircleX, Copy, ExternalLink, FileText, GitPullRequest, GitPullRequestArrow, GitMerge, Hammer, MessageCircleQuestion,
+  AlertTriangle, ArrowUpRight, Bell, BellOff, Bot, Check, CheckCheck, CircleAlert, CircleX, Copy, ExternalLink, FileText, GitPullRequest, GitPullRequestArrow, GitMerge, Hammer, KeyRound, MessageCircleQuestion,
   MessagesSquare, MonitorCheck, MonitorX, OctagonPause, Reply, RotateCcw, ScrollText, Send, Server, ShieldX, Square, Undo2, UserPlus, Wrench, X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -49,7 +49,7 @@ import { BrandIcon, isIntegrationKind } from "@/components/BrandIcon";
 const ICON: Record<NotificationKind, typeof Bell> = {
   needs_input: MessageCircleQuestion, finished: Check, failed: CircleX, stopped: OctagonPause, check_failed: ShieldX,
   pr_ci_failed: AlertTriangle, pr_conflicts: GitPullRequestArrow, preview_ready: MonitorCheck, preview_failed: MonitorX, action_failed: CircleAlert,
-  merged: GitMerge, merge_refused: GitPullRequest, auto_address: Wrench, upkeep_gave_up: CircleAlert, draft_sent: Send,
+  merged: GitMerge, merge_refused: GitPullRequest, auto_address: Wrench, upkeep_gave_up: CircleAlert, draft_sent: Send, secret_deleted: KeyRound,
   integration_failed: CircleX, external_message: MessagesSquare, pairing_requested: UserPlus, box_alert: Server,
 };
 const TONE_TEXT = { ready: "text-geist-green", error: "text-geist-red", warning: "text-geist-warning-fg", queued: "text-geist-blue", neutral: "text-muted-foreground" } as const;

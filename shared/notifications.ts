@@ -5,7 +5,7 @@ import { parseAgentOutcome, type AgentOutcome, type StopReason, type TurnCheck }
 
 export const NOTIFICATION_KINDS = [
   "needs_input", "finished", "failed", "stopped", "check_failed", "pr_ci_failed", "pr_conflicts", "preview_ready", "preview_failed", "action_failed",
-  "merged", "merge_refused", "auto_address", "upkeep_gave_up", "draft_sent", "integration_failed", "external_message", "pairing_requested",
+  "merged", "merge_refused", "auto_address", "upkeep_gave_up", "draft_sent", "secret_deleted", "integration_failed", "external_message", "pairing_requested",
   "box_alert",
 ] as const;
 export type NotificationKind = typeof NOTIFICATION_KINDS[number];
@@ -79,6 +79,9 @@ export const KIND_META: Record<NotificationKind, KindMeta> = {
   action_failed: { label: "Action failed", persistent: true, urgent: false, tone: "error" },
   // The New-draft box's own toast (Shell.tsx AddNew): a draft was sent, with Undo while it's fresh.
   draft_sent: { label: "Sent", persistent: false, urgent: false, tone: "ready" },
+  // The chat composer's own toast (also local): Remove on a secret chip it stored itself deleted the
+  // stored secret too.
+  secret_deleted: { label: "Secret deleted", persistent: false, urgent: false, tone: "ready" },
   // The integrations layer (server/integrations/): a delivery to Slack, a webhook… gave up after its
   // retries, or a message from outside reached the web.
   integration_failed: { label: "Delivery failed", persistent: true, urgent: false, tone: "error" },
@@ -257,10 +260,11 @@ export type ToastPrefs = Partial<Record<NotificationKind, boolean>>;
 /** Kinds whose content, for an ORCHESTRATED workstream, is already relayed into the orchestrator's
  *  own conversation as a worker report (`agent.onRunFinished`'s workerEvent, or the merge queue's
  *  report for "the orchestrator's PRs") — a second toast for it on a phone is pure noise over a
- *  conversation that already said it. A preview's status, a local action failure and a just-sent
- *  draft are never relayed, orchestrated or not, so they're left out. */
+ *  conversation that already said it. A preview's status, a local action failure, a just-sent
+ *  draft and a composer's own secret-delete result are never relayed, orchestrated or not, so
+ *  they're left out. */
 export const ORCHESTRATOR_RELAYED_KINDS: NotificationKind[] =
-  NOTIFICATION_KINDS.filter((k) => k !== "preview_ready" && k !== "preview_failed" && k !== "action_failed" && k !== "draft_sent");
+  NOTIFICATION_KINDS.filter((k) => k !== "preview_ready" && k !== "preview_failed" && k !== "action_failed" && k !== "draft_sent" && k !== "secret_deleted");
 
 /** Whether a notification's content already shows in the orchestrator's own chat: its OWN wake
  *  (`link.orchestrator` — literally a turn of that conversation) always does; a relayed kind on a
