@@ -19,7 +19,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { thisInstance } from "../store";
-import { HISTORY_RANGES, countMax, liveCharts, nearestAt, usesLiveSource, headerUsage, heavyHeader, instanceStatus, heavyQueueRows, hostHints, unqueuedHeavyText, instanceSeries, loginStatus, monthCostLabel, niceMax, protectionsWarning, routingBroken, usageGroups, type UsageGroup } from "../workstream";
+import { HISTORY_RANGES, ago, countMax, liveCharts, nearestAt, usesLiveSource, headerUsage, heavyHeader, instanceStatus, heavyQueueRows, hostHints, unqueuedHeavyText, instanceSeries, loginStatus, monthCostLabel, niceMax, protectionsWarning, routingBroken, usageGroups, type UsageGroup } from "../workstream";
 import { ChartSkeleton, Detail, Empty, LineChart, Pill, Ring, Segmented, StackedChart, StatusDot, UsageSkeleton, VCard, type StackBand } from "@/components/console";
 
 /** The Overview's and the Usage page's card — one component, one behaviour: the high-level rows (the
@@ -366,13 +366,14 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
           <ul data-slot="heavy-list" className={cn("divide-y pr-2.5", narrow && "w-max min-w-full pb-2.5")}>
             {heavyRows.map((r) => (
               <li key={r.id} data-slot="heavy-row" data-state={r.state} className="flex items-center gap-2 py-1.5 text-[13px] whitespace-nowrap">
-                <StatusDot tone={r.state === "running" ? "building" : "queued"} />
-                <span className="text-muted-foreground w-16 shrink-0 text-xs">{r.state === "running" ? "running" : `queued #${r.position}`}</span>
+                <StatusDot tone={r.state === "queued" ? "queued" : "building"} />
+                <span className="text-muted-foreground w-16 shrink-0 text-xs" title={r.state === "serving" ? "Started; it gave its slot back and still runs" : undefined}>{r.state === "queued" ? `queued #${r.position}` : r.state}</span>
                 <span className="w-14 shrink-0 text-xs">{r.kind}</span>
                 {/* The Tip's own wrapper must shrink too, or a long command pushes the row past the card. */}
                 <Tip label={r.command} className={cn(!narrow && "min-w-0 flex-1")}><span data-slot="heavy-command" className={cn("font-mono text-xs", !narrow && "min-w-0 truncate")}>{r.command}</span></Tip>
                 {r.overBudget && <span data-slot="heavy-over" className="text-geist-warning-fg shrink-0 text-xs">over memory budget</span>}
                 <span data-slot="heavy-who" className={cn("text-muted-foreground shrink-0 text-xs", !narrow && "max-w-[40%] truncate")}>{r.who}</span>
+                <span data-slot="heavy-since" className="text-muted-foreground w-16 shrink-0 text-right text-xs tabular-nums">{ago(r.since)}</span>
               </li>
             ))}
           </ul>

@@ -16,7 +16,7 @@ import { unqueuedSummary } from "./heavyLeaks";
 import { run } from "./run";
 import * as db from "./db";
 import * as lease from "./lease";
-import { machineSummary, type MachineReport } from "../web/src/workstream";
+import { heavyQueueRows, machineSummary, type MachineReport } from "../web/src/workstream";
 
 export const LIVE_SAMPLE_MS = 15_000;
 export const LIVE_WINDOW_MS = 6 * 3_600_000;
@@ -389,7 +389,7 @@ export function machineReport(instance: string, o: { now?: number; sliceMaxGb?: 
   return {
     instance, at: a.samples.at(-1)?.at ?? o.now ?? Date.now(), cores: a.cores, memTotalGb: a.memTotalGb,
     ...(a.sliceMaxGb ? { sliceMaxGb: a.sliceMaxGb } : {}), diskCapMBs: a.diskCapMBs, stepMs: a.stepMs,
-    summary: machineSummary(a.samples, a.cores), heavy: { running: q.running.length, queued: q.queued.length, ...unqueuedField() }, samples: a.samples,
+    summary: machineSummary(a.samples, a.cores), heavy: { running: q.running.length, queued: q.queued.length, ...unqueuedField(), rows: heavyQueueRows(q) }, samples: a.samples,
   };
 }
 

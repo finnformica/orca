@@ -2991,20 +2991,30 @@ export function protectionsWarning(
   return oom ? { warn: false, text: oom } : undefined;
 }
 
-/** The machine card's heavy-command list: running first (oldest first), then the queue in order.
+/** The machine card's heavy-command list: running first (oldest first), then the queue in order,
+ *  then the detached `serve` commands (they still run, but hold no slot).
  *  `who` is the workstream (branch, else repo, else "shell"); `since` is when it started or queued.
  *  `command` is whole: a desktop row truncates it by CSS, a phone row scrolls sideways to show it.
  *  Empty when nothing runs or waits. Pure. */
-export function heavyQueueRows(view: { running: { id: string; kind: string; command: string; repo?: string; branch?: string; queuedAt: number; startedAt?: number; overBudget?: boolean }[]; queued: { id: string; kind: string; command: string; repo?: string; branch?: string; queuedAt: number }[] } | undefined): {
-  id: string; state: "running" | "queued"; kind: string; command: string; who: string; since: number; position?: number; overBudget?: boolean;
-}[] {
+export function heavyQueueRows(view: { running: { id: string; kind: string; command: string; repo?: string; branch?: string; queuedAt: number; startedAt?: number; overBudget?: boolean }[]; queued: { id: string; kind: string; command: string; repo?: string; branch?: string; queuedAt: number }[]; serving?: { id: string; kind: string; command: string; repo?: string; branch?: string; queuedAt: number; startedAt?: number }[] } | undefined): HeavyQueueRow[] {
   if (!view) return [];
   const who = (e: { repo?: string; branch?: string }) => e.branch ?? e.repo ?? "shell";
   return [
     ...[...view.running].sort((a, b) => (a.startedAt ?? a.queuedAt) - (b.startedAt ?? b.queuedAt))
       .map((e) => ({ id: e.id, state: "running" as const, kind: e.kind, command: e.command, who: who(e), since: e.startedAt ?? e.queuedAt, ...(e.overBudget ? { overBudget: true } : {}) })),
     ...view.queued.map((e, i) => ({ id: e.id, state: "queued" as const, kind: e.kind, command: e.command, who: who(e), since: e.queuedAt, position: i + 1 })),
+    ...(view.serving ?? []).map((e) => ({ id: e.id, state: "serving" as const, kind: e.kind, command: e.command, who: who(e), since: e.startedAt ?? e.queuedAt })),
   ];
+}
+export type HeavyQueueRow = { id: string; state: "running" | "queued" | "serving"; kind: string; command: string; who: string; since: number; position?: number; overBudget?: boolean };
+
+/** One `orca machine` line per heavy row: what holds or waits for a slot, for whom and how long.
+ *  `  running  build  feat-x  12 min  npx tsc --noEmit`. Pure. */
+export function heavyRowsText(rows: HeavyQueueRow[], now: number): string[] {
+  return rows.map((r) => {
+    const state = r.state === "queued" ? `queued #${r.position}` : r.state === "serving" ? "serving (no slot)" : "running";
+    return `  ${state}  ${r.kind}  ${r.who}  ${fmtSpan(Math.max(0, now - r.since))}  ${r.command}`;
+  });
 }
 
 /** A CPU or GB figure for the heavy queue's text: one decimal at most (6, 1.5, never 1.0999999999999996). Pure. */
@@ -3624,7 +3634,7 @@ export type MachineReport = {
   instance: string; at: number; cores: number; memTotalGb: number; sliceMaxGb?: number; diskCapMBs: number; stepMs: number;
   summary: MachineSummary;
   /** `unqueued`: the leak detector's newest pass (server/heavyLeaks.ts); absent before the first one. */
-  heavy: { running: number; queued: number; unqueued?: { count: number; names: string[] } };
+  heavy: { running: number; queued: number; unqueued?: { count: number; names: string[] }; rows?: HeavyQueueRow[] };
   /** The last hour of 15 s samples, oldest first (`--json` only shows them). */
   samples: LiveSample[];
 };
@@ -3635,7 +3645,7 @@ const fmtSpan = (ms: number) => (ms >= 60_000 ? `${Math.round(ms / 60_000)} min`
 export function machineText(r: MachineReport): string {
   const head = `${r.instance} · ${r.cores} cores · ${r.memTotalGb} GB RAM · a sample every ${Math.round(r.stepMs / 1000)} s · newest ${new Date(r.at).toISOString().replace("T", " ").slice(0, 19)} UTC`;
   const leaks = unqueuedHeavyText(r.heavy.unqueued);
-  const heavy = `Heavy queue: ${r.heavy.running} running, ${r.heavy.queued} queued${leaks ? ` · ${leaks}` : ""}`;
+  const heavy = [`Heavy queue: ${r.heavy.running} running, ${r.heavy.queued} queued${leaks ? ` · ${leaks}` : ""}`, ...heavyRowsText(r.heavy.rows ?? [], r.at)].join("\n");
   const limits = `Disk cap ${r.diskCapMBs} MB/s${r.sliceMaxGb ? ` · agents memory limit ${r.sliceMaxGb} GB` : ""}`;
   if (!r.summary.now) return [head, "No samples yet: the bridge samples every 15 s and starts empty after a restart.", heavy, limits].join("\n");
   const cols = MACHINE_WINDOWS.map(([n]) => r.summary[n]);

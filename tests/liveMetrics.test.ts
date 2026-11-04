@@ -202,6 +202,12 @@ describe("orca machine (machineSummary, machineText, machineReport)", () => {
     expect(lines.at(-1)).toBe("Disk cap 125 MB/s · agents memory limit 8.4 GB");
   });
 
+  test("machineText names the command, workstream and age of each held slot", () => {
+    const rows = [{ id: "a", state: "running" as const, kind: "serve", command: "npm run dev", who: "feat", since: NOW - 20 * 60_000 }];
+    const lines = machineText({ instance: "cloud", at: NOW, cores: 4, memTotalGb: 15.3, diskCapMBs: 125, stepMs: 15_000, summary: machineSummary(hour(), 4), heavy: { running: 1, queued: 0, rows }, samples: [] }).split("\n");
+    expect(lines.slice(-3)).toEqual(["Heavy queue: 1 running, 0 queued", "  running  serve  feat  20 min  npm run dev", "Disk cap 125 MB/s"]);
+  });
+
   test("a short ring says how much the windows cover; an empty one says so", () => {
     const short = hour().slice(-8); // 2 minutes since a restart
     const text = machineText({ instance: "cloud", at: NOW, cores: 4, memTotalGb: 15.3, diskCapMBs: 125, stepMs: 15_000, summary: machineSummary(short, 4), heavy: { running: 0, queued: 0 }, samples: [] });

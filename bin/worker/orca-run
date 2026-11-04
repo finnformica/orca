@@ -11,6 +11,8 @@
 //
 // Nested calls pass straight through: the command runs with ORCA_RUN_SLOT set, and orca-run and the
 // shims beside it (playwright, jest, vitest, eslint, tsc, npx, bunx) do not queue again under it.
+// A `serve` (a dev server) holds its slot only while it starts; then the bridge takes it out of the
+// limits and budgets and it keeps running (server/heavy.ts). Run it in the background.
 // The escape hatch: ORCA_RUN_BYPASS=1 runs the command at once with no slot. Use it only for a
 // command that is not heavy and that a shim queued by mistake.
 // With no bridge to answer, the command runs at once with a warning: a queue must not stop all work.
@@ -27,7 +29,7 @@ for (let i = 0; i < argv.length; i++) {
   if (a === "--kind") kind = argv[++i] ?? "";
   else if (a === "--timeout") timeoutMin = Number(argv[++i]);
   else if (a === "-h" || a === "--help") {
-    console.log("usage: orca-run [--kind test|lint|build|e2e|migrate|serve] [--timeout minutes] -- <command...>\n  waits for a slot in the box-wide queue, then runs the command and exits with its code\n  ORCA_RUN_BYPASS=1 runs the command at once, with no slot");
+    console.log("usage: orca-run [--kind test|lint|build|e2e|migrate|serve] [--timeout minutes] -- <command...>\n  waits for a slot in the box-wide queue, then runs the command and exits with its code\n  a serve holds its slot only while it starts (60 s), then runs outside the queue\n  ORCA_RUN_BYPASS=1 runs the command at once, with no slot");
     process.exit(0);
   } else if (a.startsWith("--")) { console.error(`orca-run: unknown flag ${a}`); process.exit(2); }
   else { cmd = argv.slice(i); break; }
