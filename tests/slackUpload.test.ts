@@ -130,7 +130,7 @@ test("the adapter's send(): attachments reach uploadFiles instead of chat.postMe
         "chat.postMessage": () => { calls.push("chat.postMessage"); return { ok: true, ts: "999.000", channel: "C1" }; },
       },
       () => { calls.push("upload"); return new Response("", { status: 200 }); },
-      () => slackAdapter(conn).send({ externalId: "C1" }, { text: "Look:", attachments: ["orca-attachment://22222222-2222-2222-2222-222222222222/shot.png"] }),
+      () => slackAdapter(conn).send({ externalId: "C1" }, { text: "Look:", attachments: ["orca-attachment://22222222-2222-2222-2222-222222222222/shot.png"] }, "k1"),
     );
     expect(calls).toEqual(["getUploadURLExternal", "upload", "completeUploadExternal"]); // never chat.postMessage
     expect(r).toEqual({ ok: true });
@@ -144,9 +144,9 @@ test("the adapter's send(): an existing thread's key is kept; a brand-new post g
     await db.addAttachment({ id: "33333333-3333-3333-3333-333333333333", filename: "a.png", mimeType: "image/png", bytes: new Uint8Array([1]) });
     const ref = "orca-attachment://33333333-3333-3333-3333-333333333333/a.png";
     const routes = { "files.getUploadURLExternal": () => ({ ok: true, upload_url: UPLOAD_URL, file_id: "F1" }), "files.completeUploadExternal": () => ({ ok: true }) };
-    const noThread = await withSlack(routes, () => new Response("", { status: 200 }), () => slackAdapter(conn).send({ externalId: "C1" }, { text: "hi", attachments: [ref] }));
+    const noThread = await withSlack(routes, () => new Response("", { status: 200 }), () => slackAdapter(conn).send({ externalId: "C1" }, { text: "hi", attachments: [ref] }, "k1"));
     expect(noThread).toEqual({ ok: true }); // no ts to build a thread key from
-    const kept = await withSlack(routes, () => new Response("", { status: 200 }), () => slackAdapter(conn).send({ externalId: "C1", threadId: "C1:123.456" }, { text: "hi", attachments: [ref] }));
+    const kept = await withSlack(routes, () => new Response("", { status: 200 }), () => slackAdapter(conn).send({ externalId: "C1", threadId: "C1:123.456" }, { text: "hi", attachments: [ref] }, "k2"));
     expect(kept).toEqual({ ok: true, threadId: "C1:123.456" }); // an existing thread is kept as given
   } finally { delete process.env.ORCA_SECRET_SLACK_UPLOAD_TEST; }
 });
@@ -159,7 +159,7 @@ test("the adapter's send(): a missing_scope answer is worded with the scope and 
     const r = await withSlack(
       { "files.getUploadURLExternal": () => ({ ok: false, error: "missing_scope", needed: "files:write" }) },
       () => new Response("never called", { status: 500 }),
-      () => slackAdapter(conn).send({ externalId: "C1" }, { text: "hi", attachments: ["orca-attachment://44444444-4444-4444-4444-444444444444/a.png"] }),
+      () => slackAdapter(conn).send({ externalId: "C1" }, { text: "hi", attachments: ["orca-attachment://44444444-4444-4444-4444-444444444444/a.png"] }, "k1"),
     );
     expect(r).toMatchObject({ ok: false, retryable: false, error: "missing_scope (the user token needs the scope files:write; see docs/integrations/slack.md)" });
   } finally { delete process.env.ORCA_SECRET_SLACK_UPLOAD_TEST; }
@@ -169,7 +169,7 @@ test("editing a message to add files is refused, not silently ignored", async ()
   const conn: Connection = { id: "slack", kind: "slack", name: "Slack", instance: "local", config: {}, secretRef: "ORCA_SECRET_SLACK_UPLOAD_TEST", enabled: true };
   process.env.ORCA_SECRET_SLACK_UPLOAD_TEST = "xoxp-test";
   try {
-    const r = await slackAdapter(conn).send({ externalId: "C1", messageId: "1.0" }, { text: "hi", edit: true, attachments: ["orca-attachment://55555555-5555-5555-5555-555555555555/a.png"] });
+    const r = await slackAdapter(conn).send({ externalId: "C1", messageId: "1.0" }, { text: "hi", edit: true, attachments: ["orca-attachment://55555555-5555-5555-5555-555555555555/a.png"] }, "k1");
     expect(r).toMatchObject({ ok: false, retryable: false, error: expect.stringContaining("not supported") });
   } finally { delete process.env.ORCA_SECRET_SLACK_UPLOAD_TEST; }
 });

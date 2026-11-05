@@ -100,7 +100,7 @@ test("file: files.info then the download, stored as an Orca attachment; --out co
     },
     () => slackTool({ _: ["file", FILE.id], out: join(stateDir, "out") }, { env }),
   );
-  expect(seenAuth).toBe("Bearer xoxp-test");
+  expect(seenAuth ?? "").toBe("Bearer xoxp-test");
   expect(out).toContain("name: invoice.pdf");
   expect(out).toContain("type: application/pdf");
   expect(out).toContain(`size: ${Math.ceil(bytes.byteLength / 1024)} KB`);

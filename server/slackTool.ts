@@ -298,7 +298,7 @@ async function file(token: string, words: string[], args: Args): Promise<string>
 
   const filename = f.name || id;
   const mimeType = f.mimetype || "application/octet-stream";
-  const [ref] = await store([new File([bytes], filename, { type: mimeType })]);
+  const [ref] = await store([new File([new Uint8Array(bytes)], filename, { type: mimeType })]);
   const attId = ref!.slice(ATTACHMENT_PREFIX.length).split("/")[0]!;
   const path = await materialise(attId);
   const lines = [
