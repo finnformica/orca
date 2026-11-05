@@ -101,6 +101,14 @@ export function turnPeer(owner: Side, t: { instruction?: string; prompt?: string
 }
 export const inMainChat = (owner: Side, t: Parameters<typeof turnPeer>[1]): boolean => !turnPeer(owner, t);
 
+/** A room turn whose REPLY stays in the main chat: the incoming message (another agent's `orca ask`,
+ *  a wake `on agent:<x>`) goes to the room pill, but the recipient wrote its reply for the person (it
+ *  relays results, images, prompts). Before this the whole turn went to the room, and Finn had to ask
+ *  "status?" to see it. Only a finished turn with text: one with no reply, a failed or a stopped one
+ *  stays in the room alone. The room still holds the whole entry. */
+export const replyInMainChat = (owner: Side, t: Parameters<typeof turnPeer>[1] & Pick<RoomTurn, "response" | "finishedAt" | "failed" | "stopped">): boolean =>
+  Boolean(turnPeer(owner, t)) && Boolean(t.finishedAt) && Boolean(t.response?.trim()) && !t.failed && !t.stopped;
+
 /** The wrapper Orca puts on an agent's message for the model (`[from chief] …`): never shown. The
  *  raw text stays in the turn, for the model only. */
 export const stripAgentWrapper = (text: string): string => text.replace(/^\[from [a-z][a-z0-9-]*\] /, "");

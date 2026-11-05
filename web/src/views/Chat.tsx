@@ -18,7 +18,7 @@ import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import type { AgentStep, AgentTurn, OriginMessage, TurnOrigin } from "../../../shared/agent";
 import { agentMessageFrom, isAgentMessage } from "../../../shared/agents";
-import { agentSide, chatOwner, entryPill, entryTurn, inMainChat, mergePills, roomUnseen, roomsOf, routeOf, sameSide, sideLabel, stripAgentWrapper, type RoomEntry, type RoomPill, type Side } from "../../../shared/rooms";
+import { agentSide, chatOwner, entryPill, entryTurn, inMainChat, mergePills, replyInMainChat, roomUnseen, roomsOf, routeOf, sameSide, sideLabel, stripAgentWrapper, type RoomEntry, type RoomPill, type Side } from "../../../shared/rooms";
 import { persistedKey, usePersisted } from "@/lib/persisted";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, previewsEnabled, refresh, setCardModel, type Row } from "../store";
@@ -668,9 +668,10 @@ const clockOf = (ms?: number) => (ms ? CLOCK.format(ms) : "");
 // `saidBy` / `replyBy` are the speakers (shared/rooms.ts sideLabel): a room, or a turn that is not
 // the person's, names who sent the messages; `replyBy: null` draws no reply (a message the other side
 // has not answered). Primitive props, so the memo holds. Without them: you, and the agent (`author`).
-const ChatTurn = memo(function ChatTurn({ turn, loadStepsFor, compact, newestSaid, onQuote, author, owner, saidBy, replyBy, saidSide, replySide, source }: { turn: AgentTurn; loadStepsFor?: (turn: AgentTurn) => Promise<AgentStep[]>; compact?: boolean; newestSaid?: boolean; onQuote?: (text: string) => void; author?: string; owner?: Side; saidBy?: string; replyBy?: string | null; saidSide?: Side; replySide?: Side; source?: string }) {
+// `replyOnly`: the reply alone — the turn's incoming message is in a room (shared/rooms.ts replyInMainChat).
+const ChatTurn = memo(function ChatTurn({ turn, loadStepsFor, compact, newestSaid, onQuote, author, owner, saidBy, replyBy, saidSide, replySide, source, replyOnly }: { turn: AgentTurn; loadStepsFor?: (turn: AgentTurn) => Promise<AgentStep[]>; compact?: boolean; newestSaid?: boolean; onQuote?: (text: string) => void; author?: string; owner?: Side; saidBy?: string; replyBy?: string | null; saidSide?: Side; replySide?: Side; source?: string; replyOnly?: boolean }) {
   const loadSteps = loadStepsFor && (() => loadStepsFor(turn));
-  const parts = splitMessages(turn.instruction ?? promptInstruction(turn.prompt));
+  const parts = replyOnly ? [] : splitMessages(turn.instruction ?? promptInstruction(turn.prompt));
   // A wake that carried your messages AND worker reports: your words in bubbles — one per message you
   // sent, however many one wake drained — and the reports folded. Orca's own events (a PR's CI or
   // conflicts) have no grant, so they can share a wake with you: they get the activity card, never a bubble.
@@ -690,7 +691,7 @@ const ChatTurn = memo(function ChatTurn({ turn, loadStepsFor, compact, newestSai
   return (
     <div className="mb-4" data-slot="chat-turn" data-run-id={turn.id} data-failed={turn.failed || undefined} data-source={source}>
       {/* Why the orchestrator started this turn: the person's words in its wake, above the brief. */}
-      {turn.origin && <TurnOriginQuote origin={turn.origin} messages={turn.originMessages ?? turn.origin.messageIds.map((id) => ({ id, missing: true as const }))} />}
+      {turn.origin && !replyOnly && <TurnOriginQuote origin={turn.origin} messages={turn.originMessages ?? turn.origin.messageIds.map((id) => ({ id, missing: true as const }))} />}
       {/* Worker reports that woke it, split out of what you said: a collapsed block of their own. */}
       {reports.length > 0 && (
         <WorkerBlock slot="turn-reports" className="mb-2"
@@ -1257,9 +1258,24 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
   // A turn leaves your chat only for a room that holds it (or while the rooms load): when the read
   // fails, or the turn is older than what it returned, it stays here. Nothing is lost.
   const roomRuns = useMemo(() => new Set(roomEntries.filter((e) => sameSide(e.chat, owner)).map((e) => e.id)), [roomEntries, owner]);
-  const inChat = (t: AgentTurn) => inMainChat(owner, t) || roomsState === "failed" || (roomsState === "ok" && !roomRuns.has(t.id));
+  const whole = (t: AgentTurn) => inMainChat(owner, t) || roomsState === "failed" || (roomsState === "ok" && !roomRuns.has(t.id));
+  // A room turn with a reply: the reply stays here, for the person; its message is in the room.
+  const replyOnly = (t: AgentTurn) => !whole(t) && replyInMainChat(owner, t);
+  const inChat = (t: AgentTurn) => whole(t) || replyOnly(t);
+  // The list sees such a turn without its message (so it is a plain turn, never a fired or an outside
+  // row), with its route read off the message first. One view per turn object, so the memo holds.
+  const replyViews = useRef(new WeakMap<AgentTurn, AgentTurn>());
+  const shown = (t: AgentTurn): AgentTurn => {
+    if (!replyOnly(t)) return t;
+    let v = replyViews.current.get(t);
+    if (!v) { const { origin: _o, originMessages: _m, ...rest } = t; v = { ...rest, prompt: "", instruction: "", route: routeOf(owner, t) }; replyViews.current.set(t, v); }
+    return v;
+  };
   const rooms = useMemo(() => roomsOf(owner, roomEntries), [owner, roomEntries]);
-  const pills = useMemo(() => roomEntries.map((e) => entryPill(owner, e)), [roomEntries, owner]);
+  // Each entry's pill, by time; the pill of a reply kept here sits directly above that reply instead.
+  const allPills = useMemo(() => new Map(roomEntries.map((e) => [e.id, entryPill(owner, e)])), [roomEntries, owner]);
+  const replyIds = new Set((turns ?? []).filter(replyOnly).map((t) => t.id));
+  const pills = [...allPills.entries()].filter(([id]) => !replyIds.has(id)).map(([, p]) => p);
   // The open room: read only, drawn by the same transcript in this pane, with a Back button.
   const [openRoom, setOpenRoom] = useState<string | null>(null);
   const room = rooms.find((r) => r.id === openRoom);
@@ -1546,9 +1562,14 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
   const replier = useMemo(() => (ownerName ? { side: owner, label: ownerName } : undefined), [owner, ownerName]);
   const chatTurn = (turn: AgentTurn) => {
     const { sender } = routeOf(owner, turn);
-    return <ChatTurn key={turn.id} turn={turn} loadStepsFor={loadStepsFor} compact={(position.get(turn.id) ?? 0) < compactBefore && turn !== newest.answer} newestSaid={turn === newest.said} onQuote={onQuote} author={author} owner={owner}
-      source={sender.kind} saidBy={sender.kind === "person" ? undefined : sideLabel(sender)} saidSide={sender}
+    const pill = replyIds.has(turn.id) ? allPills.get(turn.id) : undefined;
+    const t = <ChatTurn key={turn.id} turn={turn} loadStepsFor={loadStepsFor} compact={(position.get(turn.id) ?? 0) < compactBefore && turn.id !== newest.answer?.id} newestSaid={turn === newest.said} onQuote={onQuote} author={author} owner={owner}
+      source={sender.kind} saidBy={sender.kind === "person" ? undefined : sideLabel(sender)} saidSide={sender} replyOnly={replyIds.has(turn.id)}
       {...(ownerName ? { replyBy: ownerName, replySide: owner } : {})} />;
+    // A reply kept here: its room's pill (the message it answers) directly above it.
+    return pill ? <div key={turn.id} data-slot="room-reply">
+      <RoomPillRow pill={pill} unseen={roomUnseen(pill.lastAt, seen[pill.room])} onOpen={() => openRoomAt(pill.room)} />{t}
+    </div> : t;
   };
   // A room's turns: the same transcript, each side named, read only (no Quote, no composer).
   const roomTurn = (e: RoomEntry) => <ChatTurn key={e.id} turn={entryTurn(e) as AgentTurn} owner={owner} source={e.sender.kind}
@@ -1572,7 +1593,7 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
     // the viewport. Your newest message and the newest answer are full height (never compact).
     const estimates = items.map((item) => item.kind !== "turn" ? estimateItemHeight(0, { folded: true }) // a collapsed row: worker reports, an outside message, a notice
       : estimateItemHeight((item.turn.instruction?.length ?? 0) + (item.turn.response?.length ?? 0),
-        { compact: (position.get(item.turn.id) ?? 0) < compactBefore && item.turn !== newest.answer }));
+        { compact: (position.get(item.turn.id) ?? 0) < compactBefore && item.turn.id !== newest.answer?.id }));
     const eager = eagerFrom(estimates, 1.5 * (scroller.current?.clientHeight || (typeof window === "undefined" ? 900 : window.innerHeight)));
     let prev: number | undefined;
     return items.map((item, i) => {
@@ -1668,7 +1689,7 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
         )}
         {turns === null ? <ChatSkeleton rows={4} />
           : turns.length === 0 ? <p className="text-neutral-500">No history yet for <span className="text-neutral-300">{row.branch}</span>. Send a message below to start.</p>
-          : <LazyContext.Provider value={lazy}><DraftContext.Provider value={drafts}>{renderTurns(shownTurns!.filter(inChat))}</DraftContext.Provider></LazyContext.Provider>}
+          : <LazyContext.Provider value={lazy}><DraftContext.Provider value={drafts}>{renderTurns(shownTurns!.filter(inChat).map(shown))}</DraftContext.Provider></LazyContext.Provider>}
         {hiddenBelow > 0 && (
           <div className="mb-3 flex justify-center" data-slot="chat-newer">
             <button type="button" onClick={() => setWin(revealBelow(turns ?? [], win))} className="rounded-md border border-neutral-800 px-2 py-0.5 text-[11px] text-neutral-400 hover:text-neutral-200">
