@@ -56,6 +56,8 @@ User token scopes (new ones first):
 | `channels:read`, `groups:read` | no | List channels: `orca slack conversations`, `#name` targets. |
 | `users:read` | no | Names: the sender's name, `@name` targets. |
 | `chat:write` | no | Post as you. |
+| `files:read` | yes | Not needed for the rest of Slack. Adds file details (id, name, mimetype, size) to `orca slack read` and `search`, and lets `orca slack file` save one. |
+| `files:write` | yes | Not needed for the rest of Slack. Lets `orca slack post --attach` and `orca post --attach` on a Slack link upload a file. |
 
 Do not turn on Event Subscriptions or Socket Mode for this setup.
 
@@ -174,7 +176,8 @@ Nothing moves the cursor past a message that was not read.
 orca slack conversations [--types im,mpim,public,private] [--limit 100]
 orca slack read <target> [--thread <ts>] [--limit 20]
 orca slack search "<query>" [--limit 20]
-orca slack post <target> [--thread <ts>] "<text>"
+orca slack post <target> [--thread <ts>] [--attach <id|path>]... "<text>"
+orca slack file <file id> [--out <dir>] [--account <name>]
 ```
 
 A target is one of these:
@@ -189,7 +192,17 @@ A target is one of these:
 - `search` takes Slack's search syntax, for example `in:#eng from:@ana deploy`.
 - `post` posts as you and prints the `ts`. The bridge logs one `[slack]` line with the place and
   the `ts`. It never logs the text.
-- A refusal for a missing scope names the scope.
+- `post --attach` (repeatable: an attachment id or a file on this machine) uploads each file with
+  Slack's own two-step upload, the text as the files' comment, so they land as one message. Needs
+  `files:write` (section 2). The same upload runs behind `orca post --attach` to a Slack channel
+  link (`server/integrations/adapters/slack.ts`).
+- `read` and `search` print each file on a message under it: its id, name, mimetype and size (needs
+  `files:read`, section 2).
+- `file` saves one of those files as an Orca attachment: `files.info` for its details, then its
+  bytes, capped at the general attachment size. It prints the attachment id and path; `--out`
+  copies it to a directory too. Pass the id to `orca send --attach <id>`.
+- A refusal for a missing scope names the scope. A file whose bytes come back as a web page means
+  the token cannot read it: add `files:read` and reinstall the app (section 2).
 
 Every `orca slack` verb works only from your own chat (the full grant). A wake from an outside
 sender cannot read your Slack or post as you to another place. It answers with `orca post --reply`,

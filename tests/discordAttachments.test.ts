@@ -16,6 +16,7 @@ import * as dispatcher from "../server/integrations/dispatcher";
 import * as store from "../server/integrations/store";
 import { DISCORD_CAPS, DISCORD_MAX_FILE_BYTES, discordAdapter, multipartBody } from "../server/integrations/adapters/discord";
 import { SLACK_CAPS } from "../server/integrations/adapters/slack";
+import { WEBHOOK_CAPS } from "../server/integrations/adapters/webhook";
 import type { Adapter, Connection } from "../server/integrations/adapter";
 import { attachmentRefusal, digestEnvelope, type Envelope } from "../shared/integrations";
 import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO } from "../web/src/workstream";
@@ -35,7 +36,9 @@ const cfg = { repos: [] } as unknown as OrcaConfig;
 describe("attachment limits and the multipart body (pure)", () => {
   test("attachmentRefusal: none, no file support, too many, too large", () => {
     expect(attachmentRefusal("slack", SLACK_CAPS, [])).toBeUndefined();
-    expect(attachmentRefusal("slack", SLACK_CAPS, [{ name: "a.png" }])).toStartWith("attachments not supported: the slack adapter cannot send files");
+    // Slack sends files now (files.getUploadURLExternal / completeUploadExternal); webhook still cannot.
+    expect(attachmentRefusal("slack", SLACK_CAPS, [{ name: "a.png", bytes: 10 }])).toBeUndefined();
+    expect(attachmentRefusal("webhook", WEBHOOK_CAPS, [{ name: "a.png" }])).toStartWith("attachments not supported: the webhook adapter cannot send files");
     expect(attachmentRefusal("discord", DISCORD_CAPS, Array.from({ length: 10 }, (_, i) => ({ name: `${i}.png`, bytes: 1 })))).toBeUndefined();
     expect(attachmentRefusal("discord", DISCORD_CAPS, Array.from({ length: 11 }, (_, i) => ({ name: `${i}.png`, bytes: 1 })))).toBe("too many attachments: 11, discord takes at most 10 in one message");
     expect(attachmentRefusal("discord", DISCORD_CAPS, [{ name: "big.png", bytes: DISCORD_MAX_FILE_BYTES + 1 }])).toBe("attachment too large: big.png is 10 MB, discord takes at most 10 MB a file");
@@ -79,6 +82,7 @@ describe("orca post --attach on the integrations core (Postgres)", () => {
   let prev: Record<string, string | undefined> = {};
   const conn: Connection = { id: "discord", kind: "discord", name: "Discord", instance: "local", config: {}, secretRef: "ORCA_SECRET_DISCORD_TEST", enabled: true };
   const slackConn: Connection = { id: "slack", kind: "slack", name: "Slack", instance: "local", config: {}, secretRef: "ORCA_SECRET_SLACK_TEST", enabled: true };
+  const webhookConn: Connection = { id: "webhook", kind: "webhook", name: "Webhook", instance: "local", config: {}, enabled: true };
   /** Each Discord message POST: its payload and its files; the first `fail` answers are 503. */
   let posts: { path: string; multipart: boolean; payload: Record<string, unknown>; files: { name: string; type: string; bytes: Uint8Array }[] }[];
   let fail = 0;
@@ -112,13 +116,16 @@ describe("orca post --attach on the integrations core (Postgres)", () => {
     }) as typeof fetch;
     await store.addIntegration(conn);
     await store.addIntegration(slackConn);
+    await store.addIntegration(webhookConn);
     await store.addLink({ id: "L1", integrationId: "discord", externalId: "C1", label: "#site", level: "work", repos: ["r"], requireMention: true });
     await store.addLink({ id: "S1", integrationId: "slack", externalId: "CS", label: "#slack", level: "work", repos: ["r"], requireMention: true });
+    await store.addLink({ id: "W1", integrationId: "webhook", externalId: "hook1", label: "#hook", level: "work", repos: ["r"], requireMention: true });
     const discord = discordAdapter(conn);
-    // Slack's real caps; a send that reached it would be a dropped file.
+    // Slack's real caps: it sends files now. Webhook's real caps: it still cannot.
     const slack: Adapter = { kind: "slack", caps: SLACK_CAPS, start: async () => {}, stop: async () => {}, health: async () => ({ ok: true }), send: async (_t, m) => { slackSends.push(m); return { ok: true }; } };
-    dispatcher.configure({ adapter: (id) => (id === "discord" ? discord : id === "slack" ? slack : undefined) });
-    dispatcher.setRunning(() => ["discord", "slack"]);
+    const webhook: Adapter = { kind: "webhook", caps: WEBHOOK_CAPS, start: async () => {}, stop: async () => {}, health: async () => ({ ok: true }), send: async () => ({ ok: true }) };
+    dispatcher.configure({ adapter: (id) => (id === "discord" ? discord : id === "slack" ? slack : id === "webhook" ? webhook : undefined) });
+    dispatcher.setRunning(() => ["discord", "slack", "webhook"]);
   });
   afterEach(async () => {
     globalThis.fetch = native.fetch;
@@ -169,16 +176,23 @@ describe("orca post --attach on the integrations core (Postgres)", () => {
     await expect(orchestrator.tool(cfg, "post", { link: "L1", attach: big, _: ["x"] })).rejects.toThrow("attachment too large: big.png");
     const [secret] = await attachments.store([new File([new TextEncoder().encode("ok\ntoken=xoxb-1234567890-abcdef\n")], "env.txt")]);
     await expect(orchestrator.tool(cfg, "post", { link: "L1", attach: secret, _: ["x"] })).rejects.toThrow("env.txt line 2 looks like a Slack token");
-    await expect(orchestrator.tool(cfg, "post", { link: "S1", attach: refs[0], _: ["x"] })).rejects.toThrow("attachments not supported: the slack adapter cannot send files");
+    await expect(orchestrator.tool(cfg, "post", { link: "W1", attach: refs[0], _: ["x"] })).rejects.toThrow("attachments not supported: the webhook adapter cannot send files");
     expect(await store.deliveries({})).toEqual([]);
+  });
+
+  test("Slack now sends files: a post with --attach to a slack link reaches its adapter", async () => {
+    const [ref] = await attachments.store([new File([PNG], "a.png", { type: "image/png" })]);
+    const out = await orchestrator.tool(cfg, "post", { link: "S1", attach: ref!, _: ["Look:"] });
+    expect(out).toContain("with 1 attachment");
+    await dispatcher.dispatchOnce();
+    expect(slackSends).toEqual([expect.objectContaining({ attachments: [ref] })]);
   });
 
   test("the dispatcher ends a delivery whose adapter has no file support, and never calls send", async () => {
     const [ref] = await attachments.store([new File([PNG], "a.png")]);
-    const r = await router.post((await store.link("S1"))!, "Look", { attachments: [ref!] });
+    const r = await router.post((await store.link("W1"))!, "Look", { attachments: [ref!] });
     await dispatcher.dispatchOnce();
-    expect(slackSends).toEqual([]);
-    expect(await store.deliveries({ state: "dead" })).toEqual([expect.objectContaining({ id: r.delivery, attempts: 1, lastError: expect.stringContaining("attachments not supported: the slack adapter") })]);
+    expect(await store.deliveries({ state: "dead" })).toEqual([expect.objectContaining({ id: r.delivery, attempts: 1, lastError: expect.stringContaining("attachments not supported: the webhook adapter") })]);
   });
 
   test("a file the attachment table lost ends the Discord send with a clear error", async () => {
