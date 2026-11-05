@@ -125,7 +125,10 @@ type Blob = {
   lastWakeUsd?: number; // what its last wake cost, as the CLI reported it
   /** The wake in flight and the messages it took off the queue — in the blob, not memory, so a wake
    *  that dies with the bridge can still have them re-queued. */
-  handling?: { runId: string; instance: string; messages: string[]; ids?: number[] }; // ids[i]: the queued_message row of messages[i]
+  handling?: { runId: string; instance: string; messages: string[]; ids?: number[]; // ids[i]: the queued_message row of messages[i]
+    /** The agents this wake sent an `orca ask` to: an asker among them has its reply, so its
+     *  `--on agent:` wake is cancelled, not fired, when this wake ends (wakeVerdict). */
+    repliedTo?: string[] };
   died?: string[]; // messages whose wake has died once and are being retried; a second death drops them
   cutOff?: string; // why the last wake died, for the next wake's prompt
   cutOffProgress?: string; // what that wake had already done and said (wakeProgress), for the same prompt
@@ -330,9 +333,13 @@ export async function onRunFinished(cfg: OrcaConfig, run: agent.RunFinished): Pr
     if (!ag) return;
     const exit = run.options.action === "compact" ? undefined : wakeExit(cfg, run); // a compact is no wake
     let askers: string[] = []; // the agents whose `orca ask` this wake answered (`--on agent:<name>`)
+    let repliedTo: string[] = []; // the agents it sent an `orca ask` to: their reply came back by itself
     await serial(ag, async () => {
       const handled = (await blob(ag)).handling;
-      if (handled?.runId === run.runId) askers = [...new Set(handled.messages.map(agentMessageFrom).filter((a): a is string => Boolean(a)))];
+      if (handled?.runId === run.runId) {
+        askers = [...new Set(handled.messages.map(agentMessageFrom).filter((a): a is string => Boolean(a)))];
+        repliedTo = handled.repliedTo ?? [];
+      }
       // Inside the chain: a patch is read-modify-write, and one racing the next wake's own would
       // write back a blob without that wake's `handling` claim — and with it the retry guard.
       await patch(ag, {
@@ -355,7 +362,7 @@ export async function onRunFinished(cfg: OrcaConfig, run: agent.RunFinished): Pr
     });
     // `orca wake --on agent:<name>` (§3.3): another agent waits for this one's reply.
     if (run.options.action === "orchestrate" && !exit && askers.length && primary.held()) {
-      void scheduledWake.onEvent({ topic: AGENT_REPLIED, agent: ag.name, askers }, (text, to) => report(cfg, text, undefined, to))
+      void scheduledWake.onEvent({ topic: AGENT_REPLIED, agent: ag.name, askers, repliedTo }, (text, to) => report(cfg, text, undefined, to))
         .catch(db.logUnlessDown("orca: scheduled wake match failed"));
     }
     return;
@@ -1416,6 +1423,12 @@ async function askVerb(cfg: OrcaConfig, from: AgentRef, b: Blob, words: string[]
   const grant = b.wakeGrant ?? undefined;
   const { status } = await message(cfg, agentMessage(from.name, body), [], {
     agent: target.name, person: false, ...(grant ? { grant } : {}), ...(b.wakeReplyTo ? { replyTo: b.wakeReplyTo } : {}),
+  });
+  // This wake answered the target: its `--on agent:<caller>` wake must not fire again on this run's end.
+  const runId = b.handling?.runId;
+  if (runId) await serial(from, async () => {
+    const h = (await blob(from)).handling;
+    if (h?.runId === runId && !(h.repliedTo ?? []).includes(target.name)) await patch(from, { handling: { ...h, repliedTo: [...(h.repliedTo ?? []), target.name] } });
   });
   return `Asked the ${target.def.displayName} (${status === "queued" ? "queued behind its wake in flight" : "it is awake now"}). Its reply stays in its chat. To hear back, set: orca wake --on agent:${target.name} --note "<what to check>"`;
 }
