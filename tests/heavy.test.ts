@@ -11,7 +11,7 @@ import {
   type Grant, type HeavyEntry, type HeavySettings, type PerKind, type ReleaseReason, type SlotManager,
 } from "../server/heavy";
 import { runIdentity } from "../server/agent";
-import { HEAVY_COMMANDS, followUpPrompt, heavyHeader, heavyNumber, heavyQueueRows } from "../web/src/workstream";
+import { HEAVY_COMMANDS, followUpPrompt, heavyHeader, heavyNumber, heavyQueueRows, heavyRowsText } from "../web/src/workstream";
 import { agentsSliceLimitGb, heavySliceGb, memoryMaxFileGb } from "../server/sliceLimit";
 import { native } from "./happydom";
 
@@ -384,6 +384,105 @@ describe("slot manager", () => {
     expect(rows.map((r) => [r.id, r.state, r.who, r.position])).toEqual([["a", "running", "demo", undefined], ["b", "running", "feat", undefined], ["c", "queued", "shell", 1]]);
     // The whole command: a phone row scrolls sideways to show it, a desktop row truncates by CSS.
     expect(rows[2]!.command).toBe("x".repeat(100));
+  });
+});
+
+describe("serve gives its slot back once it started", () => {
+  // 2026-11-04: a worker's `orca-run --kind serve -- npm run dev` held the only slot; its own
+  // `orca-run --kind build -- npx tsc --noEmit` waited behind it, and two other workers too.
+  const one = { ...heavySettings({ limits: { total: 1 } }) };
+
+  test("HQ29: serve does not block a later build; it detaches after its start window and still runs", async () => {
+    let t = 1000;
+    const { m, stopped } = manager(one, { now: () => t });
+    const serve = ask(m, "serve", { runId: "dev" });
+    await tick();
+    expect(serve.grant).toBeDefined();
+    const build = ask(m, "build", { runId: "other" });
+    await tick();
+    expect(build.grant).toBeUndefined(); // the serve is still starting: it holds the one slot
+    t += one.serveStartMs;
+    m.sweep();
+    await tick();
+    expect(build.grant).toBeDefined();
+    const v = m.view();
+    expect(v.running.map((e) => e.kind)).toEqual(["build"]);
+    expect(v.serving.map((e) => [e.kind, e.detachedAt])).toEqual([["serve", t]]);
+    expect(v.cpu.used).toBe(1.5); // the detached serve counts for nothing
+    expect(stopped).toEqual([]); // nothing was stopped: the dev server still runs
+    // Its run still ends it, and the queue does not wait on it.
+    expect(m.releaseRun("dev")).toBe(1);
+    expect(stopped.map((s) => [s.entry.kind, s.reason])).toEqual([["serve", "run-ended"]]);
+    expect(m.view().serving).toEqual([]);
+  });
+
+  test("HQ30: a build from the same workstream as a running serve does not deadlock", async () => {
+    const { m } = manager(one, { now: () => 1000 });
+    const serve = ask(m, "serve", { runId: "r1" });
+    await tick();
+    const build = ask(m, "build", { runId: "r1" });
+    await tick();
+    expect(serve.grant && build.grant).toBeDefined(); // at once, no sweep needed
+    expect(m.view().serving.map((e) => e.runId)).toEqual(["r1"]);
+    build.grant!.release();
+
+    // The same repo + branch from another run (a resumed turn) counts as the same workstream.
+    const { m: m2 } = manager(one, { now: () => 1000 });
+    const r: Record<string, Grant | undefined> = {};
+    void m2.acquire({ kind: "serve", command: "npm run dev", runId: "a", repo: "demo", branch: "feat" }).then((g) => { r.serve = g; });
+    await tick();
+    void m2.acquire({ kind: "test", command: "vitest", runId: "z", repo: "demo", branch: "other" }).then((g) => { r.other = g; });
+    await tick();
+    expect(r.other).toBeUndefined(); // another workstream waits for the start window
+    void m2.acquire({ kind: "build", command: "npx tsc --noEmit", runId: "b", repo: "demo", branch: "feat" }).then((g) => { r.build = g; });
+    await tick();
+    expect(r.serve && r.other).toBeDefined(); // the serve detached; FIFO gives the slot to the older job
+    expect(r.build).toBeUndefined();
+    r.other!.release();
+    await tick();
+    expect(r.build).toBeDefined();
+  });
+
+  test("HQ31: a detached serve keeps its max run time and its pid check; other kinds never detach", async () => {
+    let t = 0;
+    let alive = true;
+    const { m, stopped } = manager(heavySettings(undefined), { now: () => t, alive: () => alive });
+    const serve = ask(m, "serve", { pid: 7 });
+    const build = ask(m, "build", { pid: 8 });
+    await tick();
+    t = 2 * 60_000;
+    m.sweep();
+    expect(m.view().serving.map((e) => e.kind)).toEqual(["serve"]);
+    expect(m.view().running.map((e) => e.kind)).toEqual(["build"]); // a build never detaches
+    t = 61 * 60_000;
+    m.sweep();
+    expect(stopped.map((s) => [s.entry.kind, s.reason])).toEqual([["serve", "max-run"], ["build", "max-run"]]);
+    expect(serve.grant && build.grant).toBeDefined();
+
+    const { m: m2, stopped: s2 } = manager(heavySettings({ serveStartSeconds: 5 }), { now: () => t, alive: () => alive });
+    ask(m2, "serve", { pid: 9 });
+    await tick();
+    t += 5000;
+    m2.sweep();
+    expect(m2.view().serving).toHaveLength(1);
+    alive = false;
+    m2.sweep();
+    expect(s2.map((s) => s.reason)).toEqual(["pid-dead"]);
+    expect(heavyQueueProblems({ serveStartSeconds: 0 })).toEqual(["heavyQueue.serveStartSeconds must be a positive number"]);
+  });
+
+  test("HQ32: the card and orca machine show what holds each slot, for whom and for how long", () => {
+    const rows = heavyQueueRows({
+      running: [{ id: "a", kind: "build", command: "npx tsc --noEmit", branch: "feat", queuedAt: 0, startedAt: 60_000 }],
+      queued: [{ id: "b", kind: "test", command: "vitest run a.test.ts", repo: "demo", queuedAt: 120_000 }],
+      serving: [{ id: "c", kind: "serve", command: "npm run dev", branch: "feat", queuedAt: 0, startedAt: 0 }],
+    });
+    expect(rows.map((r) => [r.id, r.state, r.who, r.since])).toEqual([["a", "running", "feat", 60_000], ["b", "queued", "demo", 120_000], ["c", "serving", "feat", 0]]);
+    expect(heavyRowsText(rows, 13 * 60_000)).toEqual([
+      "  running  build  feat  12 min  npx tsc --noEmit",
+      "  queued #1  test  demo  11 min  vitest run a.test.ts",
+      "  serving (no slot)  serve  feat  13 min  npm run dev",
+    ]);
   });
 });
 

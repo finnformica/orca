@@ -507,10 +507,15 @@ control. It must see every heavy task.
   - The command runs past the max run time of its kind. The bridge stops the command.
 - On a box with a user bus, each command runs in its own scope in `orca-agents.slice`, with the
   memory limit of its kind and no swap. Thus one test run cannot take the whole slice.
+- A `serve` command holds its slot only while it starts: 60 s (`serveStartSeconds`). A request
+  from the same agent run or workstream ends that time at once. Then the serve gives its slot back
+  and keeps its scope. It is outside the limits and the budgets. Its run end, its `orca-run` process
+  and its max run time still stop it. Thus a dev server cannot block a later test or build.
 - With no bridge to answer, `orca-run` prints a warning and runs the command at once.
-- The Overview's machine card lists the running and queued commands, with their workstreams, the
-  CPU in use against the budget and the memory in use against the memory budget. `GET /api/heavy`
-  gives the same data.
+- The Overview's machine card lists the running, queued and serving commands, with their
+  workstreams and their age, the CPU in use against the budget and the memory in use against the
+  memory budget. `orca machine` prints one line for each: state, kind, workstream, age, command.
+  `GET /api/heavy` gives the same data.
 
 Each kind has a CPU cost. The queue grants a slot only when the sum of the running costs stays in
 `cpuBudget`. The queue is first in, first out for the budget and the total. A job does not wait
