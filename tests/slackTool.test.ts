@@ -11,7 +11,7 @@ import { freshSchema, type TestDb } from "./pg";
 
 const API = "https://slack.com/api/";
 
-type FakeRoute = (method: string, body: Record<string, string>) => unknown;
+type FakeRoute = (method: string, body: Record<string, unknown>) => unknown;
 
 /** Slack's Web API (form or JSON body, `API + method`) plus whatever host a file's own download URL
  *  names — a single stubbed `fetch`, since both `slackRead`/`slackApi` and the file download call the
@@ -27,7 +27,7 @@ async function withSlack<T>(slack: Record<string, FakeRoute>, download: (url: st
       if (!route) return Response.json({ ok: false, error: `no fake route for ${method}` });
       const raw = typeof init.body === "string" ? init.body : "";
       const asJson = String((init.headers as Record<string, string> | undefined)?.["content-type"] ?? "").includes("json");
-      const params = asJson ? (JSON.parse(raw || "{}") as Record<string, string>) : Object.fromEntries(new URLSearchParams(raw));
+      const params = asJson ? (JSON.parse(raw || "{}") as Record<string, unknown>) : Object.fromEntries(new URLSearchParams(raw));
       return Response.json(route(method, params));
     }
     return download(u, init);
@@ -161,4 +161,51 @@ test("a file over the cap is refused before any download is attempted", async ()
     () => slackTool({ _: ["file", FILE.id] }, { env }),
   )).rejects.toThrow(`over the ${ATTACHMENT_MAX_BYTES / 1024 / 1024} MB cap for orca slack file`);
   expect(downloaded).toBe(false);
+});
+
+const UPLOAD_URL = "https://files.slack.com/upload/v1/abc123";
+
+test("post --attach: the two-step upload, the text as initial_comment; chat.postMessage is not called", async () => {
+  await db.addAttachment({ id: "66666666-6666-6666-6666-666666666666", filename: "shot.png", mimeType: "image/png", bytes: new Uint8Array([1, 2, 3]) });
+  const calls: string[] = [];
+  const out = await withSlack(
+    {
+      "files.getUploadURLExternal": (_m, p) => { calls.push("getUploadURLExternal"); expect(p.filename).toBe("shot.png"); return { ok: true, upload_url: UPLOAD_URL, file_id: "F1" }; },
+      "files.completeUploadExternal": (_m, p) => { calls.push("completeUploadExternal"); expect(p.initial_comment).toBe("Look at this"); expect(p.channel_id).toBe("C1"); return { ok: true }; },
+      "chat.postMessage": () => { calls.push("chat.postMessage"); return { ok: true, ts: "1.0", channel: "C1" }; },
+    },
+    () => { calls.push("upload"); return new Response("", { status: 200 }); },
+    () => slackTool({ _: ["post", "C1", "Look", "at", "this"], attach: "66666666-6666-6666-6666-666666666666" }, { env }),
+  );
+  expect(calls).toEqual(["getUploadURLExternal", "upload", "completeUploadExternal"]);
+  expect(out).toContain("Posted 1 file to C1 as the user, with the text as the comment.");
+});
+
+test("post --attach: missing_scope on the upload names the scope and the docs", async () => {
+  await db.addAttachment({ id: "77777777-7777-7777-7777-777777777777", filename: "shot.png", mimeType: "image/png", bytes: new Uint8Array([1]) });
+  await expect(withSlack(
+    { "files.getUploadURLExternal": () => ({ ok: false, error: "missing_scope", needed: "files:write" }) },
+    () => new Response("never called", { status: 500 }),
+    () => slackTool({ _: ["post", "C1", "Look:"], attach: "77777777-7777-7777-7777-777777777777" }, { env }),
+  )).rejects.toThrow("files upload: missing_scope (the user token needs the scope files:write; see docs/integrations/slack.md)");
+});
+
+test("post --attach: a file over the cap is refused before any Slack call", async () => {
+  await db.addAttachment({ id: "88888888-8888-8888-8888-888888888888", filename: "big.png", mimeType: "image/png", bytes: new Uint8Array(ATTACHMENT_MAX_BYTES + 1) });
+  let called = false;
+  await expect(withSlack(
+    { "files.getUploadURLExternal": () => { called = true; return { ok: true, upload_url: UPLOAD_URL, file_id: "F1" }; } },
+    () => new Response("", { status: 200 }),
+    () => slackTool({ _: ["post", "C1", "Look:"], attach: "88888888-8888-8888-8888-888888888888" }, { env }),
+  )).rejects.toThrow("attachment too large: big.png");
+  expect(called).toBe(false);
+});
+
+test("post with no --attach still posts plain text with chat.postMessage (unchanged)", async () => {
+  const out = await withSlack(
+    { "chat.postMessage": (_m, p) => { expect(p.text).toBe("hello"); return { ok: true, ts: "1.0", channel: "C1" }; } },
+    () => new Response("never called", { status: 500 }),
+    () => slackTool({ _: ["post", "C1", "hello"] }, { env }),
+  );
+  expect(out).toContain("Posted to C1 as the user (ts 1.0)");
 });

@@ -7,6 +7,14 @@
 // `chat.update` for an edit, the retryable/fatal split and a 1-per-second pace per channel. A target
 // that is a user id (`U…`) or a list of them (`U1,U2`) is a DM or group DM: `conversations.open`
 // gives its channel first. `postMessage` / `postAsUser` keep /api/slack's post exactly as it was.
+// `msg.attachments` (`orca post --attach`) go as files on the same message: Slack's own two-step
+// external upload (`uploadFiles`: `files.getUploadURLExternal` per file, the bytes POSTed to the
+// returned `upload_url`, then one `files.completeUploadExternal` that shares every file into the
+// channel with the text as `initial_comment`) — so the files and the text land as one message, the
+// way `orca gmail attachment` and `orca slack file` (server/slackTool.ts) read a file the other way.
+// files.completeUploadExternal names no message `ts`, so a brand-new conversation gets no thread
+// pointer back from an attached post (an existing thread is kept as given). Needs the scope
+// `files:write`; a `missing_scope` answer is worded with the scope name (`missingScopeHint`).
 //
 // INBOUND, with SLACK_TOKEN alone: a poll every `pollSeconds` (see "Polling" below). With an app-level
 // token (`xapp`, the variable `config.appTokenRef` names, default SLACK_APP_TOKEN) Socket Mode is used
@@ -21,7 +29,9 @@
 import type { Adapter, AdapterContext, Connection, IngestVerdict } from "../adapter";
 import { secretValue } from "../secretRefs";
 import { ORCA_SECRETS } from "../../env";
-import { inboundEnvelope, secretRefRefusal, type Capabilities, type InboundEnvelope, type OutboundMessage, type SendResult, type Target } from "../../../shared/integrations";
+import * as db from "../../db";
+import { MAX_ATTACHMENT_BYTES } from "../../attachments";
+import { attachmentIdOf, attachmentRefusal, inboundEnvelope, secretRefRefusal, type Capabilities, type InboundEnvelope, type OutboundMessage, type SendResult, type Target } from "../../../shared/integrations";
 
 const API = "https://slack.com/api/";
 
@@ -87,10 +97,70 @@ const FATAL_OPEN = new Set(["not_authed", "invalid_auth", "account_inactive", "t
 export const threadTs = (threadId?: string): string | undefined =>
   threadId?.includes(":") ? threadId.slice(threadId.indexOf(":") + 1) || undefined : threadId && /^\d+\.\d+$/.test(threadId) ? threadId : undefined;
 
+/** A conservative cap on files in one `files.completeUploadExternal` call: Slack documents no hard
+ *  number, so this keeps one message from naming an unbounded batch, like Discord's own cap. */
+export const SLACK_MAX_FILES = 10;
 export const SLACK_CAPS: Capabilities = {
-  inbound: "poll", outbound: true, threads: true, edits: true, reactions: false, attachments: false,
+  inbound: "poll", outbound: true, threads: true, edits: true, reactions: false, attachments: true,
+  maxAttachments: SLACK_MAX_FILES, maxAttachmentBytes: MAX_ATTACHMENT_BYTES,
   maxTextLength: 39_000, rate: { perTarget: 1, windowMs: 1_000 },
 };
+
+/** One file ready for Slack's upload: its name, type and bytes (the attachment table's shape). */
+export type SlackUploadFile = { name: string; type: string; bytes: Uint8Array };
+
+/** The files of `refs`, read from the attachment table, or the SendResult that ends the send: a
+ *  file the table lost or over Slack's limits is final; a database error throws, and the core
+ *  retries the delivery (same contract as Discord's `loadFiles`). */
+export async function loadSlackFiles(refs: string[]): Promise<SlackUploadFile[] | SendResult> {
+  const files: SlackUploadFile[] = [];
+  for (const ref of refs) {
+    const id = attachmentIdOf(ref);
+    const row = id ? await db.attachment(id) : undefined;
+    if (!row) return { ok: false, retryable: false, error: `attachment ${ref} is gone (pruned after 30 days, or never stored)` };
+    files.push({ name: row.filename.replace(/[^\w.-]+/g, "-") || "file", type: row.mimeType || "application/octet-stream", bytes: row.bytes });
+  }
+  const refusal = attachmentRefusal("slack", SLACK_CAPS, files.map((f) => ({ name: f.name, bytes: f.bytes.byteLength })));
+  return refusal ? { ok: false, retryable: false, error: refusal } : files;
+}
+
+/** Slack's `missing_scope` worded with the scope it names (falling back to `files:write`, the one
+ *  this upload needs) and the setup doc — the same wording `slackTool.ts`'s `fail` gives every other
+ *  call. Everything else passes through untouched. Pure given the result. */
+export function missingScopeHint(r: { error?: string; needed?: unknown }): string {
+  if (r.error !== "missing_scope") return "";
+  const needed = typeof r.needed === "string" ? r.needed : "files:write";
+  return ` (the user token needs the scope ${needed}; see docs/integrations/slack.md)`;
+}
+
+/** Slack's two-step external upload (docs/integrations/slack.md §2): a presigned URL per file
+ *  (`files.getUploadURLExternal`), the raw bytes POSTed to it, then ONE `files.completeUploadExternal`
+ *  that shares every file into `channel` (and `threadTs`) with `initialComment` as the message text —
+ *  so the files and the text land as one message. Never throws: a Slack error or a failed upload
+ *  comes back as `{ok:false, error}`, like every other call here. The finalize call names no message
+ *  `ts` (Slack's own contract), so the caller cannot learn a brand-new conversation's thread key. */
+export async function uploadFiles(token: string, files: SlackUploadFile[], target: { channel?: string; threadTs?: string; initialComment?: string }): Promise<SlackResult> {
+  const tickets: { id: string; title: string }[] = [];
+  for (const f of files) {
+    const got = await slackRead(token, "files.getUploadURLExternal", { filename: f.name, length: f.bytes.byteLength });
+    if (!got.ok || typeof got.upload_url !== "string" || typeof got.file_id !== "string") {
+      return got.ok ? { ok: false, error: "files.getUploadURLExternal gave no upload_url" } : got;
+    }
+    const form = new FormData();
+    form.append("file", new File([new Uint8Array(f.bytes)], f.name, { type: f.type }));
+    let res: Response;
+    try { res = await fetch(got.upload_url, { method: "POST", body: form }); }
+    catch (e) { return { ok: false, error: e instanceof Error ? e.message : String(e) }; }
+    if (!res.ok) return { ok: false, error: `the upload of ${f.name} failed: http ${res.status}` };
+    tickets.push({ id: got.file_id, title: f.name });
+  }
+  return slackApi(token, "files.completeUploadExternal", {
+    files: tickets,
+    ...(target.channel ? { channel_id: target.channel } : {}),
+    ...(target.threadTs ? { thread_ts: target.threadTs } : {}),
+    ...(target.initialComment ? { initial_comment: target.initialComment } : {}),
+  });
+}
 
 /** The default name of the app-level token's variable (Socket Mode). */
 export const APP_TOKEN_REF = "SLACK_APP_TOKEN";
@@ -582,6 +652,17 @@ export function slackAdapter(connection: Connection, opts: { openDms?: boolean }
       if (!opened.ok) return { ok: false, retryable: !FATAL.has(opened.error), ...(opened.retryAfterMs ? { retryAfterMs: opened.retryAfterMs } : {}), error: opened.error };
       // `orca post --reply --thread` in a top-level DM: a thread on the message it answers.
       const ts = threadTs(target.threadId) ?? (msg.thread && msg.replyToExternalMsgId ? msg.replyToExternalMsgId : undefined);
+      if (msg.attachments?.length) {
+        if (msg.edit) return { ok: false, retryable: false, error: "editing a message to add files is not supported: post a new message instead" };
+        const loaded = await loadSlackFiles(msg.attachments);
+        if (!Array.isArray(loaded)) return loaded;
+        const up = await uploadFiles(token(), loaded, { channel: opened.channel, threadTs: ts, initialComment: text || undefined });
+        if (!up.ok) return { ok: false, retryable: !FATAL.has(up.error ?? ""), ...(up.retryAfterMs ? { retryAfterMs: up.retryAfterMs } : {}), error: `${up.error ?? "unknown error"}${missingScopeHint(up)}` };
+        // files.completeUploadExternal names no message ts: a brand-new conversation gets no thread
+        // key from this send; an existing one (`ts` already known) is kept as given.
+        const threadId = target.threadId && (threadTs(target.threadId) || !ts) ? target.threadId : ts ? `${opened.channel}:${ts}` : undefined;
+        return { ok: true, ...(threadId ? { threadId } : {}) };
+      }
       const r = msg.edit && target.messageId
         ? await slackApi(token(), "chat.update", { channel: opened.channel, ts: target.messageId, text })
         : await slackApi(token(), "chat.postMessage", { channel: opened.channel, text, ...(ts ? { thread_ts: ts } : {}) });

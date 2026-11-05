@@ -7,19 +7,22 @@
 //   orca slack conversations [--types im,mpim,public,private] [--limit 100]
 //   orca slack read <target> [--thread <ts>] [--limit 20]
 //   orca slack search "<query>" [--limit 20]
-//   orca slack post <target> [--thread <ts>] "<text>"
+//   orca slack post <target> [--thread <ts>] [--attach <id|path>]... "<text>"
 //   orca slack file <file id> [--out <dir>] [--account <name>]
 //
 // A target is a channel id (C…, G…, D…), `#name`, a user id (U…) or `@name` (a DM), or a comma list
 // of users (a group DM). A post is logged as one `[slack]` line with the place and the ts, never the text.
 // `read` and `search` print each message's files underneath it (id, name, mimetype, size); `file`
 // fetches one of them — `files.info` then `url_private_download` with the Bearer token — and stores
-// it as an Orca attachment, the same shape as `orca gmail attachment` (server/gmailTool.ts).
+// it as an Orca attachment, the same shape as `orca gmail attachment` (server/gmailTool.ts). `post
+// --attach` uploads one the other way (`uploadFiles`, server/integrations/adapters/slack.ts): Slack's
+// two-step external upload, with the text as the files' initial_comment, so they land as one message.
 import { mkdirSync, writeFileSync } from "fs";
 import { isAbsolute, join, resolve } from "path";
-import { ATTACHMENT_PREFIX, materialise, MAX_ATTACHMENT_BYTES, store } from "./attachments";
-import { openConversation, slackApi, slackRead, type SlackResult } from "./integrations/adapters/slack";
-import type { VerbClasses } from "../shared/integrations";
+import * as db from "./db";
+import { ATTACHMENT_PREFIX, forward, materialise, MAX_ATTACHMENT_BYTES, store } from "./attachments";
+import { openConversation, SLACK_CAPS, slackApi, slackRead, uploadFiles, type SlackResult, type SlackUploadFile } from "./integrations/adapters/slack";
+import { attachmentIdOf, attachmentRefusal, type VerbClasses } from "../shared/integrations";
 
 type Args = Record<string, unknown> & { _?: unknown[] };
 export type SlackToolOpts = { env?: Record<string, string | undefined>; log?: (line: string) => void; by?: string };
@@ -28,7 +31,8 @@ export const SLACK_USAGE = [
   "orca slack conversations [--types im,mpim,public,private] [--limit 100]   the conversations you are in",
   "orca slack read <target> [--thread <ts>] [--limit 20]   recent messages, oldest first (a thread with --thread)",
   "orca slack search \"<query>\" [--limit 20]   search every message you can see (Slack search syntax: in:#eng from:@ana)",
-  "orca slack post <target> [--thread <ts>] \"<text>\"   post as the user",
+  "orca slack post <target> [--thread <ts>] [--attach <id|path>]... \"<text>\"   post as the user;",
+  "   --attach (repeatable) uploads each file with the text as its comment, so they land as one message",
   "orca slack file <file id> [--out <dir>] [--account <name>]   save one file (listed under a message in",
   "   read or search) as an Orca attachment (orca send --attach <id>); --out also copies it to that directory",
   "A target is a channel id (C…, G…, D…), #name, a user id (U…) or @name (a DM), or a comma list of users (a group DM).",
@@ -206,18 +210,43 @@ async function search(token: string, words: string[], args: Args): Promise<strin
   })].join("\n");
 }
 
+/** `--attach <id|path>` (repeatable): each resolved to a stored attachment the way `orca send
+ *  --attach` does (an id, or a file on this machine), then read back as bytes ready to upload. */
+async function attachArgs(args: Args): Promise<SlackUploadFile[]> {
+  const raw = args.attach === undefined ? [] : Array.isArray(args.attach) ? args.attach : [args.attach];
+  const files: SlackUploadFile[] = [];
+  for (const v of raw) {
+    if (typeof v !== "string" || !v.trim()) throw new SlackToolError("--attach needs a value: an attachment id or a file path");
+    const ref = await forward(v);
+    const row = await db.attachment(attachmentIdOf(ref)!);
+    if (!row) throw new SlackToolError(`attachment ${ref} is gone (pruned after 30 days, or never stored)`);
+    files.push({ name: row.filename, type: row.mimeType || "application/octet-stream", bytes: row.bytes });
+  }
+  return files;
+}
+
 async function post(token: string, words: string[], args: Args, opts: SlackToolOpts): Promise<string> {
   const target = words[1] ?? "";
   const text = words.slice(2).join(" ").trim();
-  if (!target || !text) throw new SlackToolError('usage: orca slack post <target> [--thread <ts>] "<text>"');
+  const files = await attachArgs(args);
+  if (!target || (!text && !files.length)) throw new SlackToolError('usage: orca slack post <target> [--thread <ts>] [--attach <id|path>]... "<text>"');
   const channel = await resolveTarget(token, target);
   const thread = tsOf(args.thread);
+  const log = opts.log ?? ((l: string) => console.log(l));
+  if (files.length) {
+    const refusal = attachmentRefusal("slack", SLACK_CAPS, files.map((f) => ({ name: f.name, bytes: f.bytes.byteLength })));
+    if (refusal) throw new SlackToolError(refusal);
+    const r = await uploadFiles(token, files, { channel, threadTs: thread, initialComment: text || undefined });
+    if (!r.ok) fail("files upload", r);
+    log(`[slack] ${new Date().toISOString()} ${opts.by ?? "orchestrator"}: post ${files.length} file${files.length === 1 ? "" : "s"} to ${channel}${thread ? ` thread ${thread}` : ""}`);
+    return `Posted ${files.length} file${files.length === 1 ? "" : "s"} to ${channel} as the user${thread ? ` in thread ${thread}` : ""}${text ? ", with the text as the comment" : ""}.`;
+  }
   const r = await slackApi(token, "chat.postMessage", { channel, text, ...(thread ? { thread_ts: thread } : {}) });
   if (!r.ok) fail("chat.postMessage", r);
   const ts = typeof r.ts === "string" ? r.ts : "?";
   const at = typeof r.channel === "string" ? r.channel : channel;
   // Who and where, never the text.
-  (opts.log ?? ((l: string) => console.log(l)))(`[slack] ${new Date().toISOString()} ${opts.by ?? "orchestrator"}: post to ${at}${thread ? ` thread ${thread}` : ""} → ts ${ts}`);
+  log(`[slack] ${new Date().toISOString()} ${opts.by ?? "orchestrator"}: post to ${at}${thread ? ` thread ${thread}` : ""} → ts ${ts}`);
   return `Posted to ${at} as the user${thread ? ` in thread ${thread}` : ""} (ts ${ts}). Reply in its thread with --thread ${thread ?? ts}.`;
 }
 
