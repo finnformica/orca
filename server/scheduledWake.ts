@@ -14,7 +14,7 @@ import type { OrcaConfig } from "./config";
 import { mergedNotification } from "../shared/notifications";
 import { CHIEF } from "../shared/memory";
 import {
-  WAKE_LIMITS, parseDuration, parseWakeAt, parseWakeOn, scheduledWakeMessage, wakeMatches, wakeOnText, type WakeEvent, type WakeOn,
+  WAKE_LIMITS, parseDuration, parseWakeAt, parseWakeOn, scheduledWakeMessage, wakeOnText, wakeVerdict, type WakeEvent, type WakeOn,
 } from "../shared/scheduledWake";
 
 const user = () => db.currentUser();
@@ -103,13 +103,11 @@ export async function claimDue(now = Date.now()): Promise<ScheduledWake[]> {
 export async function claimMatching(e: WakeEvent & { key?: string }, now = Date.now()): Promise<ScheduledWake[]> {
   const pending = await db.withRetry((sql) => sql`
     SELECT * FROM scheduled_wake WHERE user_id = ${user()} AND state = 'pending' AND on_event IS NOT NULL AND expires_at >= ${now}`) as Row[];
-  // `agent:<name>` waits for the reply to ITS OWN ask: the finished wake must have carried one from it.
-  const hits = pending.map(toWake).filter((w) => {
-    try {
-      const on = parseWakeOn(w.on!);
-      return wakeMatches(on, e) && (on.kind !== "agent" || (e.askers ?? []).includes(w.agent));
-    } catch { return false; }
-  });
+  // `agent:<name>` waits for the reply to ITS OWN ask; one answered by `orca ask` is cancelled (wakeVerdict).
+  const verdict = (w: ScheduledWake) => { try { return wakeVerdict(parseWakeOn(w.on!), w.agent, e); } catch { return undefined; } };
+  const all = pending.map(toWake);
+  for (const w of all.filter((x) => verdict(x) === "cancel")) await cancel(w.id);
+  const hits = all.filter((w) => verdict(w) === "fire");
   const claimed: ScheduledWake[] = [];
   for (const w of hits) {
     const [row] = await db.withRetry((sql) => sql`

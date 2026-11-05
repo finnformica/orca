@@ -83,6 +83,12 @@ so Finn did not see a worker's results in its chat. He asked for them back.)
 Worker reports in an agent's chat keep their folded `⚙` block there. The same reports show in each
 worker's room, behind a pill in the worker chat.
 
+The REPLY of a room turn stays in the main chat (`replyInMainChat`). The incoming message (an
+`orca ask`, a wake `on agent:<name>`) goes to the room. The recipient writes its reply for the person:
+it relays results, images and prompts. The room still holds the whole entry, message and reply. A turn
+with no reply, a failed turn or a stopped turn stays in the room alone. (History: #472 hid the whole
+turn behind the pill, and on 2026-11-05 Finn asked "status?" four times to see relayed results.)
+
 ### Room entry
 
 One entry for each source turn. The view gets nothing else.
@@ -130,6 +136,9 @@ rooms follow (Flow's #6658 rule).
   the tint of the other activity rows, with the time and a blue dot when it has news. A click opens
   the room at once. N counts the sender's messages and the replies. Adjacent pills of one room merge.
   The pills are placed by time between the turns, by the same pass as notices (`withNotices`).
+- **Kept reply:** a room turn with a reply (`replyInMainChat`) shows its reply in the main chat, at
+  the turn's time, as the agent's own reply under its Agent pill. Its room pill is directly above it.
+  The reply is the same `ChatTurn` with `replyOnly`: the incoming message is not drawn there.
 - **The person's lane:** a pill shows the origin messages its entries carry as your bubbles. In a
   worker chat, the brief is a turn of the main chat, so its origin quote shows above it there.
 - **Room:** the pill opens the room in the same pane. One short header row has a Back arrow, this
@@ -143,7 +152,7 @@ rooms follow (Flow's #6658 rule).
 - **Seen:** the last-open time per room is per browser (`orca.ui.v1.roomSeen:<repo>::<branch>`,
   `usePersisted`). A room you never opened counts its last day.
 - **No turn is lost:** the main chat leaves out a room turn only when the `/api/rooms` answer holds it,
-  or while that answer loads. When the read fails, or the turn is past its bound, the turn stays.
+  or while that answer loads (a kept reply shows meanwhile, its pill after the answer). When the read fails, or the turn is past its bound, the turn stays.
 
 ## Limits
 

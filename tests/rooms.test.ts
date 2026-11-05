@@ -14,7 +14,7 @@ import { agentMessage } from "../shared/agents";
 import { scheduledWakeMessage } from "../shared/scheduledWake";
 import {
   PERSON, agentSide, chatOwner, entryPill, inMainChat, mergePills, messageSender, orcaSide, reportWorker, roomId, roomUnseen, roomsOf,
-  rememberAgentNames, routeLabel, routeOf, sideLabel, stripAgentWrapper, turnPeer, turnRoomEntry, turnRoute, workerSide, type RoomPill, type RoomTurn,
+  rememberAgentNames, replyInMainChat, routeLabel, routeOf, sideLabel, stripAgentWrapper, turnPeer, turnRoomEntry, turnRoute, workerSide, type RoomPill, type RoomTurn,
 } from "../shared/rooms";
 import { joinMessages, turnOrigin, workerEvent } from "../web/src/workstream";
 
@@ -93,6 +93,27 @@ describe("rules", () => {
     expect(inMainChat(ASSISTANT, ask)).toBe(false);
     expect(turnPeer(ASSISTANT, ask)).toEqual(CHIEF);
     expect(turnRoomEntry(ASSISTANT, ask, ASSISTANT)!.room).toBe(roomId(CHIEF, ASSISTANT));
+  });
+
+  test("a room turn's reply stays in the main chat: finished, with text, not failed or stopped", () => {
+    const RESEARCH = agentSide("research");
+    const ask = turn("a1", agentMessage("research", "Here are the results"), { response: "Research found the cause. Here is the image." });
+    const wake = turn("w1", scheduledWakeMessage({ id: 273, note: "relay it", on: "agent:research", event: "orca.agent.replied" }));
+    expect(turnPeer(CHIEF, ask)).toEqual(RESEARCH);
+    expect(replyInMainChat(CHIEF, ask)).toBe(true);
+    expect(replyInMainChat(CHIEF, wake)).toBe(true);
+    // No reply, a blank one, one still running, a failed or a stopped turn: the room alone, as before.
+    expect(replyInMainChat(CHIEF, { ...ask, response: "" })).toBe(false);
+    expect(replyInMainChat(CHIEF, { ...ask, response: "  \n" })).toBe(false);
+    expect(replyInMainChat(CHIEF, { ...ask, finishedAt: undefined })).toBe(false);
+    expect(replyInMainChat(CHIEF, { ...ask, failed: true })).toBe(false);
+    expect(replyInMainChat(CHIEF, { ...ask, stopped: true })).toBe(false);
+    // Not a room turn: the main chat keeps it whole, so there is no reply to keep apart.
+    expect(replyInMainChat(CHIEF, turn("p", "What is new?"))).toBe(false);
+    expect(replyInMainChat(WORKER, turn("b", "brief", { origin: turnOrigin({ runId: "x", messages: [], ids: [], agent: "chief" }) }))).toBe(false);
+    // The room still holds the whole entry: the message and the reply.
+    const e = turnRoomEntry(CHIEF, ask, CHIEF)!;
+    expect([e.messages, e.reply]).toEqual([["Here are the results"], "Research found the cause. Here is the image."]);
   });
 
   test("an entry names both ends, with the wrapper stripped; the reply goes back", () => {

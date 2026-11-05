@@ -87,7 +87,8 @@ export function wakeOnText(on: WakeOn): string {
 }
 
 /** The part of an event the match reads (an integrations Envelope fits). */
-export type WakeEvent = { topic: string; scope?: { repo?: string; branch?: string }; link?: { pr?: number }; /** The agent whose wake ended (`orca.agent.replied`), and the agents whose `orca ask` it answered. */ agent?: string; askers?: string[] };
+export type WakeEvent = { topic: string; scope?: { repo?: string; branch?: string }; link?: { pr?: number }; /** The agent whose wake ended (`orca.agent.replied`), and the agents whose `orca ask` it answered. */ agent?: string; askers?: string[];
+  /** The agents it sent an `orca ask` to in that wake: an asker among them has its reply already. */ repliedTo?: string[] };
 /** The event an agent's finished wake raises for `--on agent:<name>` (server/orchestrator.ts). */
 export const AGENT_REPLIED = "orca.agent.replied";
 
@@ -98,6 +99,17 @@ export function wakeMatches(on: WakeOn, e: WakeEvent): boolean {
   if (on.kind === "worker") return e.topic.startsWith("orca.run.") && e.scope?.repo === on.repo && e.scope?.branch === on.branch;
   if (on.kind === "agent") return e.topic === AGENT_REPLIED && e.agent === on.agent;
   return topicMatches(on.pattern, e.topic) && (!on.repo || e.scope?.repo === on.repo);
+}
+
+/** What `e` does to a pending wake of `agent`: fire it, cancel it, or nothing. `agent:<name>` waits
+ *  for the reply to ITS OWN ask, so the finished wake must have carried one from it. When that wake
+ *  already answered it with `orca ask`, the reply came back by itself: the wake is cancelled, or the
+ *  asker gets a second, empty turn (w273 to w276, 2026-11-05). */
+export function wakeVerdict(on: WakeOn, agent: string, e: WakeEvent): "fire" | "cancel" | undefined {
+  if (!wakeMatches(on, e)) return undefined;
+  if (on.kind !== "agent") return "fire";
+  if (!(e.askers ?? []).includes(agent)) return undefined;
+  return (e.repliedTo ?? []).includes(agent) ? "cancel" : "fire";
 }
 
 /** A fired scheduled wake as the message it queues: the marker line, then the agent's own note. */

@@ -13,7 +13,7 @@ import * as memory from "../server/memory";
 import type { OrcaConfig } from "../server/config";
 import { grantRefusal, notificationEnvelope } from "../shared/integrations";
 import {
-  SCHEDULED_WAKE_MARKER, WAKE_LIMITS, isScheduledWake, parseDuration, parseScheduledWake, parseWakeAt, parseWakeOn, scheduledWakeMessage, wakeMatches, wakeOnText,
+  SCHEDULED_WAKE_MARKER, WAKE_LIMITS, isScheduledWake, parseDuration, parseScheduledWake, parseWakeAt, parseWakeOn, scheduledWakeMessage, wakeMatches, wakeOnText, wakeVerdict, AGENT_REPLIED,
 } from "../shared/scheduledWake";
 import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, isUserMessage, turnSource } from "../web/src/workstream";
 import { freshSchema, type TestDb } from "./pg";
@@ -58,6 +58,17 @@ describe("pure rules", () => {
     expect(wakeMatches(parseWakeOn("worker:r/orca/x"), { ...merged, scope: run.scope })).toBe(false); // a PR event is no run result
     expect(wakeMatches(parseWakeOn("topic:orca.run.*"), run)).toBe(true);
     expect(wakeMatches(parseWakeOn("topic:orca.run.* repo=q"), run)).toBe(false);
+  });
+
+  test("an on-agent wake fires when the asked agent's wake ends, unless that wake already answered with orca ask", () => {
+    const on = parseWakeOn("agent:research");
+    const ended = { topic: AGENT_REPLIED, agent: "research", askers: ["chief"] };
+    expect(wakeVerdict(on, "chief", ended)).toBe("fire");
+    expect(wakeVerdict(on, "chief", { ...ended, repliedTo: ["assistant"] })).toBe("fire"); // it answered someone else
+    expect(wakeVerdict(on, "chief", { ...ended, repliedTo: ["chief"] })).toBe("cancel"); // the reply came back by itself
+    expect(wakeVerdict(on, "assistant", { ...ended, repliedTo: ["assistant"] })).toBeUndefined(); // not an asker: wait on
+    expect(wakeVerdict(on, "chief", { ...ended, agent: "assistant" })).toBeUndefined();
+    expect(wakeVerdict(parseWakeOn("pr:r#12"), "chief", { topic: "orca.pr.merged", scope: { repo: "r" }, link: { pr: 12 }, repliedTo: ["chief"] })).toBe("fire");
   });
 
   test("the message: marked, parsed back, never the user's word, and a wake of it alone is the agents'", () => {
@@ -131,6 +142,16 @@ describe("the store", () => {
     expect(await wakes.wakeTool("chief", [], { at: "2h", note: "x", memory: `m${m.id}` }, undefined, NOW)).toContain(`· memory m${m.id}`);
     WAKE_LIMITS.pendingMax = 1;
     await expect(wakes.wakeTool("chief", [], { at: "3h", note: "y" }, undefined, NOW)).rejects.toThrow("1 pending scheduled wakes is the limit");
+  });
+
+  test("an on-agent wake of an asker the agent answered with orca ask is cancelled, the others fire", async () => {
+    const known = ["chief", "assistant", "research"];
+    await wakes.wakeTool("chief", [], { on: "agent:research", note: "Relay the answer", agent: "chief" }, undefined, Date.now(), known);
+    await wakes.wakeTool("chief", [], { on: "agent:research", note: "Read it", agent: "assistant" }, undefined, Date.now(), known);
+    // Research ended a wake that carried asks from both, and sent an orca ask back to the Chief of Staff only.
+    const fired = await wakes.claimMatching({ topic: AGENT_REPLIED, agent: "research", askers: ["chief", "assistant"], repliedTo: ["chief"] });
+    expect(fired.map((w) => [w.id, w.agent])).toEqual([[2, "assistant"]]);
+    expect((await wakes.list({ all: true })).map((w) => [w.id, w.state]).sort()).toEqual([[1, "cancelled"], [2, "fired"]]);
   });
 
   test("an event wake fires on a matching published event only, once; it expires unfired", async () => {
