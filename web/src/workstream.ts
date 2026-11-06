@@ -406,6 +406,11 @@ const NARRATE = [
  *  SCREENSHOTS: several agents share one box, and parallel test runs OOM-killed each other. */
 export const HEAVY_COMMANDS = "This box is shared with other agents, and the box-wide queue is its only CPU control. Run every heavy command through it: `orca-run --kind test|lint|build|e2e|migrate|serve -- <command>`. Heavy means a test runner (jest, vitest, bun test, pytest), Playwright, eslint, prettier, tsc, a frontend or backend build, a database migration, and a local backend or frontend that a test needs. `orca-run` waits for a slot, prints its place in the line, then runs the command and returns its exit code. The heavy tools, `npm`/`pnpm`/`yarn`/`bun` package scripts and `bash <test script>` on your PATH already queue. Never run a whole suite: run only the test files your change touches. Do not set ORCA_RUN_BYPASS=1 for a heavy command.";
 
+/** Workers on one box share a user, so a kill by name or pattern can hit another worker's process
+ *  (2026-11-06: `pkill -f <text>` matched another run's `claude -p` argv, which holds its whole
+ *  prompt, and killed it). In every worker prompt beside HEAVY_COMMANDS. */
+export const NO_KILL_BY_NAME = "Stop a process only by the exact PID you started it with. For a dev server, start it with `orca-run --kind serve -- <command> &`, keep the PID (`$!`), and stop it later with `kill <that PID>`. Never use `pkill`, `killall`, `pgrep` piped into `kill`, or any other kill by name or pattern: this box is shared, and a process matching that name or pattern may belong to another worker, not you.";
+
 /** Prompt used to launch the headless agent — Orca already created it from the latest base.
  *
  *  Deliberately does NOT assume the request is work to be done. "Investigate why X is slow and report
@@ -433,6 +438,7 @@ export function launchPrompt(ws: Pick<Workstream, "title" | "branch" | "prompt">
     NO_PR,
     SCREENSHOTS,
     HEAVY_COMMANDS,
+    NO_KILL_BY_NAME,
   ].join("\n"));
 }
 
@@ -499,7 +505,7 @@ export function slackPrompt(
 export function followUpPrompt(instruction: string, opts: { mergeWhenGreen?: boolean; prNumber?: number } = {}): string {
   const mergeNote = opts.mergeWhenGreen ? "\n\n(This PR is marked merge-when-green: Orca's merge queue holds the mark and waits for this run — and anything queued behind it — to finish, then merges once CI is green on your latest push. Commit and push as usual; no separate merge step needed.)" : "";
   const prSync = opts.prNumber ? `\n${KEEP_PR_TEXT_IN_SYNC}` : "";
-  return withOutcomeContract(`${instruction}${mergeNote}\n\nThis is an incremental follow-up. Preserve completed work; files and git are authoritative. Change only what is related to this follow-up.\n${SESSION_START}\nWork autonomously. Verify in proportion to risk, then commit and push your changes.\n${NO_PR}${prSync}\n${SCREENSHOTS}\n${HEAVY_COMMANDS}`);
+  return withOutcomeContract(`${instruction}${mergeNote}\n\nThis is an incremental follow-up. Preserve completed work; files and git are authoritative. Change only what is related to this follow-up.\n${SESSION_START}\nWork autonomously. Verify in proportion to risk, then commit and push your changes.\n${NO_PR}${prSync}\n${SCREENSHOTS}\n${HEAVY_COMMANDS}\n${NO_KILL_BY_NAME}`);
 }
 
 // Every session starts with no memory of the last one, so it starts by looking: the same three-line
@@ -541,6 +547,7 @@ export function chatPrompt(instruction: string, opts: { mergeWhenGreen?: boolean
     ...(opts.prNumber ? [KEEP_PR_TEXT_IN_SYNC] : []),
     SCREENSHOTS,
     HEAVY_COMMANDS,
+    NO_KILL_BY_NAME,
     "",
     WRITING_STYLE,
     "",
@@ -988,6 +995,7 @@ export function addressPrPrompt(ws: Pick<Workstream, "prNumber" | "branch">, par
     ...(ws.prNumber ? [KEEP_PR_TEXT_IN_SYNC] : []),
     SCREENSHOTS,
     HEAVY_COMMANDS,
+    NO_KILL_BY_NAME,
   ].join(" "));
 }
 
