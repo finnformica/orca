@@ -34,6 +34,7 @@ import * as bus from "./bus";
 import { seedAgentsSql } from "./agentSeed";
 import { chatOwner, queuedSender, sameSide, turnRoute, type Side, type TurnRoute } from "../shared/rooms";
 import type { Notification, NotificationInput } from "../shared/notifications";
+import { stripNul, stripNulDeep } from "../shared/sanitize";
 import { HIDDEN_FOREVER } from "../web/src/workstream";
 
 export type TurnStatus = "running" | "done" | "error" | "stopped";
@@ -1515,6 +1516,7 @@ export async function enrichment(repo: string): Promise<Record<string, Fields>> 
  *  that key — the client's patch semantics use `undefined` to clear a field (e.g. `followSig`), and
  *  JSON.stringify drops undefined keys entirely, so deletion travels over the wire as null. */
 export async function patchEnrichment(repo: string, branch: string, fields: Fields): Promise<void> {
+  fields = stripNulDeep(fields); // a patch can carry a worker's own words (a title, a note) (shared/sanitize.ts)
   return withRetry(async (sql) => {
     const id = await workstreamId(repo, branch);
     const rows = await sql`SELECT data FROM workstream WHERE id = ${id}`;
@@ -1642,7 +1644,7 @@ export async function importEnrichment(entries: { repo: string; branch: string; 
       // Keep `transcript` IN the blob, exactly as persistAgentEnrichment keeps writing it going
       // forward. The store's resume guard and cross-provider handoff both read enrich.transcript, so
       // stripping it on migration would blind them for any card mid-flight at upgrade time.
-      await sql`UPDATE workstream SET data = ${e.fields ?? {}} WHERE id = ${id}`;
+      await sql`UPDATE workstream SET data = ${stripNulDeep(e.fields ?? {})} WHERE id = ${id}`;
       imported++;
     }
     return imported;
@@ -1698,13 +1700,18 @@ export async function startTurn(input: {
 }): Promise<void> {
   // Who sent the turn and to whom, recorded once here for every write path (shared/rooms.ts).
   const route = turnRoute(chatOwner(input.repo, input.branch), input);
+  // Postgres rejects U+0000 in text/jsonb; a prompt or instruction built from a worker's own words
+  // (or an origin reference) may carry one (shared/sanitize.ts).
+  const instruction = input.instruction !== undefined ? stripNul(input.instruction) : undefined;
+  const prompt = stripNul(input.prompt);
+  const origin = input.origin ? stripNulDeep(input.origin) : undefined;
   return withRetry(async (sql) => {
     const id = await workstreamId(input.repo, input.branch);
     await sql`
       INSERT INTO turn (workstream_id, user_id, instance, run_id, provider, status, instruction, prompt, session_id, raw_ref, started_at, source, structured)
-      VALUES (${id}, ${currentUser()}, ${instanceName()}, ${input.runId}, ${input.provider}, 'running', ${input.instruction ?? null}, ${input.prompt},
+      VALUES (${id}, ${currentUser()}, ${instanceName()}, ${input.runId}, ${input.provider}, 'running', ${instruction ?? null}, ${prompt},
               ${input.sessionId ?? null}, ${input.sessionId ?? null}, ${input.startedAt}, ${input.source ?? null},
-              ${{ route, ...(input.origin ? { origin: input.origin } : {}) }}::jsonb)
+              ${{ route, ...(origin ? { origin } : {}) }}::jsonb)
       ON CONFLICT (run_id) DO NOTHING`;
     bus.publish({ kind: "turn", runId: input.runId, repo: input.repo, branch: input.branch });
   });
@@ -1723,6 +1730,10 @@ export async function finishTurn(runId: string, input: {
   sessionId?: string; finishedAt: number;
   identity?: { repo: string; branch: string; provider: AgentProvider; instruction?: string; prompt: string; startedAt: number; source?: TurnSource };
 }): Promise<void> {
+  // The response and structured outcome are the model's own words about a worker's run, which can
+  // carry a U+0000 Postgres refuses (shared/sanitize.ts).
+  const response = input.response !== undefined ? stripNul(input.response) : undefined;
+  const structured = input.structured ? stripNulDeep(input.structured) : undefined;
   return withRetry(async (sql) => {
     // Return the owning branch in the same round trip, so the bus event can be addressed to the chat
     // stream watching it without a second lookup on a hot path.
@@ -1730,10 +1741,10 @@ export async function finishTurn(runId: string, input: {
       WITH updated AS (
         UPDATE turn SET
           status = ${input.status},
-          response = ${input.response ?? null},
+          response = ${response ?? null},
           -- The outcome replaces what was there, but the origin and route written at the start stay.
-          structured = CASE WHEN turn.structured->'origin' IS NULL AND turn.structured->'route' IS NULL THEN ${input.structured ?? null}::jsonb
-            ELSE COALESCE(${input.structured ?? null}::jsonb, '{}'::jsonb)
+          structured = CASE WHEN turn.structured->'origin' IS NULL AND turn.structured->'route' IS NULL THEN ${structured ?? null}::jsonb
+            ELSE COALESCE(${structured ?? null}::jsonb, '{}'::jsonb)
               || jsonb_strip_nulls(jsonb_build_object('origin', turn.structured->'origin', 'route', turn.structured->'route')) END,
           stop_reason = ${input.stopReason ?? null},
           session_id = COALESCE(${input.sessionId ?? null}, session_id),
@@ -1753,7 +1764,7 @@ export async function finishTurn(runId: string, input: {
         INSERT INTO turn (workstream_id, user_id, instance, run_id, provider, status, instruction, prompt, response,
                           structured, stop_reason, session_id, raw_ref, started_at, finished_at, source)
         VALUES (${workstream}, ${currentUser()}, ${instanceName()}, ${runId}, ${provider}, ${input.status},
-                ${instruction ?? null}, ${prompt}, ${input.response ?? null}, ${input.structured ?? null}, ${input.stopReason ?? null},
+                ${instruction !== undefined ? stripNul(instruction) : null}, ${stripNul(prompt)}, ${response ?? null}, ${structured ?? null}, ${input.stopReason ?? null},
                 ${input.sessionId ?? null}, ${input.sessionId ?? null}, ${startedAt}, ${input.finishedAt}, ${source ?? null})
         ON CONFLICT (run_id) DO NOTHING`;
       owner = { repo, branch };
@@ -1765,6 +1776,7 @@ export async function finishTurn(runId: string, input: {
 /** Replace a finished turn's outcome with Orca's own account of why it died (an orchestrator wake
  *  that was cut off). The cost cap keeps its own stop reason; everything else is an `error`. */
 export async function failTurn(runId: string, response: string): Promise<void> {
+  response = stripNul(response);
   return withRetry(async (sql) => {
     const rows = await sql`
       WITH updated AS (
@@ -1780,6 +1792,7 @@ export async function failTurn(runId: string, response: string): Promise<void> {
 
 /** Attach Orca's verification to a finished turn, and wake the chat watching its branch. */
 export async function setCheck(runId: string, check: TurnCheck): Promise<void> {
+  check = stripNulDeep(check); // the check's output is the command's own output (shared/sanitize.ts)
   return withRetry(async (sql) => {
     const rows = await sql`
       WITH updated AS (UPDATE turn SET "check" = ${check} WHERE run_id = ${runId} RETURNING workstream_id)
@@ -2326,6 +2339,9 @@ export async function boots(instance: string): Promise<{ bootId: string; bootedA
  *  idempotent: a retried write collides rather than duplicating. Returns how many landed. */
 export async function appendSteps(runId: string, startSeq: number, steps: Fields[]): Promise<number> {
   if (!steps.length) return 0;
+  // A step's text, tool input or tool output is a worker's own words or output (a `wrangler dev`
+  // banner printed a NUL), which Postgres rejects in text/jsonb (shared/sanitize.ts).
+  steps = stripNulDeep(steps);
   return withRetry(async (sql) => {
     const user = currentUser();
     const now = Date.now();
