@@ -29,7 +29,10 @@ import { replaceFindings, secretFindings, type SecretFinding } from "../../../sh
  *  own verbs; it never sends a message. */
 // `disabled`: the reason it does not apply now. The menu greys it out with the reason, ↑/↓ skip it
 // and Enter or a click on it does nothing.
-export type ComposerCommand = { name: string; description: string; icon: ReactNode; disabled?: string; run: (box: { attach: () => void }) => void };
+/** What a command can do to the box: open its file picker, or store a secret the way the paste
+ *  guard does (`captureSecret`: scope "chat", the chip goes into the box and with the next send). */
+export type ComposerBox = { attach: () => void; captureSecret: (name: string, value: string) => Promise<string> };
+export type ComposerCommand = { name: string; description: string; icon: ReactNode; disabled?: string; run: (box: ComposerBox) => void };
 
 function visualRowFlags(el: HTMLTextAreaElement, key: string): { firstVisualRow?: boolean; lastVisualRow?: boolean } {
   const { value, selectionStart, selectionEnd } = el;
@@ -207,7 +210,7 @@ export function ChatComposer({
     setValue(next.text);
     setCaret(next.caret);
     setActive(0);
-    c.run({ attach: () => fileRef.current?.click() });
+    c.run({ attach: () => fileRef.current?.click(), captureSecret });
   };
   const pick = (m: MentionRef) => {
     if (!trig) return;
@@ -420,19 +423,24 @@ export function ChatComposer({
   // Each held value is stored as a secret in the "chat" scope, taken out of the text and shown as a
   // secret chip in the box; the send gives the message `[secret chat/<name> stored]` for it. A send
   // the guard held goes on with the chip; a guard opened by a paste only adds the chip.
+  // The ONE capture path, for the paste guard and `/secret` alike: store the value in the "chat"
+  // scope and add its chip to the box. This composer made it, so Remove deletes it too, unlike a
+  // chip that only refers to an older secret (`insert.secrets`).
+  async function captureSecret(name: string, secret: string): Promise<string> {
+    const { ref } = await api.saveSecret({ name, scope: "chat", value: secret });
+    if (!latestSecrets.current.includes(ref)) setSecrets([...latestSecrets.current, ref]);
+    if (!latestOwnSecrets.current.includes(ref)) setOwnSecrets([...latestOwnSecrets.current, ref]);
+    return ref;
+  }
   const saveAsSecret = async () => {
     const base = secretName.trim();
     if (!base) { setGuardError("Give the secret a name."); return; }
     setGuardBusy(true); setGuardError(null);
     try {
-      const refs: string[] = [];
-      for (const [i, f] of held.entries()) refs.push((await api.saveSecret({ name: i ? `${base}-${i + 1}` : base, scope: "chat", value: f.value })).ref);
+      for (const [i, f] of held.entries()) await captureSecret(i ? `${base}-${i + 1}` : base, f.value);
       const next = replaceFindings(value, held, () => "").replace(/[ \t]{2,}/g, " ");
-      const chips = [...latestSecrets.current, ...refs.filter((r) => !latestSecrets.current.includes(r))];
+      const chips = latestSecrets.current;
       setValue(next);
-      setSecrets(chips);
-      // This composer made these — Remove deletes them too, unlike a `/secret` card's chip.
-      setOwnSecrets([...latestOwnSecrets.current, ...refs.filter((r) => !latestOwnSecrets.current.includes(r))]);
       setGuarded(false);
       setSecretName("");
       const pending = guardSend.current;
