@@ -14,7 +14,9 @@
 // Assistant's chat with a Chief of Staff room; "worker" — a workstream chat with its orchestrator
 // room (docs/design/agent-rooms.md; `--click '[data-slot="room-pill"]'` opens the room); "panel" —
 // the real Orca side panel (desktop) with three named agents, for its header's agent menu
-// (`--click '[data-slot="agent-menu"]'` opens it); "page" — the phone's Orca page with the same menu.
+// (`--click '[data-slot="agent-menu"]'` opens it); "page" — the phone's Orca page with the same menu;
+// "secret" — a worker chat whose /secret and paste guard save here (a fake store, the NAME only) and
+// whose send becomes a finished turn, for the secret chip in the box and in the sent message.
 import { createRoot } from "react-dom/client";
 import { getDefaultStore } from "jotai";
 import { Dock } from "@/components/Shell";
@@ -100,7 +102,27 @@ api.rooms = async () => {
   return { entries: [...own.flatMap((t) => turnRoomEntry(viewer, t, viewer) ?? []), ...other.flatMap((t) => turnRoomEntry(chatOwner(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH), t, viewer) ?? [])] };
 };
 
-api.turnPage = async () => ({ turns: roomView ? own : [view === "working" ? workingTurn : view === "chips" ? chipsTurn : quoteTurn], older: null });
+const secretTurns: AgentTurn[] = [];
+if (view === "secret") api.saveSecret = async ({ name, scope }) => ({ ref: `${scope ?? "chat"}/${name}`, created: true });
+// `&paste=<text>`: put the text in the box and fire a paste event with it, as a real paste does (an
+// orca-shot cannot paste). Use an invented value only.
+const pasted = new URLSearchParams(location.search).get("paste");
+if (view === "secret" && pasted) {
+  const tick = setInterval(() => {
+    const box = document.querySelector<HTMLTextAreaElement>('textarea[role="combobox"]');
+    if (!box) return;
+    clearInterval(tick);
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(box, pasted);
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+    const data = new DataTransfer();
+    data.setData("text/plain", pasted);
+    box.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true }));
+  }, 100);
+}
+
+if (view === "secret") api.rooms = async () => ({ entries: [] });
+
+api.turnPage = async () => ({ turns: roomView ? own : view === "secret" ? secretTurns : [view === "working" ? workingTurn : view === "chips" ? chipsTurn : quoteTurn], older: null });
 
 // The panel and page views: the Orca state and three named agents, answered here.
 const panelView = view === "panel" || view === "page";
@@ -116,7 +138,9 @@ if (panelView) {
   if (view === "panel") getDefaultStore().set(orchestratorOpenAtom, true);
 }
 
-const send = view === "sending" || view === "chips" ? () => new Promise<void>(() => {}) : undefined; // held open forever
+const send = view === "sending" || view === "chips" ? () => new Promise<void>(() => {}) // held open forever
+  : view === "secret" ? async (text: string) => { secretTurns.push({ id: `run-s${secretTurns.length}`, provider: "claude", instruction: text, prompt: "", response: "Noted.", finishedAt: Date.now() }); }
+  : undefined;
 
 createRoot(document.getElementById("root")!).render(panelView ? (
   view === "panel"
