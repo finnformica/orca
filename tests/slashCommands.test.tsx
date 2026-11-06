@@ -1,7 +1,7 @@
 // The composer's `/` command menu: a `/` that opens a line lists the commands that apply to this
 // chat; typing filters; ↑/↓ + Enter/Tab run one, Escape closes; a `/` mid-sentence or in a path does
-// nothing. A command never sends a chat message, and /secret's value never reaches the draft or a
-// message. Pure rules first, then the real ChatPanel against the fake api.
+// nothing. A command never sends a chat message. /secret is the paste guard's capture: its value never
+// reaches the draft or a message, its chip goes with the next send. Pure rules first, then the real ChatPanel against the fake api.
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -330,6 +330,7 @@ describe("ChatPanel / menu", () => {
   const widget = () => container!.querySelector('[data-slot="chat-composer-top"] [data-slot="slash-secret"]');
   const collapse = () => container!.querySelector('[data-slot="collapse"]');
   const closed = () => new Promise((r) => setTimeout(r, 250)); // the close transition (COLLAPSE_MS) ends
+  const chips = () => [...container!.querySelectorAll('[data-slot="composer-attachment"][data-attachment="secret"]')].map((c) => c.textContent);
   const noSecretStored = () => { for (let i = 0; i < localStorage.length; i++) expect(localStorage.getItem(localStorage.key(i)!) ?? "").not.toContain("TOPSECRET"); };
 
   test("/secret opens a card inside the box, above the text; the text and toolbar stay; Enter in the card saves", async () => {
@@ -364,13 +365,35 @@ describe("ChatPanel / menu", () => {
     await act(async () => { await closed(); });
     expect(widget()).toBeNull();
     expect(collapse()).toBeNull();
-    const chip = container!.querySelector('[data-slot="slash-notice"]')!;
-    expect(chip.textContent).toContain("chat/stripe-key");
-    // Nowhere else: not the box, not the persisted draft, not a sent message, not the page.
+    // The paste guard's result: the same secret chip in the box (no notice), kept in the draft.
+    expect(container!.querySelector('[data-slot="slash-notice"]')).toBeNull();
+    expect(chips()).toEqual(["stripe-key"]);
     expect(textBox()!.value).toBe("");
     noSecretStored();
     expect(sent).toEqual([]);
     expect(document.body.innerHTML).not.toContain("TOPSECRET");
+    // The chip goes with the next message, as the paste guard's does; the value never does.
+    await type(textBox()!, "deploy with this key");
+    await key(textBox()!, "Enter");
+    expect(sent).toEqual(["deploy with this key\n\n[secret chat/stripe-key stored]"]);
+    expect(chips()).toEqual([]);
+    expect(document.body.innerHTML).not.toContain("TOPSECRET");
+  });
+
+  test("/secret: an empty name takes the paste guard's suggestion; a chip alone can be sent and Remove deletes it", async () => {
+    const box = await mount(worker);
+    await type(box, "first line\n/secret");
+    await key(box, "Enter");
+    await fill(container!.querySelector<HTMLInputElement>("#slash-secret-value")!, "sk_live_TOPSECRET0000000000000");
+    await act(async () => { container!.querySelector<HTMLInputElement>("#slash-secret-value")!.form!.requestSubmit(); await flush(); await flush(); });
+    expect(apiFake.secretSaves).toEqual([{ name: "stripe-key", scope: "chat", value: "sk_live_TOPSECRET0000000000000" }]);
+    expect(chips()).toEqual(["stripe-key"]);
+    // The draft the card was opened in stays; the chip joins it.
+    expect(textBox()!.value).toBe("first line\n");
+    // This composer stored it, so Remove takes it off and deletes it, as for a pasted secret.
+    await click(container!.querySelector('[data-slot="composer-attachment"][data-attachment="secret"] [data-slot="composer-attachment-remove"]')!);
+    expect(chips()).toEqual([]);
+    expect(apiFake.secretDeletes).toEqual(["chat/stripe-key"]);
   });
 
   test("/secret: with the card open, the text takes typing and Enter there sends the draft only", async () => {

@@ -4,18 +4,18 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { SecretInput } from "@/components/FormCard";
-import type { ComposerCommand } from "@/components/ChatComposer";
+import type { ComposerBox, ComposerCommand } from "@/components/ChatComposer";
 import { RenameDialog } from "@/views/WorkstreamActions";
 import { mergeWhenGreen, previewKeyOf, previewStatus, testLocally, type Row } from "@/store";
 import { actionFailed } from "@/lib/notificationStore";
 import { PortalContainer } from "@/lib/utils";
-import { api } from "@/api";
 import { SLASH_COMMANDS, previewHref, type SlashCommandId, type SlashContext } from "@/workstream";
+import { secretFindings } from "../../../shared/secretGuard";
 
 // The composer's `/` menu: the registry's UI half. The pure half (name, description, where each
 // applies) is `SLASH_COMMANDS` in workstream.ts; here each id gets its icon and its action, which
 // calls an action the app already has. A new command is one entry in each. No command sends a
-// chat message.
+// chat message: /secret only puts a secret chip in the box, which goes with the next send.
 
 const ICONS: Record<SlashCommandId, ReactNode> = {
   compact: <Minimize2 />, secret: <KeyRound />, stop: <Square />, model: <Cpu />, attach: <Paperclip />,
@@ -42,13 +42,15 @@ export function useSlashCommands(host: SlashHost): { commands: ComposerCommand[]
   const [notice, setNotice] = useState<string | null>(null);
   const fail = (action: string, e: unknown) => actionFailed({ action, title: row.title, repo: row.repo, branch: row.branch, prNumber: row.prNumber }, e);
 
-  const actions: Record<SlashCommandId, (box: { attach: () => void }) => void> = {
+  // The box the `/secret` card was opened from: its save is the paste guard's capture (box.captureSecret).
+  const secretBox = useRef<ComposerBox | null>(null);
+  const actions: Record<SlashCommandId, (box: ComposerBox) => void> = {
     compact: () => void host.onCompact(),
     stop: () => void host.onStop().catch((e) => fail("Stop agent", e)),
     "clear-queue": () => void host.onClearQueue().then(() => setNotice("Queue cleared"), (e) => fail("Clear queue", e)),
     model: () => host.openModel(),
     attach: (box) => box.attach(),
-    secret: () => setDialog("secret"),
+    secret: (box) => { secretBox.current = box; setDialog("secret"); },
     merge: () => setDialog("merge"),
     rename: () => setDialog("rename"),
     preview: () => void (async () => {
@@ -101,7 +103,8 @@ export function useSlashCommands(host: SlashHost): { commands: ComposerCommand[]
     </SlashPortal>
   );
   const widget = dialog === "secret"
-    ? <SecretWidget onCancel={() => setDialog(null)} onSaved={(ref) => { setDialog(null); setNotice(`Secret ${ref} saved`); }} />
+    ? <SecretWidget onCancel={() => setDialog(null)} onSaved={() => setDialog(null)}
+        capture={(name, value) => secretBox.current ? secretBox.current.captureSecret(name, value) : Promise.reject(new Error("The composer is gone."))} />
     : null;
   return { commands, ui, widget };
 }
@@ -122,22 +125,24 @@ function SlashPortal({ children }: { children: ReactNode }) {
   );
 }
 
-/** `/secret`: a compact card inside the composer's box, above the text: a name and a value, saved
- *  encrypted in the "chat" scope. The text and Send stay usable below it, and a message sent then is
- *  the draft only. The value lives only in this card's state and the request body: never in the
- *  composer, its draft, a message or the turn log. Enter in a field saves; Esc or ✕ closes it.
+/** `/secret`: a compact card inside the composer's box, above the text: a name and a value. Save is
+ *  the paste guard's capture (`capture` = the box's `captureSecret`): stored encrypted in the "chat"
+ *  scope, and the box gets the same secret chip, which goes with the next message as
+ *  `[secret chat/<name> stored]`. An empty name takes the paste guard's suggestion for the value.
+ *  The value lives only in this card's state and the request body: never in the composer's text, its
+ *  draft, a message or the turn log. Enter in a field saves; Esc or ✕ closes it.
  *  Tab goes Name → Value → Save → the text (the reveal toggle and ✕ are out of the Tab order). */
-function SecretWidget({ onCancel, onSaved }: { onCancel: () => void; onSaved: (ref: string) => void }) {
+function SecretWidget({ onCancel, onSaved, capture }: { onCancel: () => void; onSaved: (ref: string) => void; capture: (name: string, value: string) => Promise<string> }) {
   const [name, setName] = useState("");
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const save = async () => {
-    if (!name.trim()) { setError("Give the secret a name."); return; }
     if (!value) { setError("Give the secret a value."); return; }
+    const named = name.trim() || (secretFindings(value)[0]?.suggestedName ?? "secret");
     setBusy(true); setError(null);
     try {
-      const { ref } = await api.saveSecret({ name: name.trim(), scope: "chat", value });
+      const ref = await capture(named, value);
       setValue("");
       onSaved(ref);
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); setBusy(false); }
