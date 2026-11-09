@@ -7,7 +7,7 @@ import { ComposerAttachment } from "@/components/ComposerAttachment";
 import { Shortcut } from "@/components/ui/kbd";
 import { Tip } from "@/components/ui/tip";
 import { usePrRefs, useVoiceInput, useWorkstreamRefs } from "@/store";
-import { NO_WALK, appendQuote, filterMentions, filterSlashCommands, historyKey, historyStep, insertPrRef, listContinuation, mentionLabel, prTrigger, mentionGroups, removeSlashQuery, sentToLabel, slashActive, slashStep, slashTrigger, withSecretRefs, type AgentMention, type HistoryWalk, type MentionRef } from "@/workstream";
+import { NO_WALK, appendQuote, filterMentions, filterSlashCommands, historyKey, historyStep, insertPrRef, listContinuation, mentionLabel, prTrigger, mentionGroups, quotePaste, removeSlashQuery, sentToLabel, slashActive, slashStep, slashTrigger, withSecretRefs, type AgentMention, type HistoryWalk, type MentionRef } from "@/workstream";
 import { lineVisualRow, scrollCaretIntoView } from "@/lib/caretRow";
 import { cn, PipContext } from "@/lib/utils";
 import { clearDraft, draftFiles, loadDraft, saveDraft } from "@/lib/composerDraft";
@@ -357,8 +357,21 @@ export function ChatComposer({
       .map((it) => it.getAsFile())
       .filter((f): f is File => Boolean(f));
     if (files.length) { e.preventDefault(); addImages(files); return; }
+    const text = e.clipboardData.getData("text/plain") ?? "";
+    // A multi-line paste onto a line already opened as a markdown quote ("> " or a bare ">") keeps
+    // the whole block one blockquote. `execCommand` makes this a native edit, so one Undo still
+    // undoes the whole paste; a browser with no `execCommand` falls back to a plain insert.
+    const el = e.currentTarget as HTMLTextAreaElement;
+    const quoted = quotePaste(el.value, el.selectionStart, text);
+    if (quoted !== null) {
+      e.preventDefault();
+      if (!document.execCommand?.("insertText", false, quoted)) {
+        el.setRangeText(quoted, el.selectionStart, el.selectionEnd, "end");
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+    }
     // The paste guard warns at once; the send is what it holds (below).
-    const found = heldIn(e.clipboardData.getData("text/plain") ?? "");
+    const found = heldIn(text);
     if (found.length) { guardSend.current = undefined; setGuarded(true); setGuardError(null); setSecretName((n) => n || found[0]!.suggestedName); }
   };
   const onDrop = (e: DragEvent) => {

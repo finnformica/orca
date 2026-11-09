@@ -782,6 +782,29 @@ export function quoteMarkdown(text: string): string {
   return `${text.split("\n").map((line) => `> ${line}`).join("\n")}\n\n`;
 }
 
+/** True for a line already opened as a markdown blockquote: `> ` (quoteMarkdown's own prefix) or a
+ *  bare `>` with nothing typed after it yet. */
+function isQuoteLine(line: string): boolean {
+  return line === ">" || line.startsWith("> ");
+}
+
+/** Quote-aware paste: pasted text with one or more line breaks, dropped onto a line that already
+ *  opens as a markdown blockquote, gets every line after the first prefixed `> ` too — so the whole
+ *  block renders as one blockquote instead of breaking after its first line. A blank line in the
+ *  paste becomes a bare `>` so the quote keeps going. Returns null (today's plain paste) for a
+ *  single-line paste or a caret line with no quote prefix. The caller inserts the result in place
+ *  of the pasted text, at `caretStart`. */
+export function quotePaste(value: string, caretStart: number, pasted: string): string | null {
+  const normalized = pasted.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  if (!normalized.includes("\n")) return null;
+  const lineStart = value.lastIndexOf("\n", caretStart - 1) + 1;
+  const nextBreak = value.indexOf("\n", caretStart);
+  const lineEnd = nextBreak === -1 ? value.length : nextBreak;
+  if (!isQuoteLine(value.slice(lineStart, lineEnd))) return null;
+  const lines = normalized.split("\n");
+  return [lines[0], ...lines.slice(1).map((l) => (l ? `> ${l}` : ">"))].join("\n");
+}
+
 /** A fenced code block's header, read off its info string (```plan title=Rollout steps): the
  *  language (the first word, from the `language-*` class) and an optional `title=` from the rest
  *  (quoted, or the remainder of the line). `markdown` is true for plan / md / markdown, which the
