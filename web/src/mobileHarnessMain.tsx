@@ -104,7 +104,14 @@ Object.assign(api, {
   integrations: async () => ({ instance: "local", kinds: [], integrations: [], links: [], people: [], pairings: [], subscriptions: [], dead: [] }),
   handoffs: async () => ({ self: "here", packs: [] }),
   secretNames: async () => ({ secrets: [] }),
-  secrets: async () => ({ secrets: [], key: { id: "harness", source: "harness" } }),
+  // Fake names and a fake value: Settings > Secrets with one public secret, and what Reveal shows.
+  secrets: async () => ({ key: { id: "harness", source: "harness" }, secrets: [
+    { scope: "default", name: "openai_key", source: "paste guard", keyId: "harness", createdAt: min(60 * 24 * 3), updatedAt: min(60 * 24 * 3), lastUsedAt: min(35), public: false },
+    { scope: "truelayer", name: "client_id", source: "form 7f3a", keyId: "harness", createdAt: min(60 * 24), updatedAt: min(60 * 24), public: true },
+    { scope: "truelayer", name: "client_secret", source: "form 7f3a", keyId: "harness", createdAt: min(60 * 24), updatedAt: min(60 * 24), lastUsedAt: min(90), public: false },
+  ] }),
+  revealSecret: async (by: { ref: string } | { token: string }) => ({ ref: "ref" in by ? by.ref : "openai_key", value: "sk-harness-0000-not-a-real-key" }),
+  markSecret: async (name: string, pub: boolean) => ({ ref: name, public: pub }),
   githubLimits: async () => ({ limited: [] }),
 });
 
