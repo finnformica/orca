@@ -104,6 +104,7 @@ Object.assign(api, {
   integrations: async () => ({ instance: "local", kinds: [], integrations: [], links: [], people: [], pairings: [], subscriptions: [], dead: [] }),
   handoffs: async () => ({ self: "here", packs: [] }),
   secretNames: async () => ({ secrets: [] }),
+  secrets: async () => ({ secrets: [], key: { id: "harness", source: "harness" } }),
   githubLimits: async () => ({ limited: [] }),
 });
 

@@ -25,8 +25,10 @@ import { followUp, modelFor, previewsEnabled, refresh, setCardModel, type Row } 
 import { ORCHESTRATOR_REPO, RECENT_FULL, TAIL_WINDOW, reportShots, turnHandoffs, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, splitSecretRefs, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, firedLabel, longMessage, newestMessages, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, formatDuration, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, undeliveredQueued, composerHistory, integrationPreview, integrationState, anchorShift, eagerFrom, estimateItemHeight, withNotices, ORIGIN_MISSING, originAskedBy, originAt, originHead, originSkippedText, originTimeLabel, type AgentMention } from "../workstream";
 import { HandoffWidget } from "./Handoffs";
 import { FormCard } from "@/components/FormCard";
+import { SecretShowCard } from "@/components/SecretShowCard";
 import { stickToTail } from "@/lib/stickToTail";
 import { turnForms } from "../../../shared/forms";
+import { turnSecretShows } from "../../../shared/secretShow";
 import { integrationMessage, shownPlace, type IntegrationMessage } from "../../../shared/integrations";
 import { useCatchAllLabels } from "@/lib/catchAllLabels";
 import { useNotifications } from "@/lib/notificationStore";
@@ -751,6 +753,8 @@ const ChatTurn = memo(function ChatTurn({ turn, loadStepsFor, compact, newestSai
           {turnHandoffs(turn).map((id) => <HandoffWidget key={id} id={id} />)}
           {/* A form this turn asked (`orca ask-form`): fill it in here. */}
           {turnForms(turn).map((id) => <FormCard key={id} id={id} />)}
+          {/* A value it showed (`orca secret show`): only here, from the reveal route, never in the turn. */}
+          {turnSecretShows(turn).map((show) => <SecretShowCard key={show.token} show={show} />)}
         </div>
       </div>}
     </div>

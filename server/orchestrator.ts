@@ -57,6 +57,7 @@ import { linkOrigins } from "./origin";
 import * as prSync from "./prSync";
 import { CHIEF, REFLECTION, REFLECTION_MARKER, provenance, reflectionPrompt, reflectionReadCounts, reflectionRefusal, reflectionTrigger, reportWorkstream, tokensOf } from "../shared/memory";
 import { WRITING_STYLE } from "../shared/writingStyle";
+import { showToolText } from "../shared/secretShow";
 import type { ReflectionTrigger } from "../shared/memory";
 import { AGENT_REPLIED, isScheduledWake, parseScheduledWake } from "../shared/scheduledWake";
 import { providerOfModel } from "../shared/models";
@@ -448,6 +449,9 @@ export async function reportTarget(cfg: OrcaConfig, text: string): Promise<strin
  *  each — two resuming the same session at once was the "one message behind" bug). Worker reports,
  *  the merge queue's and fired scheduled wakes all go through this. */
 export async function report(cfg: OrcaConfig, text: string, key?: string, name?: string): Promise<void> {
+  // A report is built from the run's raw reply and outcome: scrub it before it goes anywhere (a
+  // worker with `--secret` holds a value in its env and may echo it).
+  text = secrets.scrub(text);
   const to = name ?? await reportTarget(cfg, text);
   const host = cfg.orchestratorOn;
   if (host && host !== db.instanceName()) {
@@ -463,6 +467,7 @@ export async function report(cfg: OrcaConfig, text: string, key?: string, name?:
 /** Deliver a worker's report by the management-by-exception rules, from this or another instance.
  *  `name` is the agent that takes it (none = by `reportTarget`). */
 export async function deliverReport(cfg: OrcaConfig, text: string, key?: string, name?: string): Promise<void> {
+  text = secrets.scrub(text); // also a report another instance posted (/api/orchestrator/event)
   const ag = await agentRefOrDefault(name ?? await reportTarget(cfg, text), cfg);
   // Management by exception. A manager is interrupted for a problem, not for every completion: a
   // worker that failed, was stopped, or whose commit failed Orca's check wakes the orchestrator now.
@@ -998,12 +1003,30 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       return forms.askedText(f);
     }
     case "secret": {
-      // `orca secret list | pipe <name> -- <cmd…> | env <name>[=VAR] -- <cmd…> | delete <name>`
-      // (server/secrets.ts). Names only: a value goes from the store into the one command, and the
-      // output comes back scrubbed. Owner only (grantRefusal: not a read or work verb).
+      // `orca secret list | pipe <name> -- <cmd…> | env <name>[=VAR] -- <cmd…> | show <name> |
+      // mark <name> --public|--private | delete <name>` (server/secrets.ts). Names only: a value goes
+      // from the store into the one command, and the output comes back scrubbed. `show` prints a token
+      // the user's chat resolves (shared/secretShow.ts), never the value. Owner only (grantRefusal:
+      // not a read or work verb).
       const sub = words[0] ?? "";
       const cmd = Array.isArray(args["--"]) ? (args["--"] as unknown[]).map(String) : [];
       if (sub === "list") return secrets.listText(await secrets.list());
+      if (sub === "show") {
+        if (!words[1]) throw new Error("usage: orca secret show <name>");
+        const r = await secrets.show(words[1], ag.name);
+        return showToolText(r.ref, r.token);
+      }
+      if (sub === "mark") {
+        const pub = "public" in args, priv = "private" in args;
+        // `mark --public k`: bin/orca reads `k` as the flag's value.
+        const flagValue = (v: unknown) => (typeof v === "string" && v ? v : undefined);
+        const name = words[1] ?? flagValue(args.public) ?? flagValue(args.private);
+        if (!name || pub === priv) throw new Error("usage: orca secret mark <name> --public|--private");
+        const r = await secrets.mark(name, pub, ag.name);
+        return r.public
+          ? `Marked ${r.ref} public: replies, transcripts and tool output now keep its value (channel posts still mask it).`
+          : `Marked ${r.ref} private: its value is scrubbed everywhere again.`;
+      }
       if (sub === "delete") {
         if (!words[1]) throw new Error("usage: orca secret delete <name>");
         return `Deleted secret ${await secrets.remove(words[1], "orchestrator")}.`;
@@ -1015,7 +1038,7 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
         const r = await secrets.run({ ref, mode: sub, variable, cmd, cwd: typeof args._cwd === "string" ? args._cwd : undefined, who: "orchestrator" });
         throw new ToolExit(r.output, r.exitCode);
       }
-      throw new Error("usage: orca secret list | pipe <name> -- <cmd…> | env <name>[=VAR] -- <cmd…> | delete <name>");
+      throw new Error("usage: orca secret list | pipe <name> -- <cmd…> | env <name>[=VAR] -- <cmd…> | show <name> | mark <name> --public|--private | delete <name>");
     }
     case "spawn": {
       const repo = repoNamed(cfg, args.repo);
@@ -1029,12 +1052,15 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       const on = typeof args.on === "string" && args.on ? args.on : (repo.runsOn ?? db.instanceName());
       const title = typeof args.title === "string" ? args.title : undefined;
       const prompt = withAttachments(workerBrief(brief), await attachArgs(args));
+      // `--secret <name>[=VAR]` (repeatable): the value in this run's env only, checked before the launch.
+      const secretEnv = secrets.secretSpecs(args.secret);
+      const given = secretEnv.length ? ` Its env has ${(await secrets.checkSpecs(secretEnv)).join(", ")}.` : "";
       if (on !== db.instanceName()) {
-        const ws = await viaInstance(cfg, on, "/api/workstreams/spawn", { repo: repo.name, prompt, title, model: args.model, ...restricted, origin: await wakeOrigin(b, ag.name) });
-        return `Spawned ${repo.name}/${ws.branch} "${ws.title}" on ${on}. End your turn; you are woken when it finishes.`;
+        const ws = await viaInstance(cfg, on, "/api/workstreams/spawn", { repo: repo.name, prompt, title, model: args.model, ...restricted, origin: await wakeOrigin(b, ag.name), ...(secretEnv.length ? { secrets: secretEnv } : {}) });
+        return `Spawned ${repo.name}/${ws.branch} "${ws.title}" on ${on}.${given} End your turn; you are woken when it finishes.`;
       }
-      const ws = await verbs.createWorkstream(cfg, repo, { prompt, title, model: String(args.model), fields: { orchestrated: true, ...restricted }, origin: await wakeOrigin(b, ag.name) });
-      return `Spawned ${repo.name}/${ws.branch} "${ws.title}"${cfg.instances ? ` on ${on}` : ""}. End your turn; you are woken when it finishes.`;
+      const ws = await verbs.createWorkstream(cfg, repo, { prompt, title, model: String(args.model), fields: { orchestrated: true, ...restricted }, origin: await wakeOrigin(b, ag.name), ...(secretEnv.length ? { secrets: secretEnv } : {}) });
+      return `Spawned ${repo.name}/${ws.branch} "${ws.title}"${cfg.instances ? ` on ${on}` : ""}.${given} End your turn; you are woken when it finishes.`;
     }
     case "send": {
       const repo = repoNamed(cfg, args.repo);
@@ -1044,6 +1070,8 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       const typed = [typeof args.replace === "string" ? args.replace : "", ...words].join(" ").trim();
       if (!typed) throw new Error('the message is required: orca send --repo <repo> --branch <branch> [--replace] "<message>"');
       const text = withAttachments(typed, await attachArgs(args));
+      const secretEnv = secrets.secretSpecs(args.secret);
+      const given = secretEnv.length ? ` Its env has ${(await secrets.checkSpecs(secretEnv)).join(", ")} for that run.` : "";
       // A new pin is read by followUp, so the move happens on this message (the ladder decides
       // resume vs handoff from the pinned provider as it does for the card's own picker).
       if (typeof args.model === "string") {
@@ -1062,12 +1090,12 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       const me = agentSide(ag.name);
       const home = await verbs.placement(repo, { branch });
       const { status, queuedId, replacedId } = home !== db.instanceName()
-        ? (await viaInstance(cfg, home, "/api/workstreams/followup", { repo: repo.name, branch, instruction: text, origin: await wakeOrigin(b, ag.name), prNumber, sender: me }) as { status: string; queuedId?: number; replacedId?: number })
-        : await verbs.followUp(cfg, repo, branch, { instruction: text, origin: await wakeOrigin(b, ag.name), prNumber, sender: me });
+        ? (await viaInstance(cfg, home, "/api/workstreams/followup", { repo: repo.name, branch, instruction: text, origin: await wakeOrigin(b, ag.name), prNumber, sender: me, ...(secretEnv.length ? { secrets: secretEnv } : {}) }) as { status: string; queuedId?: number; replacedId?: number })
+        : await verbs.followUp(cfg, repo, branch, { instruction: text, origin: await wakeOrigin(b, ag.name), prNumber, sender: me, ...(secretEnv.length ? { secrets: secretEnv } : {}) });
       await db.patchEnrichment(repo.name, branch, { orchestrated: true }); // now yours to hear back from
       const sent = status === "queued"
-        ? `Queued as message #${queuedId ?? "?"} behind the run in flight; it is sent when that finishes. To correct it before then: send again with the whole message.`
-        : `Sent to ${repo.name}/${branch}. End your turn; you are woken when it finishes.`;
+        ? `Queued as message #${queuedId ?? "?"} behind the run in flight; it is sent when that finishes.${given} To correct it before then: send again with the whole message.`
+        : `Sent to ${repo.name}/${branch}.${given} End your turn; you are woken when it finishes.`;
       if (replacedId) return `${replacedText(replacedId)} ${sent}`;
       if (!replace) return sent;
       return `Nothing of yours was still queued on ${repo.name}/${branch} (it was sent already, or there was none), so this went as a normal message. ${sent}`;

@@ -531,6 +531,8 @@ export function grantRefusal(g: Grant | undefined, verb: string, args: { repo?: 
   if (verb === "notes" && sub === "set") return owner("notes set");
   if (verb === "preview" && args["push-to-template"] !== undefined && args.confirm !== undefined) return owner("preview --push-to-template --confirm");
   if (verb === "handoff" && sub !== "list") return owner(`handoff ${sub || "create"}`);
+  // A stored value in a worker's env: as `orca secret`, the owner's alone.
+  if ((verb === "spawn" || verb === "send") && args.secret !== undefined) return owner(`${verb} --secret`);
   // Cloudflare writes (rollback, delete, route, domain and dns add/remove) change production: the owner's alone.
   const cfWrite = verb === "cloudflare" ? cloudflareWriteName(args._) : undefined;
   if (cfWrite) return owner(`cloudflare ${cfWrite}`);

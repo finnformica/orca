@@ -384,7 +384,13 @@ orchestrator with the rest as JSON, a secret as `{ name, stored: true }` (`split
 The secret store (`server/secrets.ts`, tables `secret` + `secret_use`) holds AES-256-GCM ciphertext;
 the key is `ORCA_SECRETS_KEY` (in `ORCA_SECRETS`, so no agent has it) else `~/.orca/secrets.key`,
 made on first use. `orca secret list|pipe|env|delete` (owner only) gives a value to ONE command run by
-the bridge; one audit row per use. `secrets.scrub` replaces every stored value in tool output,
+the bridge; one audit row per use. `orca spawn|send --secret <name>[=VAR]` puts a value in ONE worker
+run's env (`LaunchOptions.secrets`, names only, also in a queued row's `reply_to.secrets`). The user
+sees a value only through `POST /api/secrets/reveal` (`server/secretRoutes.ts`: Origin + `Sec-Fetch-Site:
+same-origin` + the terminal's owner check, never forwarded): Settings > Secrets' Reveal, and the card
+of `orca secret show`, whose tool result holds only a signed token (`shared/secretShow.ts`). A
+`public` secret (named step `20261110-secret-public`; `orca secret mark`, the Settings switch, a form
+field's `"public": true`) is skipped by `scrub`; channel posts use `scrubAll`, which masks it too. `secrets.scrub` replaces every stored value in tool output,
 transcript steps, turns (also the outbox) and outbound channel posts. The composer's paste guard
 (`shared/secretGuard.ts` `secretFindings`) holds a key-like value with "Save as secret" / "Send
 anyway". An integration's secret ref may name a stored secret (`secret:<name>`, Integrations above);

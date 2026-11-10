@@ -1292,6 +1292,13 @@ export const MIGRATIONS: MigrationStep[] = [
         PRIMARY KEY (user_id, repo)
       );`,
   },
+  {
+    name: "20261110-secret-public",
+    idempotent: true,
+    // A public secret (server/secrets.ts): a value the user marked as not secret (an OAuth client
+    // id). It is stored and encrypted like any other; only the scrub of replies and transcripts skips it.
+    sql: `ALTER TABLE secret ADD COLUMN IF NOT EXISTS public BOOLEAN NOT NULL DEFAULT false;`,
+  },
 ];
 
 export type MigrationMismatch = { id: number; recorded: string; expected: string; idempotent: boolean };
@@ -2432,6 +2439,9 @@ export type QueuedMessage = {
   /** Who queued it, when the caller says (`orca send` names its agent). Also in the `reply_to` JSONB,
    *  under `sender`. Absent: read off the row by `queuedSender` (shared/rooms.ts). */
   sender?: Side;
+  /** `orca send --secret <name>[=VAR]`: the NAMES of the secrets the run this message becomes gets in
+   *  its env (server/secrets.ts `envFor`), never a value. In the `reply_to` JSONB under `secrets`. */
+  secrets?: string[];
   /** The id of the message from the same sender this one replaced (`queueMessage`'s `replace`). In
    *  the `reply_to` JSONB under `replaces`, beside `slot`: the replaced message's place in the queue,
    *  which this one keeps: every read of the queue orders by
@@ -2444,11 +2454,12 @@ export type QueuedMessage = {
 
 /** The `reply_to` JSONB back into the message's `replyTo` and the `origin`, `sender` and replace
  *  fields packed beside it (`slot` is only read by the queue's ORDER BY). */
-const replyAndOrigin = (v: unknown): { replyTo?: ReplyTo; origin?: TurnOrigin; sender?: Side; replaces?: number; replacedBy?: number } => {
+const replyAndOrigin = (v: unknown): { replyTo?: ReplyTo; origin?: TurnOrigin; sender?: Side; secrets?: string[]; replaces?: number; replacedBy?: number } => {
   if (!v || typeof v !== "object") return {};
-  const { origin, sender, replaces, replacedBy, slot: _slot, ...reply } = v as ReplyTo & { origin?: TurnOrigin; sender?: Side; replaces?: number; replacedBy?: number; slot?: number };
+  const { origin, sender, secrets, replaces, replacedBy, slot: _slot, ...reply } = v as ReplyTo & { origin?: TurnOrigin; sender?: Side; secrets?: string[]; replaces?: number; replacedBy?: number; slot?: number };
   return {
     ...(Object.keys(reply).length ? { replyTo: reply as ReplyTo } : {}), ...(origin ? { origin } : {}), ...(sender ? { sender } : {}),
+    ...(Array.isArray(secrets) && secrets.length ? { secrets: secrets.map(String) } : {}),
     ...(replaces != null ? { replaces: Number(replaces) } : {}), ...(replacedBy != null ? { replacedBy: Number(replacedBy) } : {}),
   };
 };
@@ -2482,7 +2493,7 @@ const grantOf = (v: unknown): Grant | undefined => {
  *  never replaces (a user may queue any number); without `replace` nothing changes. */
 export async function queueMessage(input: Omit<QueuedMessage, "id" | "createdAt" | "replaces" | "replacedBy">, opts: { replace?: boolean } = {}): Promise<QueuedMessage> {
   const insert = async (tx: Bun.SQL, extra: { slot?: number; replaces?: number } = {}) => {
-    const packed = { ...input.replyTo, ...(input.origin ? { origin: input.origin } : {}), ...(input.sender ? { sender: input.sender } : {}), ...extra };
+    const packed = { ...input.replyTo, ...(input.origin ? { origin: input.origin } : {}), ...(input.sender ? { sender: input.sender } : {}), ...(input.secrets?.length ? { secrets: input.secrets } : {}), ...extra };
     const rows = await tx`
       INSERT INTO queued_message (user_id, repo, branch, worktree_path, instruction, attachments, provider, created_at, grant_scope, reply_to)
       VALUES (${currentUser()}, ${input.repo}, ${input.branch}, ${input.worktreePath}, ${input.instruction},
@@ -2817,6 +2828,19 @@ export async function closeForm(id: string, state: "submitted" | "cancelled", an
   });
 }
 
+/** The tool results of these runs that hold an `orca secret show` token (`orca-secret://…`). */
+export async function secretShowOutputs(runIds: string[]): Promise<{ runId: string; output: string }[]> {
+  if (!runIds.length) return [];
+  return withRetry(async (sql) => {
+    const rows = await sql`
+      SELECT run_id, step->>'output' AS output FROM turn_step
+      WHERE run_id IN ${sql(runIds)} AND step->>'kind' = 'result' AND COALESCE(step->>'isError', 'false') <> 'true'
+        AND step->>'output' LIKE '%orca-secret://%'
+      ORDER BY at, seq`;
+    return (rows as { run_id: string; output: string }[]).map((r) => ({ runId: r.run_id, output: r.output }));
+  });
+}
+
 /** The tool results of these runs that name a form (`orca-form://<id>`, the line `orca ask-form` prints). */
 export async function formOutputs(runIds: string[]): Promise<{ runId: string; output: string }[]> {
   if (!runIds.length) return [];
@@ -2834,31 +2858,43 @@ export async function formOutputs(runIds: string[]): Promise<{ runId: string; ou
 // Only ciphertext is stored here. `secrets()` never selects it; `secretCiphers()` is for the store's
 // own decrypt (a use, the scrub's cache) and never leaves the bridge.
 
-export type SecretRow = { scope: string; name: string; source?: string; keyId: string; createdAt: number; updatedAt: number; lastUsedAt?: number };
+export type SecretRow = { scope: string; name: string; source?: string; keyId: string; createdAt: number; updatedAt: number; lastUsedAt?: number; public: boolean };
 export type SecretUse = { scope: string; name: string; action: string; command?: string; who: string; at: number };
 
 const toSecret = (r: Record<string, unknown>): SecretRow => ({
   scope: String(r.scope), name: String(r.name), ...(r.source ? { source: String(r.source) } : {}), keyId: String(r.key_id),
   createdAt: Number(r.created_at), updatedAt: Number(r.updated_at),
   ...(r.last_used_at === null || r.last_used_at === undefined ? {} : { lastUsedAt: Number(r.last_used_at) }),
+  public: r.public === true,
 });
 
-/** Store or replace a secret. True when it was new. */
-export async function putSecret(s: { scope: string; name: string; ciphertext: string; keyId: string; source?: string }, at = Date.now()): Promise<boolean> {
+/** Store or replace a secret. `created`: it was new. `public` left out keeps a replaced secret's flag
+ *  (a new one is private); the answer says the flag it has now. */
+export async function putSecret(s: { scope: string; name: string; ciphertext: string; keyId: string; source?: string; public?: boolean }, at = Date.now()): Promise<{ created: boolean; public: boolean }> {
   return withRetry(async (sql) => {
     const rows = await sql`
-      INSERT INTO secret (user_id, scope, name, ciphertext, key_id, source, created_at, updated_at)
-      VALUES (${currentUser()}, ${s.scope}, ${s.name}, ${s.ciphertext}, ${s.keyId}, ${s.source ?? null}, ${at}, ${at})
-      ON CONFLICT (user_id, scope, name) DO UPDATE SET ciphertext = EXCLUDED.ciphertext, key_id = EXCLUDED.key_id, source = EXCLUDED.source, updated_at = EXCLUDED.updated_at
-      RETURNING (xmax = 0) AS inserted`;
-    return Boolean((rows as { inserted?: boolean }[])[0]?.inserted);
+      INSERT INTO secret (user_id, scope, name, ciphertext, key_id, source, created_at, updated_at, public)
+      VALUES (${currentUser()}, ${s.scope}, ${s.name}, ${s.ciphertext}, ${s.keyId}, ${s.source ?? null}, ${at}, ${at}, ${s.public ?? false})
+      ON CONFLICT (user_id, scope, name) DO UPDATE SET ciphertext = EXCLUDED.ciphertext, key_id = EXCLUDED.key_id, source = EXCLUDED.source, updated_at = EXCLUDED.updated_at,
+        public = COALESCE(${s.public ?? null}::boolean, secret.public)
+      RETURNING (xmax = 0) AS inserted, public`;
+    const r = (rows as { inserted?: boolean; public?: boolean }[])[0];
+    return { created: Boolean(r?.inserted), public: r?.public === true };
+  });
+}
+
+/** Mark a secret public or private. False when there is no such secret. */
+export async function setSecretPublic(scope: string, name: string, pub: boolean, at = Date.now()): Promise<boolean> {
+  return withRetry(async (sql) => {
+    const rows = await sql`UPDATE secret SET public = ${pub}, updated_at = ${at} WHERE user_id = ${currentUser()} AND scope = ${scope} AND name = ${name} RETURNING name`;
+    return (rows as unknown[]).length > 0;
   });
 }
 
 /** Every secret's name, scope and dates — never its value. */
 export async function secrets(): Promise<SecretRow[]> {
   return withRetry(async (sql) => {
-    const rows = await sql`SELECT scope, name, source, key_id, created_at, updated_at, last_used_at FROM secret WHERE user_id = ${currentUser()} ORDER BY scope, name`;
+    const rows = await sql`SELECT scope, name, source, key_id, created_at, updated_at, last_used_at, public FROM secret WHERE user_id = ${currentUser()} ORDER BY scope, name`;
     return (rows as Record<string, unknown>[]).map(toSecret);
   });
 }
@@ -2882,7 +2918,7 @@ export async function deleteSecret(scope: string, name: string): Promise<boolean
 export async function addSecretUse(u: SecretUse): Promise<void> {
   return withRetry(async (sql) => {
     await sql`INSERT INTO secret_use (user_id, scope, name, action, command, who, at) VALUES (${currentUser()}, ${u.scope}, ${u.name}, ${u.action}, ${u.command ?? null}, ${u.who}, ${u.at})`;
-    if (u.action === "pipe" || u.action === "env") await sql`UPDATE secret SET last_used_at = ${u.at} WHERE user_id = ${currentUser()} AND scope = ${u.scope} AND name = ${u.name}`;
+    if (u.action === "pipe" || u.action === "env" || u.action === "worker") await sql`UPDATE secret SET last_used_at = ${u.at} WHERE user_id = ${currentUser()} AND scope = ${u.scope} AND name = ${u.name}`;
   });
 }
 

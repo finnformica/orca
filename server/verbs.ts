@@ -154,7 +154,7 @@ function providerFor(repo: RepoConfig, e: db.Fields): AgentProvider {
 /** Create a workstream and launch its first run. `fields` are extra enrichment for the new card. */
 export async function createWorkstream(
   cfg: OrcaConfig, repo: RepoConfig,
-  input: { prompt: string; title?: string; model?: string; fields?: db.Fields; origin?: TurnOrigin },
+  input: { prompt: string; title?: string; model?: string; fields?: db.Fields; origin?: TurnOrigin; secrets?: string[] },
 ): Promise<{ branch: string; worktreePath: string; title: string; runId: string }> {
   const model = input.model ?? modelFor(cfg, repo);
   const provider = providerOfModel(model) ?? "claude";
@@ -168,6 +168,7 @@ export async function createWorkstream(
   });
   const receipt = await agent.runAgent(wt.worktreePath, launchPrompt({ title, branch: wt.branch, prompt: input.prompt }, repo.baseBranch), {
     ...launchOptions(cfg, repo, provider, model, input.fields), branch: wt.branch, action: "launch", instruction: input.prompt, origin: input.origin,
+    ...(input.secrets?.length ? { secrets: input.secrets } : {}),
   });
   await db.patchEnrichment(repo.name, wt.branch, { sessionId: receipt.sessionId });
   return { ...wt, title, runId: receipt.runId };
@@ -178,7 +179,7 @@ export async function createWorkstream(
  *  scaffolding for an action that builds its own (Address PR). */
 export async function followUp(
   cfg: OrcaConfig, repo: RepoConfig, branch: string,
-  input: { instruction: string; prompt?: string; action?: string; evidenceChars?: number; origin?: TurnOrigin; sender?: Side; prNumber?: number },
+  input: { instruction: string; prompt?: string; action?: string; evidenceChars?: number; origin?: TurnOrigin; sender?: Side; prNumber?: number; secrets?: string[] },
 ): Promise<{ status: "running" | "queued"; worktreePath: string; queuedId?: number; replacedId?: number }> {
   const worktreePath = await ensureWorktree(repo, branch);
   const e = (await db.enrichment(repo.name))[branch] ?? {};
@@ -189,7 +190,7 @@ export async function followUp(
   if (agent.isRunning(worktreePath) || behind) {
     // `replace`: an agent's or Orca's message replaces that sender's own still-queued one, in its
     // place (one message per sender). A person's message (no sender, no origin) queues as before.
-    const queued = await db.queueMessage({ repo: repo.name, branch, worktreePath, instruction: input.instruction, attachments: [], provider, ...(input.origin ? { origin: input.origin } : {}), ...(input.sender ? { sender: input.sender } : {}) }, { replace: true });
+    const queued = await db.queueMessage({ repo: repo.name, branch, worktreePath, instruction: input.instruction, attachments: [], provider, ...(input.origin ? { origin: input.origin } : {}), ...(input.sender ? { sender: input.sender } : {}), ...(input.secrets?.length ? { secrets: input.secrets } : {}) }, { replace: true });
     if (behind) await agent.drainQueue(worktreePath, repo.name, branch);
     return { status: "queued", worktreePath, queuedId: queued.id, ...(queued.replaces ? { replacedId: queued.replaces } : {}) };
   }
@@ -205,7 +206,7 @@ export async function followUp(
   const receipt = await agent.runAgent(worktreePath, input.prompt ?? chatPrompt(input.instruction, { mergeWhenGreen: Boolean(e.mergeWhenGreen), prNumber: input.prNumber }), {
     ...launchOptions(cfg, repo, provider, e.preferredModel as string | undefined, e), ...next,
     branch, action: input.action ?? "followup", instruction: input.instruction, evidenceChars: input.evidenceChars, origin: input.origin,
-    ...(input.sender ? { sender: input.sender } : {}),
+    ...(input.sender ? { sender: input.sender } : {}), ...(input.secrets?.length ? { secrets: input.secrets } : {}),
   });
   await db.patchEnrichment(repo.name, branch, { agentProvider: provider, sessionId: receipt.sessionId });
   return { status: "running", worktreePath };
@@ -234,7 +235,7 @@ export async function launchQueued(cfg: OrcaConfig, repo: RepoConfig, message: d
   const receipt = await agent.runAgent(message.worktreePath, withAttachments(followUpPrompt(message.instruction, { mergeWhenGreen: Boolean(e.mergeWhenGreen) }), message.attachments), {
     ...launchOptions(cfg, repo, provider, typeof pinned === "string" ? pinned : undefined, e), ...next,
     branch: message.branch, action: "followup", instruction: message.instruction, origin: message.origin,
-    ...(message.sender ? { sender: message.sender } : {}),
+    ...(message.sender ? { sender: message.sender } : {}), ...(message.secrets?.length ? { secrets: message.secrets } : {}),
   });
   await db.patchEnrichment(repo.name, message.branch, { agentProvider: provider, sessionId: receipt.sessionId });
 }

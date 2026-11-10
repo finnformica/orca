@@ -26,12 +26,15 @@ export type FormField = {
   max?: number | string;
   /** secret only: the secret's scope in the store (the form's scope when absent). */
   scope?: string;
+  /** secret only: the value is not secret (an OAuth client id). It is stored like any secret, but the
+   *  scrub of replies and transcripts skips it, so a link that holds it still works. */
+  public?: boolean;
 };
 
 export type FormSpec = { title: string; intro?: string; scope?: string; fields: FormField[] };
 
 /** A stored secret as the agent sees it: never the value. */
-export type StoredSecretAnswer = { name: string; stored: true };
+export type StoredSecretAnswer = { name: string; stored: true; public?: true };
 export type FormAnswers = Record<string, string | number | boolean | string[] | null | StoredSecretAnswer>;
 
 export const FORM_MAX_FIELDS = 30;
@@ -41,7 +44,7 @@ export const SCOPE = /^[A-Za-z0-9_.-]{1,64}$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const DATETIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/;
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const FIELD_KEYS = new Set(["name", "label", "type", "required", "help", "placeholder", "default", "options", "min", "max", "scope"]);
+const FIELD_KEYS = new Set(["name", "label", "type", "required", "help", "placeholder", "default", "options", "min", "max", "scope", "public"]);
 
 /** The reference `orca secret` takes for a stored secret: the name alone in the default scope, else `scope/name`. */
 export const secretRef = (scope: string, name: string): string => (scope === DEFAULT_SECRET_SCOPE ? name : `${scope}/${name}`);
@@ -113,6 +116,10 @@ export function parseFormSpec(input: { title?: unknown; intro?: unknown; scope?:
       if (type !== "secret") problems.push(`${id}: only a secret field takes "scope"`);
       else if (!isStr(o.scope) || !SCOPE.test(o.scope)) problems.push(`${id}: "scope" must be 1-64 letters, digits, "_", "." or "-"`);
     }
+    if (o.public !== undefined) {
+      if (type !== "secret") problems.push(`${id}: only a secret field takes "public"`);
+      else if (typeof o.public !== "boolean") problems.push(`${id}: "public" must be true or false`);
+    }
     // A default must itself be a valid answer. A secret never has one: the spec is not secret.
     if (o.default !== undefined) {
       if (type === "secret") problems.push(`${id}: a secret field takes no "default" (the spec is not secret)`);
@@ -131,6 +138,7 @@ export function parseFormSpec(input: { title?: unknown; intro?: unknown; scope?:
       ...(o.min !== undefined ? { min: o.min as number | string } : {}),
       ...(o.max !== undefined ? { max: o.max as number | string } : {}),
       ...(type === "secret" && isStr(o.scope) ? { scope: o.scope } : {}),
+      ...(type === "secret" && o.public === true ? { public: true } : {}),
     });
   });
   if (problems.length) throw new Error(`invalid form: ${problems.join("; ")}`);
@@ -205,16 +213,16 @@ export const fieldScope = (spec: Pick<FormSpec, "scope">, f: Pick<FormField, "sc
 /** The answers the agent gets: every non-secret value, normalised (a number field as a number, an
  *  empty field as null), and each secret field as `{ name, stored: true }` — or null when it was left
  *  empty. `secrets` lists the secret fields to store, with their values; it never goes to the agent. Pure. */
-export function splitAnswers(spec: FormSpec, values: Record<string, unknown>): { answers: FormAnswers; secrets: { field: string; scope: string; name: string; value: string }[] } {
+export function splitAnswers(spec: FormSpec, values: Record<string, unknown>): { answers: FormAnswers; secrets: { field: string; scope: string; name: string; value: string; public?: true }[] } {
   const answers: FormAnswers = {};
-  const secrets: { field: string; scope: string; name: string; value: string }[] = [];
+  const secrets: { field: string; scope: string; name: string; value: string; public?: true }[] = [];
   for (const f of spec.fields) {
     const v = values[f.name];
     if (f.type === "secret") {
       if (isStr(v) && v) {
         const scope = fieldScope(spec, f);
-        secrets.push({ field: f.name, scope, name: f.name, value: v });
-        answers[f.name] = { name: secretRef(scope, f.name), stored: true };
+        secrets.push({ field: f.name, scope, name: f.name, value: v, ...(f.public ? { public: true as const } : {}) });
+        answers[f.name] = { name: secretRef(scope, f.name), stored: true, ...(f.public ? { public: true as const } : {}) };
       } else answers[f.name] = null;
       continue;
     }

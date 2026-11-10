@@ -76,6 +76,7 @@ import { identityUpdate, serverIdentityProblems } from "../shared/serverIdentity
 import * as handoff from "./handoff";
 import * as forms from "./forms";
 import * as secrets from "./secrets";
+import { handleSecrets } from "./secretRoutes";
 import { serverFeatures } from "../shared/serverKeys";
 import type { Side } from "../shared/rooms";
 
@@ -84,6 +85,9 @@ import type { Side } from "../shared/rooms";
 const bodySender = (v: unknown): Side | undefined =>
   v && typeof v === "object" && typeof (v as Side).kind === "string" && typeof (v as Side).id === "string"
     ? { kind: (v as Side).kind, id: (v as Side).id } : undefined;
+/** `orca spawn|send --secret` across the instance hop: the secrets' NAMES, never a value. */
+const bodySecrets = (v: unknown): { secrets?: string[] } =>
+  Array.isArray(v) && v.length && v.every((x) => typeof x === "string" && x) ? { secrets: v as string[] } : {};
 
 /** Resume the implementation agent to write a template-exact PR body from its full context and the
  *  final git state. A self-contained fresh call is the fallback when the native session is missing
@@ -1144,6 +1148,9 @@ async function api(req: Request, url: URL): Promise<Response> {
       throw e;
     }
   }
+  // The user's reveal (Settings > Secrets, the chat's `orca secret show` card) and the public switch
+  // (server/secretRoutes.ts). The reveal is answered HERE, never forwarded: it checks the browser.
+  { const r = await handleSecrets(req, url, body, { cfg, remote: remoteAddr.get(req) }); if (r) return r; }
   // The secret store (server/secrets.ts): names only out; a value only in (the paste guard's "Save
   // as secret"). On the orchestrator's instance, whose key encrypts them.
   if (p === "/api/orchestrator/secrets") {
@@ -1429,7 +1436,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     return json({ ...r, instance: db.instanceName() });
   }
   if (req.method === "POST" && p === "/api/workstreams/spawn") {
-    const ws = await verbs.createWorkstream(cfg, repo, { prompt: String(body.prompt ?? ""), title: body.title, model: body.model, fields: { orchestrated: true, ...(body.grantScope ? { grantScope: body.grantScope } : {}) }, origin: body.origin });
+    const ws = await verbs.createWorkstream(cfg, repo, { prompt: String(body.prompt ?? ""), title: body.title, model: body.model, fields: { orchestrated: true, ...(body.grantScope ? { grantScope: body.grantScope } : {}) }, origin: body.origin, ...bodySecrets(body.secrets) });
     return json({ ...ws, instance: db.instanceName() });
   }
   if (req.method === "POST" && p === "/api/workstreams/followup") {
@@ -1438,7 +1445,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     // the instance hop so a cross-instance send still gets the PR-sync instruction.
     // `sender`: the agent whose `orca send` this is, recorded on a queued row (`orca send --replace`).
     const sender = bodySender(body.sender);
-    const r = await verbs.followUp(cfg, repo, String(body.branch), { instruction: String(body.instruction ?? ""), origin: body.origin, prNumber: typeof body.prNumber === "number" ? body.prNumber : undefined, ...(sender ? { sender } : {}) });
+    const r = await verbs.followUp(cfg, repo, String(body.branch), { instruction: String(body.instruction ?? ""), origin: body.origin, prNumber: typeof body.prNumber === "number" ? body.prNumber : undefined, ...(sender ? { sender } : {}), ...bodySecrets(body.secrets) });
     await db.patchEnrichment(repo.name, String(body.branch), { orchestrated: true });
     return json({ ...r, instance: db.instanceName() });
   }
@@ -1875,6 +1882,8 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (repo.name === ORCHESTRATOR_REPO && !degraded) await handoff.linkTurns(turns).catch(db.logUnlessDown("handoff links"));
     // The forms it asked (`orca ask-form`), linked the same way: the chat draws a form card for each.
     if (repo.name === ORCHESTRATOR_REPO && !degraded) await forms.linkTurns(turns).catch(db.logUnlessDown("form links"));
+    // The values it showed (`orca secret show`): the token, checked here; the chat's card reveals it.
+    if (!degraded) await secrets.linkTurns(turns).catch(db.logUnlessDown("secret show links"));
     // The request origin of a turn the orchestrator started: its referenced messages, joined (server/origin.ts).
     if (!degraded) await linkOrigins(turns).catch(db.logUnlessDown("origin links"));
     for (const t of turns) if (t.instruction !== undefined) t.prompt = "";
