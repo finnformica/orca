@@ -109,8 +109,10 @@ test("every step named uniquely, ids strictly increasing, and an idempotent step
       // …or a backfill that only fills NULLs, so a re-run touches nothing it already wrote, or one
       // ALTER TABLE that drops a constraint IF EXISTS and re-adds the same one (a widened CHECK), or a
       // seed upsert that changes a row only while a flag says it is not seeded yet (the agent seed:
-      // `ON CONFLICT … DO UPDATE … WHERE agent.seeded_at IS NULL`), so a re-run never undoes a user's edit.
-      expect(`${db.stepLabel(step)}: ${st}`).toMatch(/^[\w-]+: (CREATE (UNIQUE )?(TABLE|INDEX) IF NOT EXISTS |ALTER TABLE \S+ ADD COLUMN IF NOT EXISTS |ALTER TABLE \S+ DROP CONSTRAINT IF EXISTS (\S+), ADD CONSTRAINT \4 |UPDATE (\S+) .* AND \S+ IS NULL$|INSERT INTO \S+ .* ON CONFLICT .* DO UPDATE SET .* WHERE \S+ IS NULL$)/i);
+      // `ON CONFLICT … DO UPDATE … WHERE agent.seeded_at IS NULL`), or an INSERT guarded by its own
+      // `WHERE NOT EXISTS (…)` (no unique index to arbitrate an `ON CONFLICT`), so a re-run never
+      // inserts a second row, so a re-run never undoes a user's edit.
+      expect(`${db.stepLabel(step)}: ${st}`).toMatch(/^[\w-]+: (CREATE (UNIQUE )?(TABLE|INDEX) IF NOT EXISTS |ALTER TABLE \S+ ADD COLUMN IF NOT EXISTS |ALTER TABLE \S+ DROP CONSTRAINT IF EXISTS (\S+), ADD CONSTRAINT \4 |UPDATE (\S+) .* AND \S+ IS NULL$|INSERT INTO \S+ .* ON CONFLICT .* DO UPDATE SET .* WHERE \S+ IS NULL$|INSERT INTO \S+ .* NOT EXISTS \(.*\)$)/i);
     }
   }
 });
@@ -123,6 +125,26 @@ test("re-running every step on a migrated database is harmless", async () => {
   expect(error).toBeUndefined();
   expect(db.migrationReport()!.run.map((s) => s.id)).toEqual(numbered().filter((s) => s.idempotent).map((s) => s.id));
   expect(db.migrationReport()!.stamp.map((s) => s.id)).toEqual([3]);
+});
+
+test("20261110-granola-note-subscription: backfills the subscription for an existing Granola account, never twice", async () => {
+  await db.open();
+  await db.close();
+  // A Granola account connected before the fix: an integration row, no subscription. Simulate "not
+  // migrated yet" by dropping the step's ledger row and the subscription it would have added.
+  await raw(async (sql) => {
+    await sql`INSERT INTO integration (id, user_id, kind, name, instance, created_at) VALUES ('gr', ${db.currentUser()}, 'granola', 'Granola', 'local', 0)`;
+    await sql`DELETE FROM migration_named WHERE name = '20261110-granola-note-subscription'`;
+  });
+  await db.open();
+  await db.close();
+  const subs = async () => raw((sql) => sql`SELECT topic_pattern, target_kind FROM subscription WHERE user_id = ${db.currentUser()}`);
+  expect(await subs()).toEqual([{ topic_pattern: "ext.granola.note", target_kind: "orchestrator" }]);
+  // A box where someone already added the subscription by hand: re-running the step adds nothing more.
+  await raw((sql) => sql`DELETE FROM migration_named WHERE name = '20261110-granola-note-subscription'`);
+  await db.open();
+  await db.close();
+  expect(await subs()).toEqual([{ topic_pattern: "ext.granola.note", target_kind: "orchestrator" }]);
 });
 
 test("planMigrations: pending, matching, foreign and unknown ids", () => {

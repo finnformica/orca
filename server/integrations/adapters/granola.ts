@@ -240,10 +240,20 @@ export function noteEnvelope(connectionId: string, n: GranolaNote): InboundEnvel
   };
 }
 
-/** The first Connect: a Viewer `*` link, so a new note reaches the orchestrator with read verbs only. */
+/** What Connect subscribes the orchestrator to: every new finished meeting. */
+export const DEFAULT_SUBSCRIPTIONS: { topic: "ext.granola.note" }[] = [{ topic: "ext.granola.note" }];
+
+/** The first Connect: a Viewer `*` link, so a new note reaches the orchestrator with read verbs only,
+ *  and the orchestrator's subscription to it (the same shape as the Cloudflare adapter's hook). A
+ *  later edit adds nothing, so a subscription you removed stays removed. */
 export async function ensureDefaults(c: Pick<Connection, "id">): Promise<void> {
   const links = (await store.links()).filter((l) => l.integrationId === c.id);
   if (!links.length) await store.addLink({ id: `${c.id}-notes`.slice(0, 63), integrationId: c.id, externalId: CATCH_ALL, label: "All meeting notes", level: "ask", repos: [], requireMention: false });
+  const subs = await store.subscriptions();
+  for (const d of DEFAULT_SUBSCRIPTIONS) {
+    if (subs.some((s) => s.topicPattern === d.topic && s.targetKind === "orchestrator")) continue;
+    await store.addSubscription({ topicPattern: d.topic, filter: {}, targetKind: "orchestrator" });
+  }
 }
 
 // ── The adapter ──────────────────────────────────────────────────────────────────────────────────
