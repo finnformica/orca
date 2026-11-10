@@ -17,7 +17,9 @@ const refOf = (s: Pick<SecretInfo, "scope" | "name">): string => (s.scope === "d
 
 export function SecretsSettings() {
   const [rows, setRows] = useState<SecretInfo[] | null>(null);
-  useEffect(() => { void api.secrets().then((r) => setRows(r.secrets)).catch(() => setRows([])); }, []);
+  // Inside the chain, so a call that throws at once (an older bridge, a test's partial api) also
+  // ends as an empty card: one section must never take down Settings.
+  useEffect(() => { void Promise.resolve().then(() => api.secrets()).then((r) => setRows(r.secrets)).catch(() => setRows([])); }, []);
   return (
     <div id="secrets" className="scroll-mt-20">
       <VCard slot="settings-secrets" title="Secrets" aside={<span className="text-muted-foreground text-xs">values encrypted · shown only on Reveal</span>} bodyClass="divide-y">
