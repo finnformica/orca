@@ -1293,6 +1293,25 @@ export const MIGRATIONS: MigrationStep[] = [
       );`,
   },
   {
+    name: "20261110-granola-note-subscription",
+    idempotent: true,
+    // A new Granola note must wake the orchestrator (docs/integrations/granola.md), but Connect's
+    // `ensureDefaults` (server/integrations/adapters/granola.ts) did not add the subscription, and it
+    // does not rerun for an account connected before the fix. This backfills it once, for every
+    // existing Granola integration row with no `ext.granola.note` → orchestrator subscription yet.
+    // `NOT EXISTS` makes it idempotent: a re-run, or a box with the subscription added by hand, adds
+    // nothing more.
+    sql: `
+      INSERT INTO subscription (user_id, topic_pattern, filter, target_kind)
+      SELECT DISTINCT i.user_id, 'ext.granola.note', '{}'::jsonb, 'orchestrator'
+      FROM integration i
+      WHERE i.kind = 'granola'
+        AND NOT EXISTS (
+          SELECT 1 FROM subscription s
+          WHERE s.user_id = i.user_id AND s.topic_pattern = 'ext.granola.note' AND s.target_kind = 'orchestrator'
+        );`,
+  },
+  {
     name: "20261110-secret-public",
     idempotent: true,
     // A public secret (server/secrets.ts): a value the user marked as not secret (an OAuth client

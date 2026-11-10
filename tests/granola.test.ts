@@ -16,7 +16,7 @@ import * as store from "../server/integrations/store";
 import * as admin from "../server/integrations/admin";
 import * as secretRefs from "../server/integrations/secretRefs";
 import {
-  GRANOLA_CAPS, GRANOLA_POLL_MIN_S, MAX_EVENTS_PER_POLL, GRANOLA_VERBS, MAX_PAGES, OLD_NOTE_MS, PAGE_SIZE, granolaConfig, granolaError, nextCursor, noteDecision, noteEnvelope, notePlace, readCursor,
+  DEFAULT_SUBSCRIPTIONS, GRANOLA_CAPS, GRANOLA_POLL_MIN_S, MAX_EVENTS_PER_POLL, GRANOLA_VERBS, MAX_PAGES, OLD_NOTE_MS, PAGE_SIZE, ensureDefaults, granolaConfig, granolaError, nextCursor, noteDecision, noteEnvelope, notePlace, readCursor,
   type GranolaCursor, type GranolaNote,
 } from "../server/integrations/adapters/granola";
 import { granolaTool, matches, sinceIso, transcriptText, OUTSIDE_NOTE } from "../server/granolaTool";
@@ -275,6 +275,8 @@ describe("against a fake Granola", () => {
     expect((await secrets.list()).map((s) => `${s.scope}/${s.name}`)).toEqual(["integrations/granola.gr.api_key"]);
     expect(await secrets.valueOf("integrations/granola.gr.api_key")).toBe(KEY);
     expect((await store.links()).filter((l) => l.integrationId === "gr")).toMatchObject([{ externalId: "*", level: "ask", requireMention: false }]);
+    // Connect also subscribes the orchestrator to every new note.
+    expect((await store.subscriptions()).map((s) => [s.topicPattern, s.targetKind])).toEqual(DEFAULT_SUBSCRIPTIONS.map((d) => [d.topic, "orchestrator"]));
     // A bad paste stores nothing and saves nothing.
     await expect(admin.saveIntegration({ id: "gr2", kind: "granola", name: "Other", instance: "local", apiKey: "sk-nope" })).rejects.toThrow("starts with grn_");
     expect(await store.integration("gr2")).toBeUndefined();
@@ -290,6 +292,16 @@ describe("against a fake Granola", () => {
     // Remove deletes the stored key the row owns.
     await admin.removeIntegration("gr");
     expect(await secrets.list()).toEqual([]);
+  });
+
+  test("ensureDefaults subscribes the orchestrator exactly once, never twice", async () => {
+    const note = (subs: { topicPattern: string; targetKind: string }[]) => subs.filter((s) => s.topicPattern === "ext.granola.note" && s.targetKind === "orchestrator").length;
+    await connect();
+    expect(note(await store.subscriptions())).toBe(1);
+    // A re-run (the box already had sub 15 added by hand before the fix) adds nothing more.
+    await ensureDefaults({ id: "gr" });
+    await ensureDefaults({ id: "gr" });
+    expect(note(await store.subscriptions())).toBe(1);
   });
 
   test("a bad key: Test and the card say so with what to do, the poll waits, and orca granola refuses", async () => {
