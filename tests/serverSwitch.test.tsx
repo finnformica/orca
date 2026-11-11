@@ -482,9 +482,25 @@ test("S6j: the sidebar's profile button shows the caller's Tailscale login, not 
   await mount();
   await act(async () => { await flush(); await flush(); await flush(); });
   const profile = q('[data-slot="profile"]')!;
-  expect(profile.querySelector('[data-slot="profile-label"]')!.textContent).toBe("finn@github");
+  const label = profile.querySelector('[data-slot="profile-label"]')!;
+  expect(label.textContent).toBe("finn@github");
+  expect(label.className).toContain("text-left"); // left of the chevron, not centred in the button
+  expect(label.className).toContain("flex-1"); // fills the space so the chevron sits at the far right
   expect(profile.textContent).not.toContain("cloud"); // the instance name is dropped
   expect(profile.querySelector('[data-slot="avatar-fallback"]')!.textContent).toBe("FF"); // initials from the name
+});
+
+test("S6l: a long login truncates instead of pushing the chevron out of the button", async () => {
+  setup();
+  network((u) => (u === "/api/servers" ? json({ ...HOME, self: { ...HOME.self, tailscaleUser: { login: "a-very-long-tailscale-login-name@example-company.com", name: "A Very Long Name" } } }) : undefined));
+  await mount();
+  await act(async () => { await flush(); await flush(); await flush(); });
+  const profile = q('[data-slot="profile"]')!;
+  const label = profile.querySelector('[data-slot="profile-label"]')!;
+  expect(label.textContent).toBe("a-very-long-tailscale-login-name@example-company.com");
+  expect(label.className).toContain("truncate");
+  expect(label.className).toContain("text-left");
+  expect(profile.querySelector('svg.lucide-chevrons-up-down')).not.toBeNull(); // chevron still present
 });
 
 test("S6k: with no Tailscale user (local dev, a tagged device, an older server) the profile button falls back to \"You\" and a generic icon", async () => {
