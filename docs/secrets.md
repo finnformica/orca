@@ -24,6 +24,7 @@ Each field is an object:
 | `options` | For `select` and `multiselect` only: text, or `{ "value", "label" }`. |
 | `min`, `max` | `number`: the value. `text`, `textarea`, `secret`: the length. `multiselect`: the count. `date`, `datetime`: ISO text. |
 | `scope` | For `secret` only: the scope of the stored secret. The default is the form's `--scope`, else `default`. |
+| `public` | For `secret` only: `true` stores the value as a public secret (see "Public secrets"). |
 
 Orca checks the spec before it asks. It refuses an unknown key, a wrong type, a missing option list
 and a default on a secret field. It lists every problem in one message.
@@ -47,7 +48,11 @@ to the Orca chat to every channel that subscribes to `orca.question`.
 orca secret list                          names, scope, created, last used — never a value
 orca secret pipe <name> -- <cmd…>         run cmd with the value on its stdin
 orca secret env <name>[=VAR] -- <cmd…>    run cmd with the value in VAR (default: the name in capitals)
+orca secret show <name>                   show the value to the user in the Orca chat
+orca secret mark <name> --public|--private   mark the secret public or private
 orca secret delete <name>                 delete the secret
+orca spawn … --secret <name>[=VAR]        put the value in the new worker run's env (repeatable)
+orca send … --secret <name>[=VAR]         put the value in that one worker run's env (repeatable)
 ```
 
 A name is `name` in the `default` scope, else `scope/name`. A bare name in two scopes is refused.
@@ -123,7 +128,10 @@ sits right before it.
   - the text `orca` returns to an agent (each verb, its errors, and `pipe` / `env` output);
   - transcript steps (tool input and output) and the copy sent to the chat stream;
   - each turn's prompt, instruction, response and structured outcome, also in the outbox journal;
-  - every outbound channel post (the dispatcher, before the adapter sends).
+  - each worker report, before it goes to the orchestrator;
+  - every outbound channel post (the dispatcher, before the adapter sends, and `orca slack post`).
+
+  A public secret is skipped everywhere except the channel posts.
 
   The scrub reads an in-memory cache of the values this bridge can decrypt. Orca reads the cache at
   connect, every minute, and at once after a store or a delete. A value shorter than 6 characters is
@@ -135,8 +143,58 @@ sits right before it.
 - **Who can use the store.** `orca secret` is owner-only: a wake that an outside sender caused
   (Discord, Slack, a webhook) cannot list, use or delete a secret. `orca ask-form` is allowed at the
   "ask" level, like `orca ask-user`.
-- **Audit.** `secret_use` has one row for each store, `pipe`, `env` and `delete`: who, the command's
+- **Audit.** `secret_use` has one row for each store, `pipe`, `env`, `worker`, `show`, `reveal`,
+  `mark` and `delete`: who, the command's
   name (never its arguments) and when.
+
+## See a value
+
+The user sees a value in two places. The agent never does.
+
+1. **Settings > Secrets.** Each secret has a **Reveal** button and a **Public** switch. Reveal shows
+   the value in that row, with Copy. Hide removes it from the page.
+2. **`orca secret show <name>`.** The agent asks for this only when the user asks for the value. The
+   tool result holds only `[secret <name>]` and a signed token (`orca-secret://<name>~<time>~<mac>`).
+   The chat draws a card for the token under the agent's reply. For 15 minutes the card shows the
+   value at once; after that it waits for Reveal. The stored transcript, memory, channel posts and
+   the agent's context keep the mask.
+
+Both use `POST /api/secrets/reveal` (`server/secretRoutes.ts`). The route answers only:
+
+- a request with an `Origin` header that names this host or a known Orca server;
+- with `Sec-Fetch-Site: same-origin`, which the browser sets and a page script cannot set;
+- from loopback or from the owner's own tailnet device (the web terminal's check).
+
+`bin/orca`, `curl` from a worker and a forward between instances send no such headers, so the route
+refuses them. A chat card sends its token, and the route checks the mac. Each reveal writes an audit
+row (`reveal`). The route is not under `/api/orchestrator`, because that path is forwarded without
+the `Origin`. The bridge that served the page answers it from the shared database.
+
+## Give a secret to a worker
+
+`orca spawn … --secret <name>[=VAR]` and `orca send … --secret <name>[=VAR]` put a value in the env
+of ONE worker run. VAR is the name in capitals unless you give it, as for `orca secret env`. Use it
+when a worker must test an API with a real key.
+
+- Orca checks each name before the launch, and resolves the value on the instance that runs it.
+- The worker's prompt names the variables, never a value.
+- A queued send keeps the names (never a value) in the queue row until it runs.
+- The value is in the scrub cache, so the worker's transcript, turn and report show `[secret <name>]`.
+- Each run writes one audit row per secret (`worker`).
+- Like `orca secret`, the flag is owner-only: a wake from an outside sender cannot use it.
+
+## Public secrets
+
+A public secret is a value that is not secret, for example an OAuth client id. Orca stores and
+encrypts it like any other secret. The scrub of tool output, transcripts, turns and worker reports
+skips it, so a link that holds it still works. Outbound channel posts (the dispatcher and
+`orca slack post`) still mask it.
+
+Mark one with the Settings switch, `orca secret mark <name> --public|--private`, or `"public": true`
+on a form's secret field. A replaced value keeps its flag.
+
+(History: on 2026-11-06 a TrueLayer client id was stored as a secret. The scrub removed it from
+every OAuth link the agent wrote, and the links broke.)
 
 ### Limits
 

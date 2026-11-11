@@ -3,7 +3,7 @@
 // ORCA_SECRETS_KEY or the state dir); `orca secret list|pipe|env|delete` with the audit; and the scrub
 // of tool output, transcripts, turns and channel posts. A channel gets only a link to the Orca chat.
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as db from "../server/db";
@@ -16,9 +16,13 @@ import * as router from "../server/integrations/router";
 import * as dispatcher from "../server/integrations/dispatcher";
 import * as store from "../server/integrations/store";
 import { agentEnv } from "../server/env";
+import * as agent from "../server/agent";
+import { secretEnvNote } from "../server/agent";
+import { handleSecrets, type SecretRouteDeps } from "../server/secretRoutes";
+import { parseSecretShows, showFresh, turnSecretShows } from "../shared/secretShow";
 import type { Adapter } from "../server/integrations/adapter";
 import { grantRefusal, type Envelope, type OutboundMessage, type Target } from "../shared/integrations";
-import type { AgentStep } from "../shared/agent";
+import type { AgentStep, AgentTurn } from "../shared/agent";
 import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO } from "../web/src/workstream";
 import type { OrcaConfig } from "../server/config";
 import { native } from "./happydom";
@@ -234,5 +238,221 @@ describe("scrub", () => {
     // The cache another instance's store fills: refresh reads it back from the table.
     await secrets.refresh();
     expect(secrets.scrub(VALUE)).toBe("[secret api_key]");
+  });
+});
+
+// ---- looser handling (2026-11-10): public secrets, Reveal, `orca secret show`, `--secret` for workers ----
+
+describe("public secrets", () => {
+  // Not a real id: the shape of an OAuth client id the user marked public.
+  const CLIENT_ID = "fake-client-0000-1111-2222";
+  test("the reply scrub skips a public value; channel posts still mask it; mark switches it", async () => {
+    await secrets.store({ name: "client_id", value: CLIENT_ID, who: "t", public: true });
+    await secrets.store({ name: "api_key", value: VALUE, who: "t" });
+    const link = `https://auth.example/authorize?client_id=${CLIENT_ID}&key=${VALUE}`;
+    // Replies, transcripts and tool output: the link still works, the private key does not leak.
+    expect(secrets.scrub(link)).toBe("https://auth.example/authorize?client_id=fake-client-0000-1111-2222&key=[secret api_key]");
+    const runId = "run-public-1";
+    await outbox.startTurn({ repo: ORCHESTRATOR_REPO, branch: ORCHESTRATOR_BRANCH, runId, provider: "claude", instruction: "auth link", prompt: "p", startedAt: Date.now() });
+    await outbox.finishTurn(runId, { status: "done", response: `Open ${link}`, finishedAt: Date.now() });
+    expect((await db.turns(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH))[0]!.response).toContain(`client_id=${CLIENT_ID}&key=[secret api_key]`);
+    // A pipe of a public value comes back whole.
+    expect((await exitOf(orchestrator.tool(cfg, "secret", { _: ["pipe", "client_id"], "--": ["cat"] }))).text).toBe(CLIENT_ID);
+
+    // A channel never gets a stored value, a public one included.
+    expect(secrets.scrubValueAll({ text: link }).text).toBe("https://auth.example/authorize?client_id=[secret client_id]&key=[secret api_key]");
+    await orchestrator.tool(cfg, "post", { link: "D1", _: [`open ${link}`] });
+    await dispatcher.dispatchOnce();
+    expect(sent.at(-1)!.msg.text).not.toContain(CLIENT_ID);
+    expect(sent.at(-1)!.msg.text).not.toContain(VALUE);
+
+    // `orca secret mark` (either flag order), the list and the audit.
+    expect(await orchestrator.tool(cfg, "secret", { _: ["list"] })).toContain("client_id · public · scope default");
+    expect(await orchestrator.tool(cfg, "secret", { _: ["mark", "client_id"], private: "" })).toContain("Marked client_id private");
+    expect(secrets.scrub(link)).not.toContain(CLIENT_ID);
+    expect(await orchestrator.tool(cfg, "secret", { _: ["mark"], public: "client_id" })).toContain("Marked client_id public");
+    expect(secrets.scrub(link)).toContain(CLIENT_ID);
+    await expect(orchestrator.tool(cfg, "secret", { _: ["mark", "client_id"], public: "", private: "" })).rejects.toThrow("usage: orca secret mark");
+    expect((await db.secretUses()).slice(0, 2).map((u) => u.action)).toEqual(["mark public", "mark private"]);
+    // A new value for a public secret keeps the flag; the refresh reads it back from the table.
+    await secrets.store({ name: "client_id", value: `${CLIENT_ID}-v2`, who: "t" });
+    expect((await db.secrets()).find((s) => s.name === "client_id")!.public).toBe(true);
+    await secrets.refresh();
+    expect(secrets.scrub(`${CLIENT_ID}-v2`)).toBe(`${CLIENT_ID}-v2`);
+  });
+
+  test("a form's secret field takes public: true, stored public; other types refuse it", async () => {
+    const out = await orchestrator.tool(cfg, "ask-form", { title: "OAuth app", fields: JSON.stringify([{ name: "client_id", label: "Client id", type: "secret", public: true }, { name: "client_secret", label: "Client secret", type: "secret" }]) });
+    const id = out.match(/orca-form:\/\/([\w-]+)/)![1]!;
+    const f = await forms.submit(id, { client_id: CLIENT_ID, client_secret: VALUE }, async () => {});
+    expect(f.answers).toEqual({ client_id: { name: "client_id", stored: true, public: true }, client_secret: { name: "client_secret", stored: true } });
+    expect((await db.secrets()).map((s) => [s.name, s.public])).toEqual([["client_id", true], ["client_secret", false]]);
+    await expect(orchestrator.tool(cfg, "ask-form", { title: "x", fields: JSON.stringify([{ name: "a", label: "A", type: "text", public: true }]) })).rejects.toThrow('only a secret field takes "public"');
+  });
+});
+
+describe("the reveal route (Settings > Secrets and the show card)", () => {
+  const routeCfg = { instances: { local: "http://127.0.0.1:8787" } } as unknown as OrcaConfig;
+  const browser = { origin: "http://127.0.0.1:8787", host: "127.0.0.1:8787", "sec-fetch-site": "same-origin", "content-type": "application/json" };
+  async function reveal(body: Record<string, unknown>, headers: Record<string, string>, remote = "127.0.0.1", identify?: SecretRouteDeps["identify"]) {
+    const url = new URL("http://127.0.0.1:8787/api/secrets/reveal");
+    const res = await handleSecrets(new Request(url, { method: "POST", headers, body: JSON.stringify(body) }), url, body, { cfg: routeCfg, remote, ...(identify ? { identify } : {}) });
+    return { status: res!.status, data: await res!.json() as Record<string, unknown>, cache: res!.headers.get("cache-control") };
+  }
+
+  test("only the owner's browser page gets a value; an agent's call, another page or another device is refused", async () => {
+    await secrets.store({ name: "api_key", value: VALUE, who: "t" });
+    const ok = await reveal({ ref: "api_key" }, browser);
+    expect(ok).toEqual({ status: 200, data: { ref: "api_key", value: VALUE }, cache: "no-store" });
+    expect((await db.secretUses())[0]).toMatchObject({ action: "reveal", command: "Settings > Secrets", who: "user (loopback)" });
+
+    // bin/orca or curl from a worker: no Origin.
+    const { origin: _o, ...noOrigin } = browser;
+    expect((await reveal({ ref: "api_key" }, noOrigin)).data.error).toContain("no Origin header");
+    // A forged Origin without the browser's own Sec-Fetch-Site.
+    const { "sec-fetch-site": _s, ...noFetchSite } = browser;
+    expect((await reveal({ ref: "api_key" }, noFetchSite)).status).toBe(403);
+    expect((await reveal({ ref: "api_key" }, { ...browser, "sec-fetch-site": "cross-site" })).status).toBe(403);
+    // A page on another host.
+    expect((await reveal({ ref: "api_key" }, { ...browser, origin: "https://evil.example", host: "127.0.0.1:8787" })).data.error).toContain("cross-origin");
+    // Not loopback and not the tailnet; a local proxy that forwards such a caller.
+    expect((await reveal({ ref: "api_key" }, browser, "203.0.113.5")).data.error).toContain("not on the tailnet");
+    expect((await reveal({ ref: "api_key" }, { ...browser, "x-forwarded-for": "203.0.113.5" })).status).toBe(403);
+    // A tailnet device that is not the owner's (the terminal's check, injected here).
+    const refused = await reveal({ ref: "api_key" }, browser, "100.100.1.1", async () => ({ ok: false, reason: "ana@x is not this machine's owner" }));
+    expect(refused).toMatchObject({ status: 403, data: { error: "Reveal refused: ana@x is not this machine's owner." } });
+    const owner = await reveal({ ref: "api_key" }, browser, "100.100.1.2", async () => ({ ok: true, who: "finn@x" }));
+    expect(owner.data.value).toBe(VALUE);
+    // Every refusal kept the value out; only the two allowed calls wrote an audit row.
+    expect((await db.secretUses()).filter((u) => u.action === "reveal")).toHaveLength(2);
+    // GET is not a reveal; an unknown name is a 404.
+    const url = new URL("http://127.0.0.1:8787/api/secrets/reveal");
+    expect((await handleSecrets(new Request(url), url, {}, { cfg: routeCfg, remote: "127.0.0.1" }))!.status).toBe(405);
+    expect((await reveal({ ref: "nope" }, browser)).status).toBe(404);
+  });
+});
+
+describe("orca secret show", () => {
+  test("the tool result, the stored transcript and the linked turn hold only the mask and a token; the card's token reveals it", async () => {
+    await secrets.store({ name: "api_key", value: VALUE, who: "t" });
+    // What the bridge returns to the agent (server/index.ts scrubs every tool answer).
+    const out = secrets.scrub(await orchestrator.tool(cfg, "secret", { _: ["show", "api_key"] }));
+    expect(out).toContain("Shown to the user in the Orca chat: [secret api_key]");
+    expect(out).not.toContain(VALUE);
+    const [show] = parseSecretShows(out);
+    expect(show!.ref).toBe("api_key");
+    expect((await db.secretUses())[0]).toMatchObject({ action: "show", who: "chief" });
+
+    // The run's transcript: the tool result step as stored, and the agent's reply after it.
+    const runId = "run-show-1";
+    await outbox.startTurn({ repo: ORCHESTRATOR_REPO, branch: ORCHESTRATOR_BRANCH, runId, provider: "claude", instruction: "show me my api key", prompt: "p", startedAt: Date.now() });
+    await transcript.append(runId, [
+      { at: Date.now(), kind: "tool", id: "t1", name: "Bash", input: { command: "orca secret show api_key" } } as AgentStep,
+      { at: Date.now(), kind: "result", id: "t1", output: out } as AgentStep,
+    ]);
+    await outbox.finishTurn(runId, { status: "done", response: "Here it is: [secret api_key] (see the card).", finishedAt: Date.now() });
+    const stored = JSON.stringify({ steps: await db.steps(runId), turns: await db.turns(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH) });
+    expect(stored).not.toContain(VALUE);
+    expect(stored).toContain("[secret api_key]");
+
+    // /api/turns links the token (checked) to its turn; the chat's card shows it.
+    const turns = [{ id: runId }, { id: "run-other" }] as AgentTurn[];
+    await secrets.linkTurns(turns);
+    expect(turns[0]!.secretShows).toEqual([show!.token]);
+    expect(turns[1]!.secretShows).toBeUndefined();
+    expect(turnSecretShows({ steps: [{ kind: "result", output: out }] }).map((s) => s.ref)).toEqual(["api_key"]);
+    expect(turnSecretShows({ steps: [{ kind: "text", output: out }] })).toEqual([]); // a reply's text is no show
+
+    // The card sends the token to the reveal route: a real one reveals, a forged mac does not.
+    const browser = { origin: "http://127.0.0.1:8787", host: "127.0.0.1:8787", "sec-fetch-site": "same-origin" };
+    const routeCfg = { instances: { local: "http://127.0.0.1:8787" } } as unknown as OrcaConfig;
+    const call = async (token: string) => {
+      const url = new URL("http://127.0.0.1:8787/api/secrets/reveal");
+      const res = (await handleSecrets(new Request(url, { method: "POST", headers: browser }), url, { token }, { cfg: routeCfg, remote: "127.0.0.1" }))!;
+      return { status: res.status, data: await res.json() as Record<string, unknown> };
+    };
+    expect((await call(show!.token)).data).toEqual({ ref: "api_key", value: VALUE });
+    const forged = show!.token.replace(/~[0-9a-f]{16}$/, "~0000000000000000");
+    expect((await call(forged)).status).toBe(403);
+    await secrets.linkTurns(turns); // a forged token in a step links nothing
+    expect(secrets.verifyShowToken(forged)).toBeUndefined();
+
+    // Fresh: the card shows the value at once; a day later it waits for Reveal.
+    expect(showFresh(show!.at, show!.at + 60_000)).toBe(true);
+    expect(showFresh(show!.at, show!.at + 86_400_000)).toBe(false);
+    await expect(orchestrator.tool(cfg, "secret", { _: ["show", "nope"] })).rejects.toThrow('no secret "nope"');
+    expect(grantRefusal({ level: "admin", repos: ["r"], linkId: "D1" }, "secret", { _: ["show"] })).toContain("needs your own chat");
+  });
+});
+
+describe("orca send|spawn --secret", () => {
+  let shim: string;
+  let prevPath: string | undefined;
+  beforeEach(async () => {
+    prevPath = process.env.PATH;
+    shim = await mkdtemp(join(tmpdir(), "orca-claude-"));
+    process.env.PATH = `${shim}:${prevPath}`;
+  });
+  afterEach(async () => {
+    await agent.flushHistory();
+    process.env.PATH = prevPath;
+    await rm(shim, { recursive: true, force: true });
+  });
+
+  test("the value is in that worker run's env, masked in its transcript, turn and report; names only elsewhere", async () => {
+    await secrets.store({ name: "test-api-key", value: VALUE, who: "t" });
+    // A fake claude: it writes its env to a file (what the process really got), then echoes the key
+    // in a tool result and in its reply, as a careless worker would.
+    await writeFile(join(shim, "claude"), `#!/bin/sh
+printf '%s|%s' "$TEST_API_KEY" "$MY_KEY" > "$PWD/env.out"
+printf '%s' "$*" > "$PWD/args.out"
+printf '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"curl -H %s"}}]}}\\n' "$TEST_API_KEY"
+printf '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"200 OK for %s"}]}}\\n' "$TEST_API_KEY"
+printf '{"type":"result","subtype":"success","result":"tested with %s","is_error":false}\\n' "$TEST_API_KEY"
+`);
+    await chmod(join(shim, "claude"), 0o755);
+    const wt = join(stateDir, "wt-secret");
+    await mkdir(wt, { recursive: true });
+    await agent.runAgent(wt, "test the API", { repo: "r", branch: "feat", provider: "claude", secrets: ["test-api-key", "test-api-key=MY_KEY"] });
+    for (let i = 0; i < 400 && !(await db.turns("r", "feat"))[0]?.finishedAt; i++) await new Promise((r) => setTimeout(r, 25));
+    const turn = (await db.turns("r", "feat"))[0]!;
+
+    expect(await readFile(join(wt, "env.out"), "utf8")).toBe(`${VALUE}|${VALUE}`);
+    expect(process.env.TEST_API_KEY).toBeUndefined(); // never the bridge's own env
+    expect(turn.response).toBe("tested with [secret test-api-key]");
+    const stored = JSON.stringify({ steps: await db.steps(turn.id), turn });
+    expect(stored).not.toContain(VALUE);
+    // The prompt the CLI got names the variables, never a value.
+    const args = await readFile(join(wt, "args.out"), "utf8");
+    expect(args).toContain("$TEST_API_KEY: the stored secret test-api-key");
+    expect(args).toContain("$MY_KEY: the stored secret test-api-key");
+    expect(args).not.toContain(VALUE);
+    expect((await db.secretUses()).filter((u) => u.action === "worker").map((u) => u.who)).toEqual(["worker r/feat", "worker r/feat"]);
+
+    // The worker report the orchestrator gets is built from the raw reply: scrubbed on the way in.
+    await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { wakes: orchestrator.MAX_WAKES }); // held, not a wake
+    await orchestrator.report(cfg, `[worker finished] r/feat — done\nResponse: tested with ${VALUE}`);
+    const held = await db.queuedMessages(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH);
+    expect(held.at(-1)!.instruction).toContain("tested with [secret test-api-key]");
+    expect(JSON.stringify(held)).not.toContain(VALUE);
+
+    // A queued send keeps the NAMES in its row until it runs, never a value.
+    const q = await db.queueMessage({ repo: "r", branch: "feat", worktreePath: wt, instruction: "again", attachments: [], provider: "claude", secrets: ["test-api-key=MY_KEY"] });
+    expect((await db.queuedMessages("r", "feat")).find((m) => m.id === q.id)!.secrets).toEqual(["test-api-key=MY_KEY"]);
+  });
+
+  test("the tool checks every name before a launch, and an outside sender cannot use the flag", async () => {
+    const brief = { repo: "r", title: "Try API", model: "claude-sonnet-5-5", objective: "o", output: "x", boundaries: "b" };
+    await expect(orchestrator.tool(cfg, "spawn", { ...brief, secret: "nope" })).rejects.toThrow('no secret "nope"');
+    await secrets.store({ name: "k1", value: VALUE, who: "t" });
+    await expect(orchestrator.tool(cfg, "spawn", { ...brief, secret: ["k1", "k1"] })).rejects.toThrow("--secret sets K1 twice");
+    await expect(orchestrator.tool(cfg, "send", { repo: "r", branch: "feat", secret: "", _: ["hi"] })).rejects.toThrow("--secret needs a name");
+    expect(await secrets.checkSpecs(["k1", "k1=OTHER"])).toEqual(["k1 as $K1", "k1 as $OTHER"]);
+    for (const verb of ["spawn", "send"]) {
+      expect(grantRefusal({ level: "admin", repos: ["r"], linkId: "D1" }, verb, { repo: "r", secret: "k1" })).toContain(`"${verb} --secret" needs your own chat`);
+      expect(grantRefusal({ level: "work", repos: ["r"], linkId: "D1" }, verb, { repo: "r" })).toBeUndefined();
+    }
+    expect(secretEnvNote(["k1=OTHER"])).toContain("$OTHER: the stored secret k1");
+    expect(secretEnvNote(undefined)).toBe("");
   });
 });

@@ -9,12 +9,18 @@
 //   here into ONE command it names — on stdin (`pipe`) or in that command's env (`env`). The command
 //   runs in the bridge, and its output comes back scrubbed.
 // - `scrub` replaces every stored value with `[secret <ref>]` in tool output, transcripts, turns and
-//   outbound channel posts. It reads an in-memory cache of the values this bridge can decrypt.
+//   worker reports. It reads an in-memory cache of the values this bridge can decrypt. A PUBLIC secret
+//   (the user marked it not secret, e.g. an OAuth client id) is skipped there, so a link that holds
+//   it still works. Outbound channel posts use `scrubAll`, which masks public ones too.
+// - The user sees a value in two places only, both through the owner-only reveal route
+//   (server/secretRoutes.ts): Reveal in Settings > Secrets, and the card of `orca secret show`, whose
+//   tool result holds only a signed token (`showToken`), never the value.
+// - `orca send|spawn --secret <name>[=VAR]` puts a value in ONE worker run's env (`envFor`).
 // - Every store, use and delete writes one audit row (`secret_use`: who, command name, when).
 // What it is NOT: a sandbox. An agent with a shell as the same OS user can read the key file, and a
 // command it names can transform a value (base64) so the scrub misses it. The store keeps values out
 // of the model's context and the logs; the owner-only grant on `orca secret` limits who can name one.
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import * as db from "./db";
@@ -22,6 +28,8 @@ import { agentEnv } from "./env";
 import { stateDir, statePath } from "./state";
 import { DEFAULT_SECRET_SCOPE, SCOPE, secretRef } from "../shared/forms";
 import { scrubDeep, scrubSecrets } from "../shared/secretGuard";
+import type { AgentTurn } from "../shared/agent";
+import { SHOW_MAC_HEX, parseSecretShows, secretShowRef } from "../shared/secretShow";
 
 export const SECRETS_KEY_ENV = "ORCA_SECRETS_KEY";
 const NAME = /^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/;
@@ -91,7 +99,8 @@ export function decrypt(blob: string, k: Key = key()): string {
 
 // ---- the scrub cache ----
 
-let cache: { ref: string; value: string }[] = [];
+type Cached = { ref: string; value: string; public: boolean };
+let cache: Cached[] = [];
 let cacheAt = 0;
 
 /** Read every value this bridge's key can decrypt into the scrub cache. A secret stored with
@@ -103,7 +112,7 @@ export async function refresh(): Promise<void> {
     const next: typeof cache = [];
     for (const r of rows) {
       if (r.keyId !== k.id) continue;
-      try { next.push({ ref: secretRef(r.scope, r.name), value: decrypt(r.ciphertext, k) }); } catch { /* a damaged row: skip */ }
+      try { next.push({ ref: secretRef(r.scope, r.name), value: decrypt(r.ciphertext, k), public: r.public }); } catch { /* a damaged row: skip */ }
     }
     cache = next;
     cacheAt = Date.now();
@@ -115,9 +124,14 @@ export async function refresh(): Promise<void> {
 /** When the cache was last read (0: never). */
 export const cachedAt = (): number => cacheAt;
 
-/** `text` with every stored value replaced by `[secret <ref>]`. Synchronous, from the cache. */
-export const scrub = (text: string): string => scrubSecrets(text, cache);
-export const scrubValue = <T>(value: T): T => scrubDeep(value, cache);
+const hidden = (): Cached[] => cache.filter((c) => !c.public);
+/** `text` with every stored value replaced by `[secret <ref>]`, except a public one. Synchronous,
+ *  from the cache. For tool output, transcripts, turns and worker reports. */
+export const scrub = (text: string): string => scrubSecrets(text, hidden());
+export const scrubValue = <T>(value: T): T => scrubDeep(value, hidden());
+/** As `scrubValue`, public secrets too: for outbound channel posts, which never carry a stored value. */
+export const scrubValueAll = <T>(value: T): T => scrubDeep(value, cache);
+export const scrubAll = (text: string): string => scrubSecrets(text, cache);
 
 /** Keep the cache fresh: at once when the database is reachable, then every minute (another
  *  instance may store one). Started by server/index.ts. */
@@ -143,18 +157,29 @@ export async function resolve(ref: string): Promise<db.SecretRow & { ciphertext:
 }
 
 /** Store (or replace) a value. `who` and `source` go to the audit. Returns the reference agents use. */
-export async function store(input: { scope?: string; name: string; value: string; who: string; source?: string }): Promise<{ ref: string; created: boolean }> {
+export async function store(input: { scope?: string; name: string; value: string; who: string; source?: string; public?: boolean }): Promise<{ ref: string; created: boolean; public: boolean }> {
   const scope = input.scope?.trim() || DEFAULT_SECRET_SCOPE;
   const name = input.name.trim();
   if (!NAME.test(name)) throw new SecretError(`secret name "${name}" must start with a letter or "_" and use only letters, digits, "_", "." or "-" (at most 64)`);
   if (!SCOPE.test(scope)) throw new SecretError(`secret scope "${scope}" must be 1-64 letters, digits, "_", "." or "-"`);
   if (typeof input.value !== "string" || !input.value) throw new SecretError("the secret value is empty");
   const k = key();
-  const created = await db.putSecret({ scope, name, ciphertext: encrypt(input.value, k), keyId: k.id, source: input.source });
+  const put = await db.putSecret({ scope, name, ciphertext: encrypt(input.value, k), keyId: k.id, source: input.source, ...(input.public === undefined ? {} : { public: input.public }) });
   await db.addSecretUse({ scope, name, action: "store", who: input.who, at: Date.now() });
   // At once, not at the next refresh: the next output that echoes it must already be scrubbed.
-  cache = [...cache.filter((c) => c.ref !== secretRef(scope, name)), { ref: secretRef(scope, name), value: input.value }];
-  return { ref: secretRef(scope, name), created };
+  cache = [...cache.filter((c) => c.ref !== secretRef(scope, name)), { ref: secretRef(scope, name), value: input.value, public: put.public }];
+  return { ref: secretRef(scope, name), created: put.created, public: put.public };
+}
+
+/** `orca secret mark <name> --public|--private` and the Settings switch. A public value is not
+ *  scrubbed from replies, transcripts or tool output (channel posts still mask it). One audit row. */
+export async function mark(ref: string, pub: boolean, who: string): Promise<{ ref: string; public: boolean }> {
+  const s = await resolve(ref);
+  await db.setSecretPublic(s.scope, s.name, pub);
+  await db.addSecretUse({ scope: s.scope, name: s.name, action: pub ? "mark public" : "mark private", who, at: Date.now() });
+  const name = secretRef(s.scope, s.name);
+  cache = cache.map((c) => (c.ref === name ? { ...c, public: pub } : c));
+  return { ref: name, public: pub };
 }
 
 export async function list(): Promise<db.SecretRow[]> {
@@ -176,7 +201,7 @@ const when = (ms?: number) => (ms ? new Date(ms).toISOString().slice(0, 16).repl
 export function listText(rows: db.SecretRow[], k = keyInfo()): string {
   if (!rows.length) return `No stored secrets. (key ${k.id}, from ${k.source})`;
   return [
-    ...rows.map((r) => `${secretRef(r.scope, r.name)} · scope ${r.scope} · created ${when(r.createdAt)} · last used ${when(r.lastUsedAt)}${r.source ? ` · from ${r.source}` : ""}${r.keyId !== k.id ? ` · stored with another key (${r.keyId}): this bridge cannot use it` : ""}`),
+    ...rows.map((r) => `${secretRef(r.scope, r.name)}${r.public ? " · public" : ""} · scope ${r.scope} · created ${when(r.createdAt)} · last used ${when(r.lastUsedAt)}${r.source ? ` · from ${r.source}` : ""}${r.keyId !== k.id ? ` · stored with another key (${r.keyId}): this bridge cannot use it` : ""}`),
     `(key ${k.id}, from ${k.source})`,
   ].join("\n");
 }
@@ -203,6 +228,87 @@ export async function reveal(ref: string, who: string, use: string): Promise<str
   const value = decrypt(s.ciphertext, k);
   await db.addSecretUse({ scope: s.scope, name: s.name, action: "integration", command: use, who, at: Date.now() });
   return value;
+}
+
+/** The value for the USER's eyes (server/secretRoutes.ts: Settings > Secrets' Reveal and the chat's
+ *  `orca secret show` card), after the route's owner check. One audit row (`reveal`). */
+export async function revealToUser(ref: string, who: string, use: string): Promise<{ ref: string; value: string }> {
+  const s = await resolve(ref);
+  const value = await valueOf(ref);
+  await db.addSecretUse({ scope: s.scope, name: s.name, action: "reveal", command: use, who, at: Date.now() });
+  return { ref: secretRef(s.scope, s.name), value };
+}
+
+// ---- `orca secret show`: a token in the tool result, the value only in the user's chat ----
+
+const showMac = (ref: string, at: number, k: Key = key()): string =>
+  createHmac("sha256", k.bytes).update(`orca-secret-show|${ref}|${at}`).digest("hex").slice(0, SHOW_MAC_HEX);
+
+/** The token `orca secret show` prints (`orca-secret://<ref>~<at>~<mac>`). It holds no value: the
+ *  chat's card sends it to the reveal route, which checks the mac, so a token only comes from a real
+ *  `show`. The tool result, the transcript, memory and the model see only the token and the mask. */
+export async function show(ref: string, who: string, at = Date.now()): Promise<{ ref: string; token: string }> {
+  const s = await resolve(ref);
+  await valueOf(ref); // this bridge must be able to decrypt it, or the card has nothing to show
+  const name = secretRef(s.scope, s.name);
+  await db.addSecretUse({ scope: s.scope, name: s.name, action: "show", who, at });
+  return { ref: name, token: secretShowRef(name, at, showMac(name, at)) };
+}
+
+/** The ref a token names, when its mac is this bridge's; else undefined. */
+export function verifyShowToken(token: string): string | undefined {
+  const t = parseSecretShows(token)[0];
+  if (!t) return undefined;
+  const want = showMac(t.ref, t.at);
+  return want.length === t.mac.length && timingSafeEqual(Buffer.from(want), Buffer.from(t.mac)) ? t.ref : undefined;
+}
+
+/** `/api/turns`: each turn's `orca secret show` tokens that this bridge made (`turn.secretShows`), so
+ *  the chat draws a card. The tokens only: the card asks the reveal route for the value. */
+export async function linkTurns(turns: AgentTurn[]): Promise<void> {
+  const rows = await db.secretShowOutputs(turns.map((t) => t.id));
+  for (const t of turns) {
+    const tokens = rows.filter((r) => r.runId === t.id).flatMap((r) => parseSecretShows(r.output)).map((x) => x.token).filter((tok) => verifyShowToken(tok));
+    if (tokens.length) t.secretShows = [...new Set(tokens)];
+  }
+}
+
+// ---- `orca send|spawn --secret`: a value in one worker run's env ----
+
+/** `--secret` as a list of specs (`name` or `name=VAR`): a repeated flag is an array. */
+export function secretSpecs(raw: unknown): string[] {
+  const all = Array.isArray(raw) ? raw : raw === undefined ? [] : [raw];
+  const out = all.map((v) => String(v).trim());
+  if (out.some((v) => !v)) throw new SecretError("--secret needs a name: --secret <name>[=VAR] (orca secret list shows them)");
+  return out;
+}
+
+/** Check the specs before a launch: each names a secret this bridge can decrypt and a valid
+ *  variable, and no variable is set twice. Returns `REF as VAR` lines for the reply. */
+export async function checkSpecs(specs: string[]): Promise<string[]> {
+  const seen = new Set<string>(), out: string[] = [];
+  for (const spec of specs) {
+    const { ref, variable } = envVarFor(spec);
+    if (seen.has(variable)) throw new SecretError(`--secret sets ${variable} twice`);
+    seen.add(variable);
+    const s = await resolve(ref);
+    await valueOf(ref);
+    out.push(`${secretRef(s.scope, s.name)} as $${variable}`);
+  }
+  return out;
+}
+
+/** The env of one worker run: each spec's value under its variable. One audit row each (`worker`).
+ *  The values are already in the scrub cache, so the run's transcript and report are scrubbed. */
+export async function envFor(specs: readonly string[], who: string, use: string): Promise<Record<string, string>> {
+  const env: Record<string, string> = {};
+  for (const spec of specs) {
+    const { ref, variable } = envVarFor(spec);
+    const s = await resolve(ref);
+    env[variable] = await valueOf(ref);
+    await db.addSecretUse({ scope: s.scope, name: s.name, action: "worker", command: use, who, at: Date.now() });
+  }
+  return env;
 }
 
 /** The env variable for `env <name>[=VAR]`: VAR, else the name in capitals ("openai-key" → OPENAI_KEY). */
@@ -243,6 +349,7 @@ export async function run(input: { ref: string; mode: "pipe" | "env"; variable?:
   clearTimeout(timer);
   const both = [out, err].filter(Boolean).join(out && err && !out.endsWith("\n") ? "\n" : "");
   const tail = both.length > SECRET_OUTPUT_MAX ? `…(output cut to the last ${SECRET_OUTPUT_MAX} characters)…\n${both.slice(-SECRET_OUTPUT_MAX)}` : both;
-  // This value first (a secret from another key is not in the cache), then every cached one.
-  return { exitCode, ref, output: scrub(scrubSecrets(tail, [{ ref, value }])) };
+  // This value first (a secret from another key is not in the cache), then every cached one. A
+  // public value is not scrubbed: it is not secret.
+  return { exitCode, ref, output: scrub(s.public ? tail : scrubSecrets(tail, [{ ref, value }])) };
 }

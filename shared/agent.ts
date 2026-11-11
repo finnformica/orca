@@ -204,6 +204,9 @@ export type AgentTurn = {
   handoffs?: string[];
   /** Forms this turn asked (`orca ask-form`), by id — server-decorated (forms.linkTurns). */
   forms?: string[];
+  /** `orca secret show` tokens in this turn's tool results, each checked by the bridge — server-
+   *  decorated (secrets.linkTurns). A token holds no value: the chat's card asks the reveal route. */
+  secretShows?: string[];
   /** The orchestrator wake that started this turn and its person messages, by id (read off `structured`). */
   origin?: TurnOrigin;
   /** `origin.messageIds` joined to their rows — server-decorated (`originMessages` in server/db.ts). */

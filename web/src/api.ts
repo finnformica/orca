@@ -103,6 +103,9 @@ export type MetricPoint = { at: number; cpuPct: number; load1: number; memUsedGb
   oomKills?: number };
 export type PreviewSvc = { name: string; port: number; url: string; localUrl?: string; open: boolean; running: boolean; ready: boolean; error?: string; startedAt: number };
 
+/** A stored secret as Settings shows it: never its value (server/db.ts SecretRow). */
+export type SecretInfo = { scope: string; name: string; source?: string; keyId: string; createdAt: number; updatedAt: number; lastUsedAt?: number; public: boolean };
+
 const post = (path: string, body: unknown) =>
   apiFetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then(res);
 
@@ -182,6 +185,15 @@ export const api = {
   saveSecret: (body: { name: string; scope?: string; value: string }): Promise<{ ref: string; created: boolean }> => post("/api/orchestrator/secrets", body),
   /** The stored secrets' names (never a value), for a picker such as the Cloudflare Connect form's. */
   secretNames: (): Promise<{ secrets: { scope: string; name: string }[] }> => get("/api/orchestrator/secrets").then(res),
+  /** Settings > Secrets: every stored secret (never a value) and the key's id and source. */
+  secrets: (): Promise<{ secrets: SecretInfo[]; key: { id: string; source: string } }> => get("/api/orchestrator/secrets").then(res),
+  /** Mark a secret public (the reply scrub skips it) or private. */
+  markSecret: (name: string, pub: boolean): Promise<{ ref: string; public: boolean }> => post("/api/orchestrator/secrets/mark", { name, public: pub }),
+  /** One value for the user's eyes: Settings' Reveal (`ref`) or an `orca secret show` card (`token`).
+   *  Always THIS page's own bridge, never `apiFetch`'s chosen server: the route refuses anything but a
+   *  same-origin request from an Orca page (server/secretRoutes.ts). */
+  revealSecret: (by: { ref: string } | { token: string }): Promise<{ ref: string; value: string }> =>
+    fetch("/api/secrets/reveal", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(by), cache: "no-store" }).then(res),
   /** Deletes a secret the chat composer itself stored (never one a `/secret` card chip only refers to). */
   deleteSecret: (ref: string): Promise<{ deleted: string }> => apiFetch(`/api/orchestrator/secrets?name=${encodeURIComponent(ref)}`, { method: "DELETE" }).then(res),
   // The Memory page (server/memoryRoutes.ts). `search` is the page's own query string (shared/memory.ts).

@@ -75,7 +75,7 @@ export async function submit(id: string, values: Record<string, unknown>, wake: 
   const { answers, secrets: toStore } = splitAnswers(f, values);
   // Close first: a double click must not store twice or wake twice.
   if (!(await db.closeForm(id, "submitted", answers))) throw new FormError("this form is already answered", 409);
-  for (const s of toStore) await secrets.store({ scope: s.scope, name: s.name, value: s.value, who: "user (form)", source: `form ${id}` });
+  for (const s of toStore) await secrets.store({ scope: s.scope, name: s.name, value: s.value, who: "user (form)", source: `form ${id}`, ...(s.public ? { public: true } : {}) });
   await wake(formAnswerMessage(f, answers));
   return { ...f, state: "submitted", answers, answeredAt: Date.now() };
 }

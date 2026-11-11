@@ -13,6 +13,7 @@ import * as procs from "./proc";
 import * as lease from "./lease";
 import * as ledger from "./ledger";
 import * as db from "./db";
+import * as secrets from "./secrets";
 import * as primary from "./primary";
 import * as transcript from "./transcript";
 import * as outbox from "./outbox";
@@ -151,6 +152,9 @@ export type LaunchOptions = {
   mcpAllow?: McpAllow;
   /** Extra environment for the process, over agentEnv(). */
   env?: Record<string, string>;
+  /** `orca send|spawn --secret <name>[=VAR]`: stored secrets put in THIS run's env (server/secrets.ts
+   *  `envFor`), by name. Their values are in the scrub cache, so the transcript and report hide them. */
+  secrets?: string[];
   /** `false`: this run's queue is drained by whoever launched it, not by the exit handler (the
    *  orchestrator batches every pending wake into one run). */
   queue?: false;
@@ -190,6 +194,13 @@ export type RunFinished = {
 
 // Orca's own secrets never reach the agent's process (server/env.ts); re-exported for callers.
 export { agentEnv, WORKER_BIN } from "./env";
+
+/** The prompt's note for a run with `--secret`: which variables hold which stored secret. Pure. */
+export function secretEnvNote(specs: readonly string[] | undefined): string {
+  if (!specs?.length) return "";
+  const lines = specs.map((spec) => { const { ref, variable } = secrets.envVarFor(spec); return `- $${variable}: the stored secret ${ref}`; });
+  return `\n\n## Secrets in your environment\n${lines.join("\n")}\nUse them from the environment (for example to call an API). Never print, echo, log, write or commit a value. Orca masks each value in your transcript and report as [secret <name>].`;
+}
 
 /** What a run's process knows about itself, for `orca-run`'s slot. Pure. */
 export function runIdentity(runId: string, options: { repo?: string; branch?: string }): Record<string, string> {
@@ -864,7 +875,9 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
   // have been uploaded on another machine.
   const effectivePrompt = await resolvePrompt(!options.resume && (options.handoffFrom || options.history?.length)
     ? handoffPrompt(options.history ?? [], prompt, options.handoffFrom, provider)
-    : prompt) + (options.check?.via === "github" && !chain ? `\n\n${CI_GATE_GUIDANCE}` : "");
+    : prompt) + (options.check?.via === "github" && !chain ? `\n\n${CI_GATE_GUIDANCE}` : "") + secretEnvNote(options.secrets);
+  // The values now, on THIS instance: a missing secret or another key fails the launch with its reason.
+  const secretEnv = options.secrets?.length ? await secrets.envFor(options.secrets, `worker ${options.repo ?? ""}/${options.branch ?? ""}`, "orca send|spawn --secret") : {};
   const runId = chain?.runId ?? crypto.randomUUID();
   const startedAt = chain?.startedAt ?? Date.now(); // the TURN's start: a retry continues it
   const launchedAt = Date.now();
@@ -904,7 +917,7 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
     ),
     // ORCA_RUN_ID / ORCA_REPO / ORCA_BRANCH: `orca-run` (server/heavy.ts) ties its slot to this run.
     // HYDRA_QUIET=0: hydra names the login it picked on stderr (hydraLogin), for a usage-limit retry.
-    { cwd, env: { ...agentEnv(githubEnv(cwd)), ...(scoped ? scopedEnv : {}), ...runIdentity(runId, options), ...(provider === "claude" ? { HYDRA_QUIET: "0" } : {}), ...options.env }, stdout: "pipe", stderr: "pipe" },
+    { cwd, env: { ...agentEnv(githubEnv(cwd)), ...(scoped ? scopedEnv : {}), ...runIdentity(runId, options), ...(provider === "claude" ? { HYDRA_QUIET: "0" } : {}), ...options.env, ...secretEnv }, stdout: "pipe", stderr: "pipe" },
   );
   // Why Orca stopped the run itself, if it did: no progress for `idleMs`, or the hard ceiling.
   let stop: RunStop | undefined;

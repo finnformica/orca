@@ -21,6 +21,7 @@ import { mkdirSync, writeFileSync } from "fs";
 import { isAbsolute, join, resolve } from "path";
 import * as db from "./db";
 import { ATTACHMENT_PREFIX, forward, materialise, MAX_ATTACHMENT_BYTES, store } from "./attachments";
+import { scrubAll } from "./secrets";
 import { openConversation, SLACK_CAPS, slackApi, slackRead, uploadFiles, type SlackResult, type SlackUploadFile } from "./integrations/adapters/slack";
 import { attachmentIdOf, attachmentRefusal, type VerbClasses } from "../shared/integrations";
 
@@ -227,7 +228,8 @@ async function attachArgs(args: Args): Promise<SlackUploadFile[]> {
 
 async function post(token: string, words: string[], args: Args, opts: SlackToolOpts): Promise<string> {
   const target = words[1] ?? "";
-  const text = words.slice(2).join(" ").trim();
+  // A stored secret value never leaves through a channel, a public one included (server/secrets.ts).
+  const text = scrubAll(words.slice(2).join(" ").trim());
   const files = await attachArgs(args);
   if (!target || (!text && !files.length)) throw new SlackToolError('usage: orca slack post <target> [--thread <ts>] [--attach <id|path>]... "<text>"');
   const channel = await resolveTarget(token, target);
