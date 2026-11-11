@@ -595,7 +595,7 @@ export function ProfileMenu({ collapsed = false }: { collapsed?: boolean }) {
             {user?.picture && <AvatarImage src={user.picture} alt="" />}
             <AvatarFallback>{user ? profileInitials(user.name, user.login) : <CircleUser className="size-3.5" />}</AvatarFallback>
           </Avatar>
-          <span data-slot="profile-label" className={cn("min-w-0 flex-1 truncate", collapsed && "md:hidden")}>{label}</span>
+          <span data-slot="profile-label" className={cn("min-w-0 flex-1 truncate text-left", collapsed && "md:hidden")}>{label}</span>
           {/* It opens a menu: the chevron at the far right, as branch-demo's user row. */}
           <ChevronsUpDown className={cn("text-muted-foreground ml-auto size-3.5 shrink-0", collapsed && "md:hidden")} aria-hidden="true" />
         </button>
