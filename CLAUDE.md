@@ -787,7 +787,9 @@ context between turns.
    (`usage.renewStaleLogins`, enabled logins only) renew it with ONE minimal launch under that login
    (`renewToken`: `hydra exec <name> -p` on haiku, no tools, empty temp cwd, output discarded); still
    stale after that means the refresh token is gone — `hydra login` — and a 429 is reported as
-   rate-limited, not stale.
+   rate-limited, not stale. **That finding is a `box_alert` notification** (`usage.loginAlert`, one
+  per login per day): the log line alone went unread for a day (2026-11-10) while every wake hydra
+  routed to that login died with "OAuth session expired and could not be refreshed".
    **A turn that hits a usage limit runs again on this rung** (2026-10-29: Finn's session limit
    ended a turn although a second login was enabled; hydra chooses a login only at launch). The CLI
    (2.1.302, read from its bundle) ends such a run with `{"type":"result","subtype":"success",

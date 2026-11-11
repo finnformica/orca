@@ -1,6 +1,7 @@
 // Subscription usage for Claude and Codex, fetched from each installed CLI's existing login.
 // Both paths are read-only: Claude uses its OAuth usage endpoint; Codex uses its local app server.
 import { createHash } from "crypto";
+import type { NotificationInput } from "../shared/notifications";
 import { homedir, tmpdir } from "os";
 import { mkdtemp, rm } from "fs/promises";
 import { join } from "path";
@@ -329,6 +330,8 @@ export const isStaleState = (state: string | undefined): boolean => Boolean(stat
  *  only a browser sign-in on that host replaces. */
 export const loginNeededMessage = (name: string, host?: string): string =>
   `Still stale after renewing — the refresh token itself has expired. Run "hydra login ${name}"${host ? ` on ${host}` : ""}.`;
+/** The one failure a renewal cannot fix: only a browser sign-in on that host replaces the token. */
+export class LoginNeeded extends Error {}
 export const rateLimitedMessage = (name: string): string =>
   `The usage endpoint is rate-limiting ${name} (429) — its token may be fine; try again in a few minutes.`;
 
@@ -396,7 +399,7 @@ export async function refreshProfile(name: string, opts: { renew?: (name: string
     verdict = await hydraRefresh(hydra, name);
     if (verdict === "rate-limited") throw new Error(rateLimitedMessage(name));
     after = (await hydraUsage()) ?? after;
-    if (verdict === "stale" || isStaleState(stateOf(after))) throw new Error(loginNeededMessage(name, opts.host));
+    if (verdict === "stale" || isStaleState(stateOf(after))) throw new LoginNeeded(loginNeededMessage(name, opts.host));
     return after;
   })();
   renewing.set(name, run);
@@ -413,11 +416,12 @@ export const RENEW_POLL_MS = 30 * 60_000;
  *  primary bridge — one renewer per host); each instance renews its own logins, since hydra and the
  *  credentials are per host. One login at a time. Never throws; returns what it did, for the log
  *  and the tests. */
-export async function renewStaleLogins(held: () => boolean, opts: { renew?: (name: string) => Promise<boolean> } = {}): Promise<{ name: string; ok: boolean; error?: string }[]> {
+export type RenewResult = { name: string; ok: boolean; error?: string; needsLogin?: boolean };
+export async function renewStaleLogins(held: () => boolean, opts: { renew?: (name: string) => Promise<boolean> } = {}): Promise<RenewResult[]> {
   if (!held()) return [];
   const profiles = await hydraUsage();
   const stale = (profiles ?? []).filter((p) => isStaleState(p.state));
-  const results: { name: string; ok: boolean; error?: string }[] = [];
+  const results: RenewResult[] = [];
   for (const p of stale) {
     try {
       await refreshProfile(p.name, opts);
@@ -425,10 +429,24 @@ export async function renewStaleLogins(held: () => boolean, opts: { renew?: (nam
     } catch (e) {
       const error = e instanceof Error ? e.message : String(e);
       console.error(`[usage] background renew of ${p.name}: ${error}`);
-      results.push({ name: p.name, ok: false, error });
+      results.push({ name: p.name, ok: false, error, ...(e instanceof LoginNeeded ? { needsLogin: true } : {}) });
     }
   }
   return results;
+}
+
+/** The notification for a login whose refresh token is gone (2026-11-10: the orchestrator died on
+ *  every wake for a day while the log said "hydra login formicsoftware" every 30 minutes and nobody
+ *  read it). One row per login per day — keyed by day so it is raised again while it stays broken,
+ *  never twice in one day. Pure. */
+export function loginAlert(r: RenewResult, instance: string, now = Date.now()): NotificationInput | undefined {
+  if (!r.needsLogin) return undefined;
+  const day = new Date(now).toISOString().slice(0, 10);
+  return {
+    key: `login-needs-signin:${instance}:${r.name}:${day}`, kind: "box_alert", repo: "",
+    title: `${instance}: login ${r.name} needs a sign-in`,
+    body: `Its refresh token has expired, so every agent run hydra routes to it fails to authenticate. Open the instance terminal (Settings → Instances) and run "hydra login ${r.name}", or switch the login off in the Usage card.`,
+  };
 }
 
 export const DEFAULT_CLAUDE_DIR = join(homedir(), ".claude");
