@@ -11,7 +11,7 @@ import * as preview from "./preview";
 import * as forward from "./forward";
 import { reachable } from "./peer";
 import { portFree, reclaimBridgePort, waitForPortFree } from "./net";
-import { RENEW_POLL_MS, refreshProfile, renewStaleLogins, routingInfo, setProfileEnabled, setProfileEnabledEverywhere, usage, usageAcrossInstances } from "./usage";
+import { RENEW_POLL_MS, loginAlert, refreshProfile, renewStaleLogins, routingInfo, setProfileEnabled, setProfileEnabledEverywhere, usage, usageAcrossInstances } from "./usage";
 import * as ledger from "./ledger";
 import * as db from "./db";
 import * as rooms from "./rooms";
@@ -353,7 +353,10 @@ startLiveSampler();
 // renewed on THIS host by one minimal launch each, so the rotation never routes to one. Every 30
 // minutes on the primary; each instance renews its own logins (server/usage.ts renewStaleLogins).
 if (!PREVIEW_BRIDGE) primary.onPrimary(() => {
-  const renew = () => void renewStaleLogins(primary.held).catch(db.logUnlessDown("orca: stale-login renew failed"));
+  // A login the renewal cannot fix is news (usage.loginAlert): the log line alone went unread for a day.
+  const renew = () => void renewStaleLogins(primary.held)
+    .then((results) => { for (const r of results) { const n = loginAlert(r, db.instanceName()); if (n) void notify.emit(n); } })
+    .catch(db.logUnlessDown("orca: stale-login renew failed"));
   renew();
   setInterval(renew, RENEW_POLL_MS).unref();
 });

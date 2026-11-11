@@ -12,7 +12,7 @@ import { afterEach, expect, test } from "bun:test";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { refreshProfile, renewStaleLogins, setProfileEnabled } from "../server/usage";
+import { loginAlert, refreshProfile, renewStaleLogins, setProfileEnabled } from "../server/usage";
 
 let shim: string | undefined;
 let prevPath: string | undefined;
@@ -178,4 +178,24 @@ test("background renew runs only on the primary, and only for enabled stale logi
   expect(await renewStaleLogins(() => true, { renew })).toEqual([{ name: "work", ok: true }]);
   expect(renewed).toEqual(["work"]); // not the disabled login, not the healthy one
   expect(await readFile(join(shim!, "calls.log"), "utf8")).toBe("refresh work --force\nrefresh work --force\n");
+});
+
+test("a login the renewal cannot fix is reported with needsLogin, and loginAlert makes one box_alert a day for it", async () => {
+  await installFakeHydra();
+  await writeFile(join(shim!, "state"), "stale");
+  await writeFile(join(shim!, "token"), "expired");
+  const [r] = await renewStaleLogins(() => true, { renew: async () => true }); // the launch "works" but the token stays stale: the refresh token is gone
+  expect(r).toMatchObject({ name: "work", ok: false, needsLogin: true });
+  expect(r!.error).toMatch(/hydra login work/);
+
+  const day = Date.UTC(2026, 10, 10, 9);
+  const n = loginAlert(r!, "cloud", day)!;
+  expect(n.kind).toBe("box_alert");
+  expect(n.key).toBe("login-needs-signin:cloud:work:2026-11-10");
+  expect(n.title).toBe("cloud: login work needs a sign-in");
+  expect(n.body).toMatch(/hydra login work/);
+  expect(loginAlert(r!, "cloud", day + 3_600_000)!.key).toBe(n.key); // the same day: the same row
+  expect(loginAlert(r!, "cloud", day + 86_400_000)!.key).not.toBe(n.key); // still broken tomorrow: raised again
+  expect(loginAlert({ name: "work", ok: false, error: "rate-limited" }, "cloud", day)).toBeUndefined(); // a 429 is not a lost token
+  expect(loginAlert({ name: "work", ok: true }, "cloud", day)).toBeUndefined();
 });
