@@ -12,7 +12,7 @@ import * as router from "../server/integrations/router";
 import * as dispatcher from "../server/integrations/dispatcher";
 import * as store from "../server/integrations/store";
 import { context } from "../server/integrations/registry";
-import { parseCursor, pickConversations, placeLabel, postAsUser, pruneThreads, searchEvent, slackAdapter, slackInbound, slackPermalink, socketMode, threadTs, tsOf, type WebSocketLike } from "../server/integrations/adapters/slack";
+import { botSendersOf, parseCursor, pickConversations, placeLabel, postAsUser, pruneThreads, searchEvent, slackAdapter, slackInbound, slackPermalink, socketMode, threadTs, tsOf, type WebSocketLike } from "../server/integrations/adapters/slack";
 import { resetSlackToolCache, slackTool } from "../server/slackTool";
 import { ORCA_SECRETS } from "../server/env";
 import type { AdapterContext, Connection, InboundEnvelope } from "../server/integrations/adapter";
@@ -100,6 +100,12 @@ const ev = (over: Record<string, unknown> = {}) => ({
 const envelope = (id: string, event: Record<string, unknown>) => ({ type: "events_api", envelope_id: id, payload: { team_id: "T1", event } });
 const me = { team: "T1", userId: "UFINN", name: "finn", integrationId: "slack" };
 
+test("botSendersOf: a comma list of ids, trimmed; empty or unset reads as no ids", () => {
+  expect(botSendersOf({ botSenders: " U1, U2 ,,U3" })).toEqual(new Set(["U1", "U2", "U3"]));
+  expect(botSendersOf({})).toEqual(new Set());
+  expect(botSendersOf({ botSenders: "" })).toEqual(new Set());
+});
+
 describe("slackInbound: what reaches Orca", () => {
   test("a mention of you in a channel: your name in the text, a thread on the message, no content in raw", () => {
     const e = slackInbound(ev(), me)!;
@@ -121,6 +127,17 @@ describe("slackInbound: what reaches Orca", () => {
     expect(slackInbound(ev({ subtype: "channel_join" }), me)).toBeUndefined();
     expect(slackInbound(ev({ type: "reaction_added" }), me)).toBeUndefined();
     expect(slackInbound(ev({ text: "<@UFINN>" }), { ...me, name: "" })).toBeUndefined();
+  });
+
+  test("botSenders: a listed bot id passes as its own actor, an unlisted bot is still dropped, and a listed id's bot_message subtype is still dropped", () => {
+    // A DM, like the real case (Gerbil 2's QA report in D0CF1Q76CJ3): every DM message counts, no
+    // mention needed, so this isolates the bot_id/botSenders check from the mention check.
+    const botSenders = botSendersOf({ botSenders: "B0CFLSGSQG4, U0CFLSGSQG4" });
+    const dm = { channel: "D0CF1Q76CJ3", channel_type: "im" };
+    const allowed = slackInbound(ev({ ...dm, user: "U0CFLSGSQG4", bot_id: "B0CGBGX60TA", text: "QA report: all green" }), me, { botSenders })!;
+    expect(allowed).toMatchObject({ actor: { external: { adapter: "slack", id: "U0CFLSGSQG4" } }, text: "QA report: all green" });
+    expect(slackInbound(ev({ ...dm, user: "U0OTHERBOT", bot_id: "B0OTHER" }), me, { botSenders })).toBeUndefined();
+    expect(slackInbound(ev({ ...dm, user: "U0CFLSGSQG4", bot_id: "B0CGBGX60TA", subtype: "bot_message" }), me, { botSenders })).toBeUndefined();
   });
 
   test("a DM and a group DM: every message counts, under the place im / mpim, answered in the conversation", () => {
