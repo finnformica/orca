@@ -130,11 +130,14 @@ describe("slackInbound: what reaches Orca", () => {
   });
 
   test("botSenders: a listed bot id passes as its own actor, an unlisted bot is still dropped, and a listed id's bot_message subtype is still dropped", () => {
+    // A DM, like the real case (Gerbil 2's QA report in D0CF1Q76CJ3): every DM message counts, no
+    // mention needed, so this isolates the bot_id/botSenders check from the mention check.
     const botSenders = botSendersOf({ botSenders: "B0CFLSGSQG4, U0CFLSGSQG4" });
-    const allowed = slackInbound(ev({ user: "U0CFLSGSQG4", bot_id: "B0CGBGX60TA", text: "QA report: all green" }), me, { botSenders })!;
+    const dm = { channel: "D0CF1Q76CJ3", channel_type: "im" };
+    const allowed = slackInbound(ev({ ...dm, user: "U0CFLSGSQG4", bot_id: "B0CGBGX60TA", text: "QA report: all green" }), me, { botSenders })!;
     expect(allowed).toMatchObject({ actor: { external: { adapter: "slack", id: "U0CFLSGSQG4" } }, text: "QA report: all green" });
-    expect(slackInbound(ev({ user: "U0OTHERBOT", bot_id: "B0OTHER" }), me, { botSenders })).toBeUndefined();
-    expect(slackInbound(ev({ user: "U0CFLSGSQG4", bot_id: "B0CGBGX60TA", subtype: "bot_message" }), me, { botSenders })).toBeUndefined();
+    expect(slackInbound(ev({ ...dm, user: "U0OTHERBOT", bot_id: "B0OTHER" }), me, { botSenders })).toBeUndefined();
+    expect(slackInbound(ev({ ...dm, user: "U0CFLSGSQG4", bot_id: "B0CGBGX60TA", subtype: "bot_message" }), me, { botSenders })).toBeUndefined();
   });
 
   test("a DM and a group DM: every message counts, under the place im / mpim, answered in the conversation", () => {
