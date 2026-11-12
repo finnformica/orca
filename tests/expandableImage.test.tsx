@@ -261,3 +261,50 @@ test("reopening the same thumbnail resets the gallery to the image that was clic
   await click(container!.querySelector('[data-slot="expandable-image"]')!);
   expect(dialog.querySelector("img")!.getAttribute("src")).toBe(GALLERY[0]!.src);
 });
+
+// --- zoom (the maths is tests/zoom.test.ts) ---------------------------------------------------
+
+const scaleOf = (dialog: Element) => dialog.querySelector("img")!.style.transform.match(/scale\(([\d.]+)\)/)?.[1];
+
+test("+ and - zoom, 0 goes back to fit, and the zoom buttons do the same", async () => {
+  mount(<ExpandableImage src="/api/attachments/5" alt="a screenshot" />);
+  const dialog = container!.querySelector<HTMLDialogElement>('[data-slot="image-lightbox"]')!;
+  await click(container!.querySelector('[data-slot="expandable-image"]')!);
+  expect(scaleOf(dialog)).toBe("1");
+  expect(dialog.querySelector<HTMLButtonElement>('button[aria-label="Zoom out"]')!.disabled).toBe(true); // at fit
+
+  await press(dialog, "+");
+  await press(dialog, "+");
+  expect(scaleOf(dialog)).toBe(String(1.25 * 1.25));
+  await press(dialog, "-");
+  expect(scaleOf(dialog)).toBe("1.25");
+  await press(dialog, "0");
+  expect(scaleOf(dialog)).toBe("1");
+
+  await click(dialog.querySelector('button[aria-label="Zoom in"]')!);
+  expect(scaleOf(dialog)).toBe("1.25");
+  await click(dialog.querySelector('button[aria-label="Fit to screen"]')!);
+  expect(scaleOf(dialog)).toBe("1");
+  expect(dialog.open).toBe(true); // a zoom button never closes the lightbox
+});
+
+test("a gallery move resets the zoom to fit, and so does a reopen", async () => {
+  mount(<ExpandableImage src={GALLERY[0]!.src} alt={GALLERY[0]!.alt} gallery={{ images: GALLERY, index: 0 }} />);
+  const dialog = container!.querySelector<HTMLDialogElement>('[data-slot="image-lightbox"]')!;
+  await click(container!.querySelector('[data-slot="expandable-image"]')!);
+
+  await press(dialog, "+");
+  expect(scaleOf(dialog)).toBe("1.25");
+  await press(dialog, "ArrowRight");
+  expect(dialog.querySelector("img")!.getAttribute("src")).toBe(GALLERY[1]!.src);
+  expect(scaleOf(dialog)).toBe("1");
+
+  await press(dialog, "+");
+  await click(dialog.querySelector('button[aria-label="Previous screenshot"]')!);
+  expect(scaleOf(dialog)).toBe("1");
+
+  await press(dialog, "+");
+  await click(dialog.querySelector('button[aria-label="Close"]')!);
+  await click(container!.querySelector('[data-slot="expandable-image"]')!);
+  expect(scaleOf(dialog)).toBe("1");
+});
