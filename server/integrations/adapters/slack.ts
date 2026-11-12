@@ -197,6 +197,15 @@ export type SlackEvent = {
 /** Message subtypes that are a person writing. Every other one (edits, deletes, joins, bots) is not. */
 const PERSON_SUBTYPES = new Set(["", "file_share", "thread_broadcast"]);
 
+/** `config.botSenders`, comma-separated Slack user ids: a bot message from one of these still
+ *  reaches Orca, as if a person sent it (the actor is that user id). Every other bot message is
+ *  still dropped. Opt-in, because a bot normally has nobody to notify or answer for it. Pure. */
+export function botSendersOf(config: Record<string, unknown>): Set<string> {
+  const raw = config.botSenders;
+  if (typeof raw !== "string" || !raw.trim()) return new Set();
+  return new Set(raw.split(",").map((s) => s.trim()).filter(Boolean));
+}
+
 /** Slack's three escaped characters, back to plain text. */
 const unescape = (t: string): string => t.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
 
@@ -225,10 +234,13 @@ export const placeLabel = (place: "im" | "mpim" | "channel", channelName?: strin
 
 /** One Socket Mode `message` event as the core's envelope, or undefined when it is not for Orca. Pure.
  *  `me` is the token's own user (`url`: its workspace, for the message's link); `known` says whether
- *  Orca already talks in a thread key; `channelName` names a channel for the place. */
-export function slackInbound(ev: SlackEvent, me: { team: string; userId: string; name?: string; integrationId: string; url?: string }, o: { known?: (threadKey: string) => boolean; senderName?: string; channelName?: string } = {}): InboundEnvelope | undefined {
+ *  Orca already talks in a thread key; `channelName` names a channel for the place; `botSenders`
+ *  (`botSendersOf`) lets a listed bot user through despite `bot_id` — its subtype must still be a
+ *  person subtype (a listed id with `subtype: "bot_message"` is still dropped). */
+export function slackInbound(ev: SlackEvent, me: { team: string; userId: string; name?: string; integrationId: string; url?: string }, o: { known?: (threadKey: string) => boolean; senderName?: string; channelName?: string; botSenders?: Set<string> } = {}): InboundEnvelope | undefined {
   if (ev.type !== "message") return undefined;
-  if (!PERSON_SUBTYPES.has(ev.subtype ?? "") || ev.bot_id || !ev.user || ev.user === me.userId) return undefined;
+  const allowedBot = Boolean(ev.bot_id && ev.user && o.botSenders?.has(ev.user));
+  if (!PERSON_SUBTYPES.has(ev.subtype ?? "") || (ev.bot_id && !allowedBot) || !ev.user || ev.user === me.userId) return undefined;
   if (!ev.channel || !ev.ts) return undefined;
   const place = placeOf(ev);
   const tag = `<@${me.userId}>`;
@@ -424,7 +436,7 @@ export function slackAdapter(connection: Connection, opts: { openDms?: boolean }
   /** One message event, from the socket or a poll: the envelope, the sender's name, the core. */
   async function handle(ev: SlackEvent, team = ""): Promise<IngestVerdict | undefined> {
     if (!ctx || ev.type !== "message" || !ev.user || ev.user === me.userId) return undefined;
-    const opts = { known: (k: string) => k in cur.threads };
+    const opts = { known: (k: string) => k in cur.threads, botSenders: botSendersOf(connection.config) };
     const who = { team: team || me.team, userId: me.userId, name: me.name, integrationId: connection.id, url: me.url };
     let made = slackInbound(ev, who, opts);
     if (!made) return undefined;

@@ -56,6 +56,9 @@ export const verbsFor = (kind: AdapterKind): VerbClasses => metas.get(kind)?.ver
 
 register("slack", slackAdapter, {
   label: "Slack", caps: SLACK_CAPS, place: "channel", secretExample: "SLACK_TOKEN", verbs: SLACK_VERBS,
+  config: [
+    { key: "botSenders", label: "Bot sender ids (comma-separated; optional)", placeholder: "U0CFLSGSQG4" },
+  ],
   help: "Your user token (xoxp-…): Orca posts as you and polls your mentions, DMs and group DMs each minute. Link `im` / `mpim` for DMs. Setup: docs/integrations/slack.md.",
 });
 register("webhook", webhookAdapter, { label: "Webhook", caps: WEBHOOK_CAPS, place: "hook", secretExample: WEBHOOK_SECRET_ENV, secretDefault: WEBHOOK_SECRET_ENV, help: "Signed POSTs to /api/integrations/<id>/inbound (HMAC sha256 of the body)." });

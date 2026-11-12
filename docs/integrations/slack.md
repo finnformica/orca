@@ -111,6 +111,7 @@ Optional `config` keys on the integration row:
 | `historyBudget` | `20` | At most this many DM reads and thread reads in each poll. |
 | `inbound` | `poll` | `off`: the adapter only posts. `socket`: Socket Mode (section 9). Unset: Socket Mode when `SLACK_APP_TOKEN` is set, else `poll`. |
 | `appTokenRef` | `"SLACK_APP_TOKEN"` | Socket Mode only: the variable of the app-level token. |
+| `botSenders` | empty | A comma list of Slack user ids. A message from one of these ids reaches Orca even with `bot_id` set (section 10). |
 
 ## 5. Check it
 
@@ -136,7 +137,7 @@ If the card shows an error, these are the usual causes:
 | A DM | One event. Source `D…`, place `im`. The thread is the DM itself, so the answer goes in the DM. |
 | A group DM | One event. Source `G…`, place `mpim`. The answer goes in the group DM. |
 | A message in a thread of a DM | One event in the thread `<channel>:<thread_ts>`. |
-| Your own message, a bot, an edit, a delete, a join | Dropped. |
+| Your own message, a bot, an edit, a delete, a join | Dropped, unless the bot's user id is in `botSenders` (section 10). |
 
 - **Key:** `slack:<team>:<channel>:<ts>`. A message that Orca reads two times has one key, so the
   core records one event.
@@ -234,3 +235,19 @@ more setup, so it is off unless you set `SLACK_APP_TOKEN`.
 - A bad app token stops it: `Slack refused the app-level token`.
 - `SLACK_APP_TOKEN` is in `ORCA_SECRETS` too.
 - Set `inbound: "poll"` on the row to poll even when `SLACK_APP_TOKEN` is set.
+
+## 10. Letting a bot through (`botSenders`)
+
+A message a bot posts has `bot_id` set, so the adapter drops it by default: nobody can answer for
+a bot, and most bots are noise. Add the bot's Slack user id to `botSenders` on the integration row
+to let it through. Find the id with `users.info` or in the message's raw event (`user`).
+
+- Set `botSenders` to a comma list of Slack user ids, for example `U0CFLSGSQG4,U0CFLSGSQG5`. In
+  Settings > Integrations, open the Slack row and put the list in the **Bot sender ids** field.
+- A message from a listed id still needs a person subtype: an edit, a delete or a
+  `subtype: "bot_message"` message from that id is still dropped.
+- The message reaches Orca as if a person sent it. The actor is the bot's user id. People does not
+  know this id, so the core gives it the `notify` grant: a read-only wake, and a notification. Add
+  it as a person to give it a higher grant.
+- `orca channels` names the count of bot senders on a Slack account, for example `3 bot senders
+  allowed`.

@@ -40,6 +40,7 @@ import { reachable } from "./peer";
 import { machineReport } from "./liveMetrics";
 import { CLOUDFLARE_TOKEN_ENV, cloudflareTool, cloudflareVerb, configAccountIds } from "./cloudflare";
 import { recordOwnWrite as recordCloudflareWrite } from "./integrations/adapters/cloudflare";
+import { botSendersOf } from "./integrations/adapters/slack";
 import { slackTool } from "./slackTool";
 import { gmailTool } from "./gmailTool";
 import { granolaTool } from "./granolaTool";
@@ -826,7 +827,10 @@ async function channelsText(): Promise<string> {
   const [links, conns, subs, pairings] = await Promise.all([integrationStore.links(), integrationStore.integrations(), integrationStore.subscriptions(), integrationStore.pendingPairings()]);
   const byId = new Map(conns.map((c) => [c.id, c]));
   // Each account's policy first (docs/integrations/POLICY.md): what Orca may do, and what its events do.
-  const accounts = conns.map((c) => `account ${c.id} · ${c.kind} ${c.name} · access ${c.access ?? "read-write"}${c.access === "read" ? " (no post, send or delete)" : ""} · events ${c.events ?? "trigger"}${c.events === "record" ? " (inbox only, never wakes an agent)" : c.events === "off" ? " (nothing is recorded)" : ""}`);
+  const accounts = conns.map((c) => {
+    const botSenders = c.kind === "slack" ? botSendersOf(c.config).size : 0;
+    return `account ${c.id} · ${c.kind} ${c.name} · access ${c.access ?? "read-write"}${c.access === "read" ? " (no post, send or delete)" : ""} · events ${c.events ?? "trigger"}${c.events === "record" ? " (inbox only, never wakes an agent)" : c.events === "off" ? " (nothing is recorded)" : ""}${botSenders ? ` · ${botSenders} bot sender${botSenders === 1 ? "" : "s"} allowed` : ""}`;
+  });
   const lines = links.length ? links.map((l) => {
     const c = byId.get(l.integrationId);
     return `link ${l.id} · ${c?.kind ?? "?"} ${c?.name ?? l.integrationId} on ${c ? (c.instance === "*" ? "automatic" : c.instance) : "?"} · ${l.externalId}${l.label ? ` (${l.label})` : ""} · ${l.level}${repoScoped(l.level) ? ` on ${l.repos.join(", ") || "no repos"}` : ""}${l.requireMention ? " · mention required" : ""}${l.notifyMe === false ? " · notify me off" : ""}${l.notifyAgent === false ? " · notify agent off: it never wakes you" : ""}${l.externalId === "*" ? " · catch-all: post with --channel <id> [--thread <id>]" : ""}`;
