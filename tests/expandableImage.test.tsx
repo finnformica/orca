@@ -6,7 +6,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { ExpandableImage, copyImage } from "@/components/ExpandableImage";
+import { ExpandableImage, LIGHTBOX_INSET, copyImage } from "@/components/ExpandableImage";
 import { openTip } from "./tip";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -307,4 +307,36 @@ test("a gallery move resets the zoom to fit, and so does a reopen", async () => 
   await click(dialog.querySelector('button[aria-label="Close"]')!);
   await click(container!.querySelector('[data-slot="expandable-image"]')!);
   expect(scaleOf(dialog)).toBe("1");
+});
+
+// --- phone: the controls sit clear of the status bar, the notch and the home bar ------------------
+// Finn 2026-11-13: in the installed app (standalone, black-translucent status bar) the Close button
+// was under the status bar and could not be tapped. The dialog's `p-0` beat the sheet's safe-area
+// padding, so every control now carries its own inset. happy-dom does not resolve env(), so this
+// checks the classes; the 390px shots check the layout.
+
+test("every lightbox control is offset by the safe-area insets and is a 44px tap target on a phone", async () => {
+  mount(<ExpandableImage src={GALLERY[1]!.src} alt={GALLERY[1]!.alt} gallery={{ images: GALLERY, index: 1 }} />);
+  const dialog = container!.querySelector<HTMLDialogElement>('[data-slot="image-lightbox"]')!;
+  await click(container!.querySelector('[data-slot="expandable-image"]')!);
+  const cls = (sel: string) => dialog.querySelector(sel)!.className.split(/\s+/);
+
+  // Close and Download: top right, below the status bar and inside the notch's side inset.
+  expect(cls('[data-slot="lightbox-actions"]')).toEqual(expect.arrayContaining([LIGHTBOX_INSET.top, LIGHTBOX_INSET.right]));
+  expect(cls('[data-slot="lightbox-actions"]')).not.toContain("top-2");
+  expect(cls('[data-slot="lightbox-index"]')).toEqual(expect.arrayContaining([LIGHTBOX_INSET.top, LIGHTBOX_INSET.left]));
+  expect(cls('[data-slot="lightbox-zoom"]')).toContain(LIGHTBOX_INSET.bottom);
+  expect(cls('button[aria-label="Previous screenshot"]')).toContain(LIGHTBOX_INSET.left);
+  expect(cls('button[aria-label="Next screenshot"]')).toContain(LIGHTBOX_INSET.right);
+  for (const inset of Object.values(LIGHTBOX_INSET)) expect(inset).toMatch(/env\(safe-area-inset-(top|right|bottom|left)\)/);
+
+  for (const label of ["Close", "Download image", "Previous screenshot", "Next screenshot", "Zoom out", "Zoom in", "Fit to screen"]) {
+    expect(cls(`[aria-label="${label}"]`)).toContain("max-md:size-11"); // 44px
+  }
+  expect(cls('[aria-label="Actual size"]')).toEqual(expect.arrayContaining(["max-md:h-11", "max-md:min-w-11"]));
+
+  // The dialog is the sheet: sized to the visual viewport (--vvh, else 100dvh), never 100vh.
+  expect(dialog.className.split(/\s+/)).toContain("sheet");
+  await click(dialog.querySelector('button[aria-label="Close"]')!);
+  expect(dialog.open).toBe(false);
 });
