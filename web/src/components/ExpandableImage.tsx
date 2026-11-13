@@ -24,6 +24,19 @@ import {
   type Point, type ZoomView,
 } from "@/lib/zoom";
 
+/** The lightbox's controls sit clear of the notch, the status bar and the home bar. The stage itself
+ *  is full-bleed (a zoomed image uses the whole screen), so each control adds its own inset. The
+ *  installed app draws under the status bar (`black-translucent`, `display: standalone`), where a
+ *  plain `top-2` Close button was under the clock and could not be tapped. */
+export const LIGHTBOX_INSET = {
+  top: "top-[calc(env(safe-area-inset-top)+0.5rem)]",
+  right: "right-[calc(env(safe-area-inset-right)+0.5rem)]",
+  bottom: "bottom-[calc(env(safe-area-inset-bottom)+0.75rem)]",
+  left: "left-[calc(env(safe-area-inset-left)+0.5rem)]",
+} as const;
+/** A lightbox button: 32px with a mouse, a 44px tap target on a phone. */
+const LIGHTBOX_BUTTON = "size-8 max-md:size-11";
+
 /** A tap or click moves less than this, in pixels. */
 const TAP_SLOP = 6;
 /** Two taps within this time and distance are a double tap. */
@@ -253,7 +266,7 @@ export function ExpandableImage({
     if (e.key === "ArrowLeft") { e.preventDefault(); go(activeIndex - 1); e.currentTarget.focus(); }
     else if (e.key === "ArrowRight") { e.preventDefault(); go(activeIndex + 1); e.currentTarget.focus(); }
   };
-  const zoomButton = "size-8 text-foreground hover:bg-background";
+  const zoomButton = cn(LIGHTBOX_BUTTON, "text-foreground hover:bg-background");
 
   return (
     <>
@@ -291,7 +304,8 @@ export function ExpandableImage({
         data-slot="image-lightbox"
         // A full-screen stage at every width (the `sheet` utility), so a zoomed image can use the
         // whole screen. At fit the image is as before: at most 92vw x 92vh on a desktop, the full
-        // sheet on a phone; a click on the empty stage closes, as the backdrop did.
+        // sheet on a phone; a click on the empty stage closes, as the backdrop did. `p-0` wins over
+        // the sheet's safe-area padding on purpose: the controls carry the insets (LIGHTBOX_INSET).
         className="overflow-hidden bg-transparent p-0 backdrop:bg-black/70 sheet"
       >
         <PortalContainer.Provider value={dialogEl ?? undefined}>
@@ -323,13 +337,13 @@ export function ExpandableImage({
           )}
           {total > 1 && (
             <>
-              <div data-slot="lightbox-index" className="absolute top-2 left-2 rounded-md bg-background/80 px-2 py-1 text-xs text-foreground">
+              <div data-slot="lightbox-index" className={cn("absolute rounded-md", LIGHTBOX_INSET.top, LIGHTBOX_INSET.left, " bg-background/80 px-2 py-1 text-xs text-foreground")}>
                 {activeIndex + 1} / {total}
               </div>
               {activeIndex > 0 && (
                 <Button
                   type="button" size="icon" variant="ghost" aria-label="Previous screenshot"
-                  className="absolute top-1/2 left-2 size-8 -translate-y-1/2 bg-background/80 text-foreground opacity-0 transition-opacity hover:bg-background group-hover:opacity-100 [@media(hover:none)]:opacity-100"
+                  className={cn("absolute top-1/2 -translate-y-1/2", LIGHTBOX_INSET.left, LIGHTBOX_BUTTON, "bg-background/80 text-foreground opacity-0 transition-opacity hover:bg-background group-hover:opacity-100 [@media(hover:none)]:opacity-100")}
                   onClick={(e) => { e.stopPropagation(); go(activeIndex - 1); dialogRef.current?.focus(); }}
                 >
                   <ChevronLeft className="size-5" />
@@ -338,7 +352,7 @@ export function ExpandableImage({
               {activeIndex < total - 1 && (
                 <Button
                   type="button" size="icon" variant="ghost" aria-label="Next screenshot"
-                  className="absolute top-1/2 right-2 size-8 -translate-y-1/2 bg-background/80 text-foreground opacity-0 transition-opacity hover:bg-background group-hover:opacity-100 [@media(hover:none)]:opacity-100"
+                  className={cn("absolute top-1/2 -translate-y-1/2", LIGHTBOX_INSET.right, LIGHTBOX_BUTTON, "bg-background/80 text-foreground opacity-0 transition-opacity hover:bg-background group-hover:opacity-100 [@media(hover:none)]:opacity-100")}
                   onClick={(e) => { e.stopPropagation(); go(activeIndex + 1); dialogRef.current?.focus(); }}
                 >
                   <ChevronRight className="size-5" />
@@ -346,20 +360,20 @@ export function ExpandableImage({
               )}
             </>
           )}
-          <div className="absolute top-2 right-2 flex gap-1">
+          <div data-slot="lightbox-actions" className={cn("absolute flex gap-1", LIGHTBOX_INSET.top, LIGHTBOX_INSET.right)}>
             {/* Tips portal INTO the modal dialog (the Provider above): the top layer covers anything outside it. */}
             <Tip label="Download">
-              <Button asChild size="icon" variant="ghost" className="size-8 bg-background/80 text-foreground hover:bg-background">
+              <Button asChild size="icon" variant="ghost" className={cn(LIGHTBOX_BUTTON, "bg-background/80 text-foreground hover:bg-background")}>
                 <a href={cur.src} download={(gallery ? undefined : downloadName) || cur.alt || ""} aria-label="Download image" onClick={(e) => e.stopPropagation()}>
                   <Download className="size-4" />
                 </a>
               </Button>
             </Tip>
-            <Button type="button" size="icon" variant="ghost" className="size-8 bg-background/80 text-foreground hover:bg-background" aria-label="Close" onClick={() => setOpen(false)}>
+            <Button type="button" size="icon" variant="ghost" className={cn(LIGHTBOX_BUTTON, "bg-background/80 text-foreground hover:bg-background")} aria-label="Close" onClick={() => setOpen(false)}>
               <X className="size-4" />
             </Button>
           </div>
-          <div data-slot="lightbox-zoom" className="absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-0.5 rounded-md bg-background/80 p-0.5 text-foreground">
+          <div data-slot="lightbox-zoom" className={cn("absolute left-1/2 flex -translate-x-1/2 items-center gap-0.5 rounded-md bg-background/80 p-0.5 text-foreground", LIGHTBOX_INSET.bottom)}>
             <Tip label="Zoom out (-)">
               <Button type="button" size="icon" variant="ghost" className={zoomButton} aria-label="Zoom out" disabled={!zoomed}
                 onClick={() => zoomTo(viewRef.current.scale / ZOOM_STEP, undefined, true)}>
@@ -380,7 +394,7 @@ export function ExpandableImage({
               </Button>
             </Tip>
             <Tip label="Actual size (100%)">
-              <Button type="button" size="sm" variant="ghost" className="h-8 px-2 text-xs text-foreground hover:bg-background" aria-label="Actual size"
+              <Button type="button" size="sm" variant="ghost" className="h-8 px-2 text-xs text-foreground hover:bg-background max-md:h-11 max-md:min-w-11" aria-label="Actual size"
                 onClick={() => zoomTo(measure().actual, undefined, true)}>
                 1:1
               </Button>
