@@ -148,7 +148,9 @@ test("F5: O opens, Esc closes, and O opens again at once — focus leaves the cl
   await act(async () => { key("Escape", composer()!); await flush(); await flush(); });
   expect(panel().dataset.state).toBe("closed");
   expect(panel().contains(document.activeElement)).toBe(false);
+  const before = (document.activeElement as HTMLElement | null)?.outerHTML.slice(0, 300);
   await act(async () => { key("o"); await flush(); await flush(); });
+  if (panel().dataset.state !== "open") throw new Error(`DIAG F5: active=${before} panels=${document.querySelectorAll('[data-slot="orchestrator-panel"]').length} menus=${[...document.querySelectorAll('[role="menu"], [role="listbox"], dialog')].map((e) => e.outerHTML.slice(0, 150)).join(" | ")} bodyKids=${[...document.body.children].map((e) => e.tagName + "." + (e.getAttribute("data-slot") ?? e.id)).join(",")}`);
   expect(panel().dataset.state).toBe("open");
   expect(document.activeElement).toBe(composer());
   // A button opener still gets focus back.
