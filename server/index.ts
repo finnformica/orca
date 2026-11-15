@@ -29,6 +29,7 @@ import { renderText, summarize } from "./diagnostics";
 import { postAsUser as slackPost } from "./integrations/adapters/slack";
 import * as integrations from "./integrations/registry";
 import * as dispatcher from "./integrations/dispatcher";
+import * as typing from "./integrations/typing";
 import * as inbox from "./integrations/inbox";
 import * as integrationStore from "./integrations/store";
 import { filterInbox, inboundConversation, inboxFacets, inboxRows, inboxWindow, muteKey, noticeOf, notificationIdOf, notificationRows, notificationSender, OWN_EVENT, parseConversation, threadActions, threadItems, workstreamOf } from "../shared/inbox";
@@ -233,6 +234,8 @@ agent.onRunFinished(async (run) => {
   try {
     held = await orchestrator.onRunFinished(cfg, run);
   } finally {
+    // The run ended (after the drain, which may start the next wake): end its "typing…" loops.
+    void typing.check();
     // GitHub CI is the repo's gate: push, then wait for the head's check runs (the report waits too).
     if (run.ciPending) await ciGate.begin(cfg, run, held);
   }
@@ -1954,6 +1957,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     const named = await orchestrator.agentByDir(String(body.key));
     const runId = named ? await orchestrator.stop(await loadConfig(), named.name) : await agent.interrupt(body.key);
     if (runId) void notify.stopped(runId); // the centre hears it from here: a stopped run never reaches the run-finished hook
+    void typing.check(); // nor do its "typing…" loops: end them here
     return json({ ok: true, runId });
   }
   if (req.method === "GET" && (p === "/api/agent/status" || p === "/api/claude/status")) {

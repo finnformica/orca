@@ -74,6 +74,19 @@ embed. The limits are 10 files and 10 MiB a file (a bot's upload limit in a serv
 boosts). Orca refuses more before it queues the post. The bytes stay in the attachment table, so a
 retried send reads them again.
 
+## Typing indicator
+
+When Orca gives an inbound message to an agent, Discord shows "Orca is typing…" in that place.
+
+- Orca calls `POST /channels/{id}/typing` at once, then again every 8 s.
+- Orca stops when the agent posts to that place, or when its run ends (done, failed or stopped).
+- Orca stops after 10 min in all cases, so a run that hangs does not type forever.
+- A read-only sender (Notify) gets no typing indicator, because no agent replies.
+- A worker on another instance gets no typing indicator, because this bridge cannot see its run end.
+- A typing call that fails is logged once. It never stops the run or the reply.
+
+Code: `server/integrations/typing.ts`, the adapter's `typing`.
+
 ## Reply in place or threads
 
 The integration's `config.threads` sets what Orca does with a mention at the top level of a channel.

@@ -7,6 +7,9 @@ import * as agents from "../agents";
 import * as verbs from "../verbs";
 import type { OrcaConfig } from "../config";
 import * as store from "./store";
+import * as registry from "./registry";
+import * as typing from "./typing";
+import * as agentRuns from "../agent";
 import { repoSlug } from "../github";
 import { agentMay, fenceExternal, integrationMetaLine, integrationPlace, integrationUrl, orcaEventText, replyToOf, type Envelope, type SendResult } from "../../shared/integrations";
 
@@ -50,6 +53,11 @@ export async function toAgent(cfg: OrcaConfig, named: string, e: Envelope): Prom
     const readOnly = e.grant.level === "notify";
     const replyTo = readOnly ? undefined : replyToOf(e);
     await orchestrator.message(cfg, await withSource(e), e.attachments ?? [], { grant: e.grant, person: !readOnly && Boolean(e.actor ?? e.display?.sender), ...(replyTo ? { replyTo } : {}), agent });
+    // "Typing…" in the sender's place while the agent works on it (Discord only today).
+    if (!readOnly && e.source.integrationId) {
+      const dir = orchestrator.dir(agent);
+      typing.startFor(e, registry.adapterFor(e.source.integrationId), () => agentRuns.isRunning(dir));
+    }
   } else {
     await orchestrator.deliverReport(cfg, await orcaEvent(cfg, e), undefined, agent);
   }
@@ -63,6 +71,11 @@ export async function toWorkstream(cfg: OrcaConfig, repoName: string, branch: st
   const instruction = agentText(e);
   const home = await verbs.placement(repo, { branch });
   if (home !== db.instanceName()) await orchestrator.viaInstance(cfg, home, "/api/workstreams/followup", { repo: repo.name, branch, instruction });
-  else await verbs.followUp(cfg, repo, branch, { instruction });
+  else {
+    const { worktreePath } = await verbs.followUp(cfg, repo, branch, { instruction });
+    // "Typing…" in the sender's place while the worker runs. Not for a worktree on another
+    // instance: this bridge cannot see that run end.
+    if (e.source.integrationId) typing.startFor(e, registry.adapterFor(e.source.integrationId), () => agentRuns.isRunning(worktreePath));
+  }
   return { ok: true };
 }

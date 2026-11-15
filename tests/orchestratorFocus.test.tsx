@@ -10,7 +10,7 @@ import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { getDefaultStore } from "jotai";
 import { App } from "@/App";
-import { orchestratorActivityAtom, orchestratorOpenAtom, orchestratorPrefillAtom, quickAskOpenAtom } from "@/lib/atoms";
+import { addNewOpenAtom, orchestratorActivityAtom, orchestratorOpenAtom, orchestratorPrefillAtom, quickAskOpenAtom } from "@/lib/atoms";
 import { endTypeahead, openOrchestrator } from "@/lib/orchestratorOpen";
 import { NARROW_QUERY } from "@/lib/viewport";
 import { navigate } from "@/lib/route";
@@ -24,6 +24,9 @@ let container: HTMLElement | undefined;
 const realMatchMedia = window.matchMedia;
 async function mount(path = "/", phone = false) {
   window.matchMedia = ((q: string) => ({ matches: phone && q === NARROW_QUERY, media: q, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
+  // Atoms live in the shared default store across test files: an Add New left open by another file
+  // focuses its box at mount, becomes the panel's opener, and Esc then hands focus back to a field.
+  getDefaultStore().set(addNewOpenAtom, false);
   navigate(path);
   container = document.createElement("div");
   document.body.appendChild(container);

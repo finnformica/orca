@@ -7,6 +7,7 @@ import { afterAttempt, attachmentRefusal, CATCH_ALL_SEND_ERROR, clip, deleteRefu
 import type { Adapter } from "./adapter";
 import * as router from "./router";
 import * as store from "./store";
+import * as typing from "./typing";
 import { scrubValueAll } from "../secrets";
 
 export type Sinks = {
@@ -83,6 +84,8 @@ async function sendOne(d: store.Delivery, now: number): Promise<SendResult | { d
       // A stored secret value never leaves through a channel (server/secrets.ts).
       const msg = scrubValueAll(outbound(d.envelope));
       const r = await a.send(place, { ...msg, text: clip(msg.text, a.caps.maxTextLength) }, String(d.id));
+      // A post where an agent "types" (server/integrations/typing.ts) is its reply: stop at once.
+      if (r.ok) typing.stopPlace(t.integrationId, t.externalId);
       // A post that starts a thread — the first post about a workstream (§3.6), or `--thread` on a
       // reply — stores it, so the next post continues there and a reply in it reaches the workstream.
       // The workstream is the event's scope, else the one the old thread was linked to.
