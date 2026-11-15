@@ -60,6 +60,10 @@ export interface Adapter {
    *  Delete only a message the bot posted: refuse a person's message with `ok: false, retryable:
    *  false` and a reason. Never throw for a platform error. */
   delete?(target: Target, externalMsgId: string): Promise<SendResult>;
+  /** Show "typing…" in the target's place for a few seconds (server/integrations/typing.ts calls it
+   *  again while an agent works on a message from there). Optional: an adapter without it shows
+   *  nothing. Never throw for a platform error: return `ok: false`. */
+  typing?(target: Target): Promise<{ ok: boolean; error?: string }>;
   /** A cheap live check for the settings card and its Test button. */
   health(): Promise<{ ok: boolean; detail?: string; lastEventAt?: number; lastPollAt?: number }>;
   /** A platform user's display name and stable id (pairing). */

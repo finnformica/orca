@@ -575,6 +575,13 @@ export function discordAdapter(connection: Connection): Adapter {
       remember(newest, chainKey(target.externalId, id), id);
       return { ok: true, externalMsgId: id, threadId: chainKey(target.externalId, id) };
     },
+    async typing(target: Target): Promise<{ ok: boolean; error?: string }> {
+      if (!token()) return { ok: false, error: `${connection.secretRef ?? "the token variable"} is not set` };
+      // The same place a reply goes: a reply chain lives in its channel, a thread is a channel.
+      const channel = parseChain(target.threadId)?.channel ?? target.threadId ?? target.externalId;
+      const r = await discordApi(token(), "POST", `/channels/${channel}/typing`); // 204, shows about 10 s
+      return r.ok ? { ok: true } : { ok: false, error: r.error ?? "unknown error" };
+    },
     async delete(target: Target, externalMsgId: string): Promise<SendResult> {
       if (!token()) return { ok: false, retryable: false, error: `${connection.secretRef ?? "the token variable"} is not set` };
       const channel = parseChain(target.threadId)?.channel ?? target.threadId ?? target.externalId;

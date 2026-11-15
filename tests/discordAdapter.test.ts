@@ -50,7 +50,7 @@ beforeEach(() => {
     expect(init?.headers?.authorization).toBe("Bot tok");
     calls.push(c);
     const a = answer(c);
-    return new Response(JSON.stringify(a.body), { status: a.status, headers: a.headers });
+    return new Response(a.status === 204 ? null : JSON.stringify(a.body), { status: a.status, headers: a.headers }); // 204: no body
   }) as typeof fetch;
 });
 afterEach(() => {
@@ -358,6 +358,19 @@ describe("Discord inbound", () => {
     expect(pulled).toBeLessThan(totalChunks); // stopped well short of the 400 KB the stream could give
     expect(ingested[0]!.text).toContain("huge.log:\n```\n" + "y".repeat(100 * 1024) + "\n… (truncated at 100 KB)\n```");
     await a.stop();
+  });
+});
+
+describe("Discord typing", () => {
+  test("typing posts to the reply's channel: a chain's channel, a thread, else the place; a refusal is ok: false, never a throw", async () => {
+    answer = () => ({ status: 204, body: null });
+    const a = discordAdapter(conn());
+    expect(await a.typing!({ externalId: "C1", threadId: "C1:M5" })).toEqual({ ok: true });
+    expect(await a.typing!({ externalId: "C1", threadId: "T9" })).toEqual({ ok: true });
+    expect(await a.typing!({ externalId: "D1" })).toEqual({ ok: true });
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(["POST /channels/C1/typing", "POST /channels/T9/typing", "POST /channels/D1/typing"]);
+    answer = () => ({ status: 403, body: { message: "Missing Permissions" } });
+    expect(await a.typing!({ externalId: "C1" })).toEqual({ ok: false, error: "403 Missing Permissions" });
   });
 });
 
