@@ -10,6 +10,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { App } from "@/App";
+import { getDefaultStore } from "jotai";
+import { addNewOpenAtom } from "@/lib/atoms";
 import { TOAST_EXIT_MS } from "../shared/notifications";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -30,6 +32,9 @@ afterEach(async () => {
   act(() => root?.unmount());
   container?.remove();
   root = container = undefined;
+  // The open state is a jotai atom in the shared default store: a test that leaves it open would
+  // open Add New (and focus its box) in the next file that mounts <App />.
+  getDefaultStore().set(addNewOpenAtom, false);
   apiFake.reset();
   localStorage.clear();
   await act(async () => { await store.refresh(); });

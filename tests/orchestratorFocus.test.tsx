@@ -10,7 +10,7 @@ import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { getDefaultStore } from "jotai";
 import { App } from "@/App";
-import { orchestratorActivityAtom, orchestratorOpenAtom, orchestratorPrefillAtom, quickAskOpenAtom } from "@/lib/atoms";
+import { addNewOpenAtom, orchestratorActivityAtom, orchestratorOpenAtom, orchestratorPrefillAtom, quickAskOpenAtom } from "@/lib/atoms";
 import { endTypeahead, openOrchestrator } from "@/lib/orchestratorOpen";
 import { NARROW_QUERY } from "@/lib/viewport";
 import { navigate } from "@/lib/route";
@@ -24,6 +24,9 @@ let container: HTMLElement | undefined;
 const realMatchMedia = window.matchMedia;
 async function mount(path = "/", phone = false) {
   window.matchMedia = ((q: string) => ({ matches: phone && q === NARROW_QUERY, media: q, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
+  // Atoms live in the shared default store across test files: an Add New left open by another file
+  // focuses its box at mount, becomes the panel's opener, and Esc then hands focus back to a field.
+  getDefaultStore().set(addNewOpenAtom, false);
   navigate(path);
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -141,19 +144,14 @@ test("F5: O opens, Esc closes, and O opens again at once — focus leaves the cl
   // As in a browser: <body> has no tabindex, so focus() on it does nothing (happy-dom lets it focus).
   document.body.focus = () => {};
   const panel = () => $('[data-slot="orchestrator-panel"]')!;
-  const where = () => { const a = document.activeElement as HTMLElement | null; const path: string[] = []; for (let e: Element | null = a; e; e = e.parentElement) { const d = e.getAttribute("data-slot"); if (d) path.push(d); } return `${a?.tagName}[${path.join("<")}]`; };
-  const diag: string[] = [`mount:${where()}`];
   await act(async () => { key("o", document.body); await flush(); await flush(); });
-  diag.push(`open1:${where()}`);
   expect(panel().dataset.state).toBe("open");
   expect(document.activeElement).toBe(composer());
   // Esc in the composer closes the panel; focus must not stay in the closed panel's textarea.
   await act(async () => { key("Escape", composer()!); await flush(); await flush(); });
   expect(panel().dataset.state).toBe("closed");
   expect(panel().contains(document.activeElement)).toBe(false);
-  diag.push(`esc:${where()}`);
   await act(async () => { key("o"); await flush(); await flush(); });
-  if (panel().dataset.state !== "open") throw new Error(`DIAG F5: ${diag.join(" || ")} || innerWidth=${window.innerWidth} atoms=${JSON.stringify({ q: getDefaultStore().get(quickAskOpenAtom), o: getDefaultStore().get(orchestratorOpenAtom) })} ls=${Object.keys(localStorage).join(",")}`);
   expect(panel().dataset.state).toBe("open");
   expect(document.activeElement).toBe(composer());
   // A button opener still gets focus back.
