@@ -60,7 +60,7 @@ import * as verbs from "./verbs";
 import * as repos from "./repos";
 import { linkOrigins } from "./origin";
 import { BusyError, checkGate, compact, launchOptions, launchQueued, newWorktree, placement, removeWorktree, startPreview } from "./verbs";
-import { HIDDEN_FOREVER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, attachmentRefs, replyAttachments, workstreamShots, mergeSafe, prDescriptionPrompt, sweepText, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
+import { HIDDEN_FOREVER, MERGED_WEEK_MS, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, attachmentRefs, replyAttachments, workstreamShots, mergeSafe, prDescriptionPrompt, sweepText, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
 import { AGENT_PROVIDERS, attachCommand, isAgentProvider, providerBinary, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn } from "../shared/agent";
 import { providerOfModel } from "../shared/models";
 import * as prShots from "./prShots";
@@ -573,6 +573,59 @@ async function forwardToOwner(req: Request, url: URL, repo: RepoConfig, cfg: Orc
   } catch (e) {
     return json({ error: `${repo.runsOn} is unreachable: ${e instanceof Error ? e.message : String(e)}` }, 502);
   }
+}
+
+/** One part of a repo's board: the per-repo route's answer, or why it failed. A failed part is never
+ *  an empty list: the store keeps its last good value for that part (store.ts `keepGood`). */
+type BoardPart = { ok: true; v: unknown } | { ok: false; error: string };
+
+/** `GET /api/board[?merged=<since ms>]`: the whole board in ONE answer, for the store's first load
+ *  and its poll. A browser has six HTTP/1.1 connections per host, and four calls for each repo
+ *  queued behind each other (PR #518: 52 calls, the Agents list's first row ~2.2 s at 100 ms a call).
+ *  Each part is the per-repo route itself, through `api()`, so the forward to the repo's owner,
+ *  degraded mode and every row decoration stay exactly theirs. Merged PRs only when asked: they
+ *  change slowly and the store reads them on a TTL. */
+async function boardAnswer(req: Request, url: URL, cfg: OrcaConfig): Promise<Response> {
+  const since = url.searchParams.get("merged");
+  const part = async (path: string, repo: string, extra = ""): Promise<BoardPart> => {
+    const inner = new URL(`${path}?repo=${encodeURIComponent(repo)}${extra}`, url);
+    const innerReq = new Request(inner, { headers: req.headers, signal: req.signal });
+    try {
+      const res = await api(innerReq, inner).catch((e) => {
+        if (e instanceof db.DbUnavailable) return whenDatabaseDown(innerReq, inner, e);
+        throw e;
+      });
+      const body = await res.json() as { error?: string };
+      return res.ok ? { ok: true, v: body } : { ok: false, error: body?.error ?? `HTTP ${res.status}` };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  };
+  const entries = await Promise.all(cfg.repos.map(async (r) => {
+    // As /api/config's `hasRemote`: a repo with no remote has no merged PRs to read.
+    const merged = since === null ? undefined
+      : await git.hasRemote(r.repoPath).catch(() => false) ? part("/api/prs/merged", r.name, `&since=${encodeURIComponent(since)}`)
+      : Promise.resolve<BoardPart>({ ok: true, v: [] });
+    const [agents, prs, enrichment, mergedPart] = await Promise.all([
+      part("/api/agents", r.name), part("/api/prs", r.name), part("/api/enrichment", r.name), merged,
+    ]);
+    return [r.name, { agents, prs, enrichment: await rowEnrichment(r, enrichment, agents, prs, mergedPart), ...(mergedPart ? { merged: mergedPart } : {}) }] as const;
+  }));
+  return json({ repos: Object.fromEntries(entries) });
+}
+
+/** The board's enrichment: only the branches that have a row (a worktree, an open PR, or a PR
+ *  merged in the store's 7-day window). Enrichment is never pruned, so the repo's whole map holds
+ *  every old branch's portable transcript: 2.7 MB on each poll, two thirds of it for branches no
+ *  row shows. When the agents or PR part failed, the store keeps its last good rows, so the whole
+ *  map goes. */
+async function rowEnrichment(repo: RepoConfig, enrichment: BoardPart, agents: BoardPart, prs: BoardPart, merged: BoardPart | undefined): Promise<BoardPart> {
+  if (!enrichment.ok || !agents.ok || !prs.ok || !enrichment.v || typeof enrichment.v !== "object") return enrichment;
+  const mergedRows = merged?.ok ? merged.v as { branch: string }[]
+    : await prSync.mergedPrs(repo, Date.now() - MERGED_WEEK_MS).catch(() => undefined);
+  if (!mergedRows) return enrichment;
+  const branches = new Set([...agents.v as { branch: string }[], ...prs.v as { branch: string }[], ...mergedRows].map((x) => x.branch));
+  return { ok: true, v: Object.fromEntries(Object.entries(enrichment.v as Record<string, unknown>).filter(([b]) => branches.has(b))) };
 }
 
 /** The Draft lane for a repo as THIS instance sees it: its own worktrees (reaped, statused,
@@ -1197,6 +1250,7 @@ async function api(req: Request, url: URL): Promise<Response> {
       return json({ error: secrets.scrub(e instanceof Error ? e.message : String(e)) }, 400);
     }
   }
+  if (req.method === "GET" && p === "/api/board") return boardAnswer(req, url, cfg);
   // Every repo-scoped call names its repo (query for GET, body for POST); defaults to the first.
   // The orchestrator's conversation is recorded under a reserved repo name that is no git repo —
   // only the database-backed chat routes (turns, stream, queued) are ever asked for it, PLUS any

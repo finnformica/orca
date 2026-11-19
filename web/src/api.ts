@@ -22,6 +22,15 @@ export type InboxQuery = { before?: string; source?: string; person?: string; un
 export type InboxThread = ThreadActions & { conversation: Conversation; items: ThreadItem[]; workstream?: { repo: string; branch: string } };
 import type { BridgeInfo, MechanicalMerge, MergePolicy, SyncResult, TurnShots } from "./workstream";
 
+/** One part of a repo's board: the per-repo route's answer, or why it failed (`GET /api/board`). */
+export type BoardPart<T> = { ok: true; v: T } | { ok: false; error: string };
+export type BoardRepo = {
+  agents: BoardPart<LiveAgent[]>; prs: BoardPart<PrSummary[]>; enrichment: BoardPart<Record<string, Record<string, unknown>>>;
+  /** Only when the call asked for merged PRs. */
+  merged?: BoardPart<MergedPr[]>;
+};
+export type Board = { repos: Record<string, BoardRepo> };
+
 export type LiveAgent = {
   branch: string;
   worktreePath: string;
@@ -328,6 +337,10 @@ export const api = {
   // reading the board, not to the timezone of whatever machine the bridge runs on.
   mergedPrs: (repo: string): Promise<MergedPr[]> =>
     get(`/api/prs/merged${q(repo, `&since=${Date.now() - MERGED_WEEK_MS}`)}`).then(res),
+  /** The whole board, every repo, in ONE call (server `boardAnswer`): what `agents`, `prs`,
+   *  `enrichment` and (with `merged`) `mergedPrs` give per repo. `merged` is the same 7-day window. */
+  board: (merged: boolean): Promise<Board> =>
+    get(`/api/board${merged ? `?merged=${Date.now() - MERGED_WEEK_MS}` : ""}`).then(res),
   prDetail: (repo: string, n: number): Promise<PrDetail> => get(`/api/prs/${n}${q(repo)}`).then(res),
   prDiff: (repo: string, n: number): Promise<{ diff: string }> => get(`/api/prs/${n}/diff${q(repo)}`).then(res),
   reviewEvidence: (repo: string, n: number): Promise<ReviewThreadEvidence[]> => get(`/api/prs/${n}/review-evidence${q(repo)}`).then(res),
