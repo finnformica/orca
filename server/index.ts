@@ -575,6 +575,45 @@ async function forwardToOwner(req: Request, url: URL, repo: RepoConfig, cfg: Orc
   }
 }
 
+/** One part of a repo's board: the per-repo route's answer, or why it failed. A failed part is never
+ *  an empty list: the store keeps its last good value for that part (store.ts `keepGood`). */
+type BoardPart = { ok: true; v: unknown } | { ok: false; error: string };
+
+/** `GET /api/board[?merged=<since ms>]`: the whole board in ONE answer, for the store's first load
+ *  and its poll. A browser has six HTTP/1.1 connections per host, and four calls for each repo
+ *  queued behind each other (PR #518: 52 calls, the Agents list's first row ~2.2 s at 100 ms a call).
+ *  Each part is the per-repo route itself, through `api()`, so the forward to the repo's owner,
+ *  degraded mode and every row decoration stay exactly theirs. Merged PRs only when asked: they
+ *  change slowly and the store reads them on a TTL. */
+async function boardAnswer(req: Request, url: URL, cfg: OrcaConfig): Promise<Response> {
+  const since = url.searchParams.get("merged");
+  const part = async (path: string, repo: string, extra = ""): Promise<BoardPart> => {
+    const inner = new URL(`${path}?repo=${encodeURIComponent(repo)}${extra}`, url);
+    const innerReq = new Request(inner, { headers: req.headers, signal: req.signal });
+    try {
+      const res = await api(innerReq, inner).catch((e) => {
+        if (e instanceof db.DbUnavailable) return whenDatabaseDown(innerReq, inner, e);
+        throw e;
+      });
+      const body = await res.json() as { error?: string };
+      return res.ok ? { ok: true, v: body } : { ok: false, error: body?.error ?? `HTTP ${res.status}` };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  };
+  const entries = await Promise.all(cfg.repos.map(async (r) => {
+    // As /api/config's `hasRemote`: a repo with no remote has no merged PRs to read.
+    const merged = since === null ? undefined
+      : await git.hasRemote(r.repoPath).catch(() => false) ? part("/api/prs/merged", r.name, `&since=${encodeURIComponent(since)}`)
+      : Promise.resolve<BoardPart>({ ok: true, v: [] });
+    const [agents, prs, enrichment, mergedPart] = await Promise.all([
+      part("/api/agents", r.name), part("/api/prs", r.name), part("/api/enrichment", r.name), merged,
+    ]);
+    return [r.name, { agents, prs, enrichment, ...(mergedPart ? { merged: mergedPart } : {}) }] as const;
+  }));
+  return json({ repos: Object.fromEntries(entries) });
+}
+
 /** The Draft lane for a repo as THIS instance sees it: its own worktrees (reaped, statused,
  *  published to the shared inventory) plus what the other instances published. Called by the
  *  browser's poll and by the publish timer below, so an instance nobody is looking at still keeps
@@ -1197,6 +1236,7 @@ async function api(req: Request, url: URL): Promise<Response> {
       return json({ error: secrets.scrub(e instanceof Error ? e.message : String(e)) }, 400);
     }
   }
+  if (req.method === "GET" && p === "/api/board") return boardAnswer(req, url, cfg);
   // Every repo-scoped call names its repo (query for GET, body for POST); defaults to the first.
   // The orchestrator's conversation is recorded under a reserved repo name that is no git repo —
   // only the database-backed chat routes (turns, stream, queued) are ever asked for it, PLUS any

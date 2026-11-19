@@ -1,7 +1,7 @@
-// Local-agent status, open PRs, and merged history poll as three independent streams (store.ts).
-// Each keeps its own {ok} and `live` is the merge of the three streams' LATEST GOOD values, so one
-// stream's transient failure never reads as "those branches are gone" and never drops what another
-// stream retained. Driven against the real store.
+// Local-agent status, open PRs, enrichment and merged history come in ONE board call (store.ts,
+// GET /api/board), merged history only on a TTL. Each part keeps its own {ok} and `live` is the merge
+// of the parts' LATEST GOOD values, so one part's transient failure never reads as "those branches
+// are gone" and never drops what another part retained. Driven against the real store.
 import { afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
@@ -59,14 +59,45 @@ test("a failed agents poll keeps the running rows the last good poll had", async
   expect(store.assembleRows().find((r) => r.branch === "busy")).toBeUndefined();
 });
 
-test("agents and PR streams poll independently of merged history", async () => {
+test("one board call per poll; merged PRs only when asked", async () => {
   const before = store.clientPollCounts();
-  await store.pollAgents();
-  const afterAgents = store.clientPollCounts();
-  expect(afterAgents.agents).toBe(before.agents + 1);
-  expect(afterAgents.prs).toBe(before.prs); // pollAgents does not drag the PR or merged streams along
+  await store.pollBoard();
+  expect(apiFake.boardCalls).toEqual([{ merged: false }]); // ONE call for every repo, not four per repo
+  expect(store.clientPollCounts().agents).toBe(before.agents + 1);
+  expect(store.clientPollCounts().merged).toBe(before.merged); // the tick reads merged PRs on a TTL
 
-  await store.pollPrs();
-  expect(store.clientPollCounts().prs).toBe(afterAgents.prs + 1);
-  expect(store.clientPollCounts().merged).toBe(afterAgents.merged);
+  await store.refresh(); // after a mutation: the merged list too
+  expect(apiFake.boardCalls).toEqual([{ merged: false }, { merged: true }]);
+  expect(store.clientPollCounts().merged).toBe(before.merged + 1);
+});
+
+test("a refresh during a poll without merged PRs gets them in the chained poll", async () => {
+  apiFake.holdPrs = true;
+  const tick = store.pollBoard(); // in flight, no merged PRs
+  await Promise.resolve();
+  const after = store.refresh(); // a merge just landed: this must read the merged list
+  apiFake.releasePrs!();
+  await Promise.all([tick, after]);
+  expect(apiFake.boardCalls).toEqual([{ merged: false }, { merged: true }]);
+});
+
+test("a failed part keeps its last good value; the other parts still land", async () => {
+  apiFake.prsData = [{ branch: "haspr", number: 7, title: "Has PR", url: "u", isDraft: false }];
+  await store.refresh();
+  apiFake.prsError = "network blip";
+  apiFake.enrichmentData.set("r::haspr", { prompt: "new prompt" });
+  await store.refresh();
+  expect(store.assembleRows().find((r) => r.branch === "haspr")?.prNumber).toBe(7);
+  expect(store.enrichmentFor("r", "haspr").prompt).toBe("new prompt"); // the enrichment part was good
+});
+
+// Last in the file: the fallback is remembered for the page's life (the bridge does not change under it).
+test("a bridge older than /api/board: the per-repo calls, the same rows", async () => {
+  apiFake.boardError = "not found";
+  apiFake.prsData = [{ branch: "oldpr", number: 9, title: "Old bridge", url: "u", isDraft: false }];
+  await store.refresh();
+  expect(store.assembleRows().find((r) => r.branch === "oldpr")?.prNumber).toBe(9);
+  apiFake.boardCalls = [];
+  await store.refresh();
+  expect(apiFake.boardCalls).toEqual([]); // asked once, then the per-repo calls only
 });

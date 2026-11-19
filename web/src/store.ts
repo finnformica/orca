@@ -1,5 +1,5 @@
 // Source of truth is the LIVE system across ALL configured repos: worktrees + running
-// agents (GET /api/agents) and open PRs (GET /api/prs) per repo, polled together and
+// agents, open PRs, enrichment and merged PRs for every repo in ONE call (GET /api/board),
 // aggregated into unified rows tagged by repo. That live data is *enriched* (prompt, title,
 // local-promote flag, Slack timestamps) with what git/gh can't recover, keyed by repo+branch.
 // Enrichment and the chat transcript now live in the bridge's SQLite store (server/db.ts); this
@@ -9,7 +9,7 @@ import { useEffect, useSyncExternalStore } from "react";
 import { onRefresh } from "@/lib/refresh";
 import { afterFirstRender } from "@/lib/queryClient";
 import { currentRoute, type Route } from "@/lib/route";
-import { api, type LiveAgent, type PreviewSvc, type RepoInfo } from "./api";
+import { api, type Board, type BoardPart, type BoardRepo, type LiveAgent, type PreviewSvc, type RepoInfo } from "./api";
 import type { CiStatus, ConversationComment, Mergeable, MergedPr, PrSummary, ReviewStatus, ReviewThreadEvidence } from "../../server/gh";
 import {
   addressNeedsAgent, addressPrPrompt, chatPrompt, continuation, deriveKanbanState, followDecision, mergedPrIsHistory, newestMergedPerBranch, followUpPrompt, instanceOrder, launchPrompt,
@@ -261,12 +261,12 @@ export type OptimisticDraft = {
 let optimistic: OptimisticDraft[] = [];
 let optSeq = 0;
 
-// ---- live state (all repos), polled as three independent streams ----
-// Local-agent status, open PRs, and merged history change on very different cadences, so they poll
-// SEPARATELY: agents + PRs fast while work is active (keeps runs and Follow responsive), merged
-// history on a slow TTL (it barely changes). Each stream keeps its own {ok} so one stream's
-// transient failure never lets GC read another stream's branches as "gone". `live` is the merge of
-// the three streams' latest good values — so a fast agents-only poll doesn't drop retained PRs.
+// ---- live state (all repos), from one board call ----
+// Local-agent status, open PRs, and merged history change on very different cadences: agents + PRs
+// come with every poll (fast while work is active, keeps runs and Follow responsive), merged history
+// only on a slow TTL (it barely changes). Each part keeps its own {ok} so one part's transient
+// failure never lets GC read another part's branches as "gone". `live` is the merge of the parts'
+// latest good values — so a poll without merged PRs doesn't drop the retained ones.
 type RepoLive = { repo: string; hasRemote: boolean; agents: LiveAgent[]; prs: PrSummary[]; merged: MergedPr[] };
 type Slice<T> = { v: T; ok: boolean };
 const agentsByRepo = new Map<string, Slice<LiveAgent[]>>();
@@ -278,11 +278,6 @@ let live: RepoLive[] = [];
 // server/metrics.ts / /api/diagnostics; these track how often each stream fires from the browser.)
 const pollCounts = { agents: 0, prs: 0, merged: 0 };
 export const clientPollCounts = () => ({ ...pollCounts });
-
-// Settle each fetch to {ok, v} instead of catch-to-empty, so GC can tell a genuinely-empty repo from
-// a transient fetch failure (which must NOT be read as "everything's gone" and wipe enrichment).
-const settle = <T>(p: Promise<T>, fallback: T): Promise<Slice<T>> =>
-  p.then((v) => ({ ok: true, v }), () => ({ ok: false, v: fallback }));
 
 /** Store a settled slice. A failed one keeps the last good value: storing its empty fallback made
  *  every row of the repo leave the board for one poll (the Overview's counts read 0, then came back). */
@@ -352,50 +347,80 @@ export function coalesced(run: () => Promise<void>): () => Promise<void> {
 let lastSyncAt = 0;
 export const useLastSync = (): number => useSyncExternalStore(subscribe, () => lastSyncAt);
 
-export const pollAgents = coalesced(async () => {
-  const polled = await Promise.all((cfg?.repos ?? []).map((r) =>
-    settle(api.agents(r.name), [] as LiveAgent[]).then((s) => [r.name, s] as const)));
+// The whole board in ONE call (GET /api/board): a browser has six HTTP/1.1 connections per host,
+// and four calls per repo (52 for 13 repos) queued behind each other and ahead of the page's own
+// fetches (PR #518). Each part keeps its own {ok}, so one part's transient
+// failure never reads as "those branches are gone".
+let boardMissing = false; // the bridge is older than /api/board: the per-repo calls instead
+
+/** The board from a bridge older than /api/board: the four calls per repo it always answered. */
+async function perRepoBoard(merged: boolean): Promise<Board> {
+  const part = <T>(p: Promise<T>): Promise<BoardPart<T>> =>
+    p.then((v) => ({ ok: true as const, v }), (e: unknown) => ({ ok: false as const, error: e instanceof Error ? e.message : String(e) }));
+  const entries = await Promise.all((cfg?.repos ?? []).map(async (r) => {
+    const [agents, prs, enrichment, mergedPart] = await Promise.all([
+      part(api.agents(r.name)), part(api.prs(r.name)), part(api.enrichment(r.name)),
+      merged ? (r.hasRemote ? part(api.mergedPrs(r.name)) : Promise.resolve({ ok: true as const, v: [] as MergedPr[] })) : undefined,
+    ]);
+    return [r.name, { agents, prs, enrichment, ...(mergedPart ? { merged: mergedPart } : {}) }] as const;
+  }));
+  return { repos: Object.fromEntries(entries) };
+}
+
+async function fetchBoard(merged: boolean): Promise<Board> {
+  if (!boardMissing) {
+    try { return await api.board(merged); } catch (e) {
+      if (!(e instanceof Error && e.message === "not found")) throw e;
+      boardMissing = true;
+    }
+  }
+  return perRepoBoard(merged);
+}
+
+async function loadBoard(merged: boolean): Promise<void> {
+  if (merged) lastMergedAt = Date.now();
+  // A failed call is a failed part for every repo: each keeps its last good value.
+  const board = await fetchBoard(merged).catch((): Board => ({ repos: {} }));
+  const slice = <T>(p: BoardPart<T> | undefined, fallback: T): Slice<T> => p?.ok ? { ok: true, v: p.v } : { ok: false, v: fallback };
+  const repos = cfg?.repos ?? [];
   pollCounts.agents++;
-  for (const [name, s] of polled) keepGood(agentsByRepo, name, s);
-  if (polled.some(([, s]) => s.ok)) lastSyncAt = Date.now();
-  rebuildLive();
-  // Enrichment rides the agents stream: both are local-only bridge calls (no GitHub quota), and it
-  // keeps the mirror in step with the run status it decorates. A failed fetch leaves the mirror as-is
-  // — it must never read as "this branch has no enrichment" and blank out titles mid-session.
-  await Promise.all((cfg?.repos ?? []).map((r) =>
-    api.enrichment(r.name).then((e) => hydrateEnrich(r.name, e)).catch(() => {})));
-  persistAgentEnrichment();
-  // No notify() here: the individual streams settle at different times, so rendering off one alone
-  // shows a partial view where the sources disagree — a PR branch whose worktree loaded but whose PR
-  // hasn't looks like a bare LOCAL card, then jumps. The coordinator (refreshAndGc / the solo merged
-  // poll) notifies once after its streams settle, so the board only ever paints a consistent view.
-});
-
-export const pollPrs = coalesced(async () => {
-  const polled = await Promise.all((cfg?.repos ?? []).map((r) =>
-    settle(api.prs(r.name), [] as PrSummary[]).then((s) => [r.name, s] as const)));
   pollCounts.prs++;
-  for (const [name, s] of polled) keepGood(prsByRepo, name, s);
+  if (merged) pollCounts.merged++;
+  for (const r of repos) {
+    const b: BoardRepo | undefined = board.repos[r.name];
+    keepGood(agentsByRepo, r.name, slice(b?.agents, [] as LiveAgent[]));
+    keepGood(prsByRepo, r.name, slice(b?.prs, [] as PrSummary[]));
+    if (merged) keepGood(mergedByRepo, r.name, slice(b?.merged, [] as MergedPr[]));
+  }
+  if (repos.some((r) => board.repos[r.name]?.agents.ok)) lastSyncAt = Date.now();
   rebuildLive();
+  // Enrichment rides the board: it keeps the mirror in step with the run status it decorates. A
+  // failed part leaves the mirror as-is — it must never read as "this branch has no enrichment" and
+  // blank out titles mid-session.
+  for (const r of repos) {
+    const e = board.repos[r.name]?.enrichment;
+    if (e?.ok) hydrateEnrich(r.name, e.v);
+  }
+  persistAgentEnrichment();
   runFollowers(); // auto-drive any followed PRs off the status we just polled
-  // notify() is the coordinator's job (see pollAgents) — never render off PRs alone.
-});
+  // No notify() here: the coordinator (refreshAll / the tick) notifies once after the poll settles.
+}
 
-export const pollMerged = coalesced(async () => {
-  const polled = await Promise.all((cfg?.repos ?? []).map((r) =>
-    (r.hasRemote ? settle(api.mergedPrs(r.name), [] as MergedPr[]) : Promise.resolve({ ok: true, v: [] as MergedPr[] }))
-      .then((s) => [r.name, s] as const)));
-  pollCounts.merged++;
-  for (const [name, s] of polled) keepGood(mergedByRepo, name, s);
-  rebuildLive();
-  // notify() is the coordinator's job (see pollAgents): refreshAndGc after a full refresh, or the
-  // solo TTL caller below via `.then(notify)`.
-});
+// Leading + trailing coalescing (above). A caller that asks for merged PRs while a poll without them
+// is in flight sets the flag again after that poll read it, so the chained poll carries them.
+let wantMerged = false;
+let lastMergedAt = 0; // when a poll last asked for merged PRs (the tick's TTL)
+const boardPoll = coalesced(async () => { const merged = wantMerged; wantMerged = false; await loadBoard(merged); });
+/** One board poll; `merged` adds the merged PRs (slow to change: the tick reads them on a TTL). */
+export function pollBoard(merged = false): Promise<void> {
+  if (merged) wantMerged = true;
+  return boardPoll();
+}
 
 // Flips once the first refresh settles — see useWorkstreamsLoaded.
 let liveLoaded = false;
 
-// One render off the fully-settled view — never mid-flight (see pollAgents).
+// One render off the fully-settled view — never mid-flight (see loadBoard).
 async function refreshAll(streams: Promise<void>[]): Promise<void> {
   await Promise.all(streams);
   // A poll tick that beats the config polls zero repos: that is not "loaded, nothing there".
@@ -403,16 +428,15 @@ async function refreshAll(streams: Promise<void>[]): Promise<void> {
   notify();
 }
 
-/** Imperative full refresh (after a mutation) — all three streams, then GC once on a consistent view. */
+/** Imperative full refresh (after a mutation) — the whole board with merged PRs, then GC once on a consistent view. */
 export function refresh(): Promise<void> {
-  return refreshAll([pollAgents(), pollPrs(), pollMerged()]);
+  return refreshAll([pollBoard(true)]);
 }
-// "Refresh everything" (the top bar's Updated chip): the board's three streams, and every review
+// "Refresh everything" (the top bar's Updated chip): the whole board, and every review
 // signal already loaded (the rows' review clusters, the PR page's Review panel) fetched again.
 onRefresh(() => Promise.all([refresh(), refreshReviewSignals(), refreshChecks()]));
 
 let pollTick = 0;
-let lastMergedAt = 0;
 const MERGED_TTL_MS = 90_000;
 setInterval(() => {
   pollTick++;
@@ -423,14 +447,13 @@ setInterval(() => {
   // at once (below). Keep transitions responsive; idle boards poll every 32s.
   if (document.visibilityState === "hidden") return;
   const every = active ? 1 : 4;
-  if (pollTick % every === 0) void refreshAll([pollAgents(), pollPrs()]); // agents + PRs together; GC on the settled pair
-  // Merged history changes slowly — poll on a TTL. It only
-  // ever ADDS branches to the "alive" set, so it can't trigger a prune and needs no GC of its own.
-  if (Date.now() - lastMergedAt >= MERGED_TTL_MS) { lastMergedAt = Date.now(); void pollMerged().then(notify); }
+  // Merged history changes slowly — it rides the board call only once its TTL passed.
+  const mergedDue = Date.now() - lastMergedAt >= MERGED_TTL_MS;
+  if (pollTick % every === 0 || mergedDue) void refreshAll([pollBoard(mergedDue)]);
 }, 8_000);
 // Back from hidden: catch up now rather than on the next tick, so the stale indicator clears fast.
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible" && cfg) void refreshAll([pollAgents(), pollPrs()]);
+  if (document.visibilityState === "visible" && cfg) void refreshAll([pollBoard()]);
 });
 
 // No enrichment GC. It existed to bound a 5MB localStorage bucket; the bridge's SQLite store keeps
