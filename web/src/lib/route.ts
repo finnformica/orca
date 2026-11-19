@@ -55,6 +55,8 @@ const listeners = new Set<() => void>();
 let current: Route = parse(); // cached so getSnapshot returns a stable reference
 const update = () => { current = parse(); listeners.forEach((l) => l()); };
 window.addEventListener("popstate", update);
+/** The route now, outside React (the store's first board load reads it). */
+export const currentRoute = (): Route => current;
 
 export function navigate(path: string, replace = false) {
   if (location.pathname + location.search === path) return; // the query counts: /agents?status=running ≠ /agents

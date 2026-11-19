@@ -7,6 +7,8 @@
 // (theme, composer drafts) — see the migration below for the one-shot handover.
 import { useEffect, useSyncExternalStore } from "react";
 import { onRefresh } from "@/lib/refresh";
+import { afterFirstRender } from "@/lib/queryClient";
+import { currentRoute, type Route } from "@/lib/route";
 import { api, type LiveAgent, type PreviewSvc, type RepoInfo } from "./api";
 import type { CiStatus, ConversationComment, Mergeable, MergedPr, PrSummary, ReviewStatus, ReviewThreadEvidence } from "../../server/gh";
 import {
@@ -42,8 +44,14 @@ const subscribe = (l: () => void) => { listeners.add(l); return () => listeners.
 // ---- config ----
 let cfg: { repos: RepoInfo[]; staleHours: number; agentProviders: AgentProvider[]; apiPort?: number; instance?: string; instances?: string[]; instanceHourlyUsd?: Record<string, number>; terminal?: Record<string, boolean>; voice?: boolean; ui?: { showBoard: boolean }; instanceUrls?: Record<string, string>; bridge?: BridgeInfo } | null = null;
 export const configReady = api.config()
-  .then(async (c) => { cfg = c; notify(); await migrateLocalEnrichment(); void refresh(); })
+  // On a page that does not draw from the board, its first load waits for the app's first render, so
+  // its burst does not queue ahead of the page's own fetches (lib/queryClient.ts `afterFirstRender`).
+  .then(async (c) => { cfg = c; notify(); await migrateLocalEnrichment(); void (boardFirst(currentRoute()) ? Promise.resolve() : afterFirstRender()).then(refresh); })
   .catch(() => { cfg = { repos: EMPTY_REPOS, staleHours: 24, agentProviders: DEFAULT_AGENT_PROVIDERS }; configFailed = true; notify(); });
+/** The pages whose data IS the board's rows (the Agents list, the Board, the Overview's numbers, an
+ *  agent page's row): the board loads first there. Elsewhere (Inbox, the orchestrator, Settings…) the
+ *  page's own fetch goes first. Measured: either order wins 200-400 ms for the page it favours. */
+export const boardFirst = (route: Route): boolean => ["overview", "agents", "board", "pr", "local"].includes(route.name);
 // The bridge didn't answer the first request: the installed app opened from its cached shell with no
 // way to reach Orca. The Shell shows the offline screen (Try again) instead of an empty board.
 let configFailed = false;
