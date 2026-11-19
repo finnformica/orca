@@ -1,7 +1,8 @@
 // The `orca-shot` screenshots a workstream's workers reported, as thumbnails: a row of them under a
 // worker report in the chat, and the agent page's Screenshots card (every turn's, newest first).
 // Each is the shared ExpandableImage — click for the lightbox, hover for Copy.
-import { useCached } from "@/lib/cache";
+import { useQuery } from "@tanstack/react-query";
+import { queryClient, useRefetchOnChange } from "@/lib/queryClient";
 import { api } from "../api";
 import { VCard } from "@/components/console";
 import { ExpandableImage } from "@/components/ExpandableImage";
@@ -40,7 +41,9 @@ export function ShotThumbs({ shots, className }: { shots: ShotRef[]; className?:
  *  it (the row's agent status, so a run that just finished shows its shots). */
 const NO_SHOTS: TurnShots[] = [];
 export function ScreenshotsCard({ repo, branch, version }: { repo: string; branch: string; version?: unknown }) {
-  const groups = useCached(`shots:${repo}::${branch}`, () => api.shots(repo, branch).then((g) => (Array.isArray(g) ? g : [])), { version }).data ?? NO_SHOTS;
+  const { data, refetch } = useQuery({ queryKey: ["shots", repo, branch], queryFn: () => api.shots(repo, branch).then((g) => (Array.isArray(g) ? g : [])) }, queryClient);
+  useRefetchOnChange(refetch, version);
+  const groups = data ?? NO_SHOTS;
   const count = groups.reduce((n, g) => n + g.shots.length, 0);
   if (!count) return null;
   return (

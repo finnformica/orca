@@ -18,7 +18,8 @@ import { useNarrow } from "@/lib/viewport";
 import { ChecksCard, CiChip, ConversationCard } from "./PrPanels";
 import { Detail, VCard } from "@/components/console";
 import { useSummary } from "@/lib/workstreamHooks";
-import { useCached } from "@/lib/cache";
+import { useQuery } from "@tanstack/react-query";
+import { queryClient } from "@/lib/queryClient";
 import { Markdown } from "@/components/Markdown";
 import { FilesChanged } from "./FilesChanged";
 
@@ -55,11 +56,13 @@ export function useStickyHeader(ready: boolean) {
 }
 
 export function PrDetail({ repo, number, sub }: { repo: string; number: number; sub: PrTab }) {
-  // From the shared cache (lib/cache.ts): a PR opened again shows its last detail at once, then the
-  // fresh one. `error` is the last failed read; it shows only while there is nothing to show.
-  const { data: prData, error, refresh: reloadPr } = useCached(`pr:${repo}#${number}`, () => api.prDetail(repo, number));
-  const pr = prData ?? null;
-  const diff = useCached(sub === "files" ? `pr-diff:${repo}#${number}` : null, () => api.prDiff(repo, number).then((d) => d.diff, () => "")).data ?? null;
+  // A query in the app's QueryClient (lib/queryClient.ts): a PR opened again shows its last detail at
+  // once, then the fresh one. `error` is the last failed read; it shows only while there is nothing to show.
+  const prQuery = useQuery({ queryKey: ["pr", repo, number], queryFn: () => api.prDetail(repo, number) }, queryClient);
+  const pr = prQuery.data ?? null;
+  const error = prQuery.error ? prQuery.error.message : null;
+  const reloadPr = prQuery.refetch;
+  const diff = useQuery({ queryKey: ["pr-diff", repo, number], queryFn: () => api.prDiff(repo, number).then((d) => d.diff, () => ""), enabled: sub === "files" }, queryClient).data ?? null;
   const liveRow = useWorkstreams().find((r) => r.repo === repo && r.prNumber === number); // your own PR, if tracked
   const loaded = useWorkstreamsLoaded(); // until then, no liveRow does not mean "not yours"
   const summary = useSummary(liveRow); // its commits, for the Details card's Source

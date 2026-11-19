@@ -52,7 +52,7 @@ import { useServerIdentity } from "@/lib/identity";
 import { openOrchestrator } from "@/lib/orchestratorOpen";
 import { subscribeTurns } from "@/lib/events";
 import { onRefresh } from "@/lib/refresh";
-import { cacheGet, cacheSet } from "@/lib/cache";
+import { persistShrink, queryClient } from "@/lib/queryClient";
 import { onOrchestratorDelivered, useOrchestratorOutbox } from "@/lib/orchestratorOutbox";
 import { ChatControls, type ChatControlsProps } from "@/components/ChatControls";
 import type { OrchestratorPrefill } from "@/lib/atoms";
@@ -1139,14 +1139,17 @@ function RoomPillRow({ pill, unseen, onOpen }: { pill: RoomPill; unseen: boolean
   );
 }
 
-/** One conversation's last state in the shared cache (lib/cache.ts): a chat opened again paints it at
- *  once, then re-reads the newest page, as when it is open. */
-type ChatCache = { turns: AgentTurn[]; older: string | null; dbDown: boolean; rooms?: RoomEntry[]; queued: QueuedMessage[] };
-export const chatCacheKey = (repo: string, branch: string) => `chat:${repo}::${branch}`;
+/** One conversation's last state, a query in the app's QueryClient (lib/queryClient.ts): a chat opened
+ *  again paints it at once, then re-reads the newest page, as when it is open. The chat writes it with
+ *  `setQueryData` — its own paging (only the NEWEST page re-read on a `turn` event, older pages kept,
+ *  a mounted window) is not `useInfiniteQuery`'s, whose refetch re-reads every loaded page. */
+export type ChatCache = { turns: AgentTurn[]; older: string | null; dbDown: boolean; rooms?: RoomEntry[]; queued: QueuedMessage[] };
+export const chatQueryKey = (repo: string, branch: string) => ["chat", repo, branch] as const;
 /** What goes to disk: no steps (the newest page brings them again), and nothing for a conversation
  *  scrolled far back (its `older` cursor must stay true to the turns kept). */
 export const chatToDisk = (c: ChatCache): ChatCache | undefined =>
   c.turns.length > 2 * TURN_PAGE_SIZE ? undefined : { ...c, turns: c.turns.map(({ steps: _s, ...t }) => t as AgentTurn) };
+persistShrink("chat", chatToDisk);
 
 type ChatPanelProps = Parameters<typeof ChatPanelFor>[0];
 /** A new conversation is a new panel: its state starts from ITS cache entry, never the last chat's. */
@@ -1211,8 +1214,7 @@ function ChatPanelFor({ row, send, controls, prefill, outbox, author, size = "pa
   // you reach the top (`older` is the cursor for it, null once the first turn is loaded). The
   // orchestrator's conversation is hundreds of turns and used to load whole — megabytes over the
   // tailnet and a long first render — to show the last few.
-  const cacheKey = chatCacheKey(row.repo, row.branch);
-  const [seed] = useState(() => cacheGet<ChatCache>(cacheKey)); // the last state, painted at once
+  const [seed] = useState(() => queryClient.getQueryData<ChatCache>(chatQueryKey(row.repo, row.branch))); // the last state, painted at once
   const [turns, setTurns] = useState<AgentTurn[] | null>(seed?.turns ?? null);
   const [older, setOlder] = useState<string | null>(seed?.older ?? null);
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -1455,11 +1457,11 @@ function ChatPanelFor({ row, send, controls, prefill, outbox, author, size = "pa
   }, [outbox, noticeSince]);
   useEffect(() => { loadNotices(); }, [loadNotices]);
   const [queued, setQueued] = useState<QueuedMessage[]>(seed?.queued ?? []);
-  // Every change — a fresh page, a pushed step, the queue — goes to the shared cache, so this chat
+  // Every change — a fresh page, a pushed step, the queue — goes to the chat's query, so this chat
   // opened again starts where it is now.
   useEffect(() => {
-    if (turns) cacheSet<ChatCache>(cacheKey, { turns, older, dbDown, rooms: roomsState === "ok" ? roomEntries : undefined, queued }, { persist: chatToDisk });
-  }, [cacheKey, turns, older, dbDown, roomEntries, roomsState, queued]);
+    if (turns) queryClient.setQueryData<ChatCache>(chatQueryKey(row.repo, row.branch), { turns, older, dbDown, rooms: roomsState === "ok" ? roomEntries : undefined, queued });
+  }, [row.repo, row.branch, turns, older, dbDown, roomEntries, roomsState, queued]);
   // Only the NEWEST read applies: a slow read from before a dispatch must not restore the entry.
   const queuedSeq = useRef(0);
   const loadQueued = () => {

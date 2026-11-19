@@ -13,7 +13,8 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { ArrowLeft, BellOff, Bell, CheckCheck, Inbox as InboxIcon, Link2, Mail, MailOpen, MoreHorizontal, Reply, Send, X } from "lucide-react";
 import { navigate, useSearch } from "@/lib/route";
-import { cacheSet, useCached } from "@/lib/cache";
+import { useQuery } from "@tanstack/react-query";
+import { queryClient } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
 import { useCoarse, useNarrow } from "@/lib/viewport";
 import { actionFailed, markRead as markNotificationsRead, restoreUnread } from "@/lib/notificationStore";
@@ -57,15 +58,18 @@ export function InboxPage() {
   const query: InboxQuery = { source, person, unread, muted };
   const queryRef = useRef(query);
   queryRef.current = query;
-  // The newest window lives in the shared cache (lib/cache.ts), per filter: the Inbox opened again
-  // shows its last rows at once, then the poll's. Older pages are this visit's only.
-  const pageKey = `inbox:${JSON.stringify(query)}`;
-  const { data: cached, error, refresh: refetch } = useCached<InboxPage>(pageKey, () => api.inbox(queryRef.current), { poll: 15_000, persist: true });
-  const page = cached ?? null;
-  const setPage = (fn: (p: InboxPage | undefined) => InboxPage | undefined) => cacheSet<InboxPage | undefined>(pageKey, fn);
+  // The newest window is a query in the app's QueryClient (lib/queryClient.ts), per filter, persisted
+  // across an app restart: the Inbox opened again shows its last rows at once, then the poll's. Older
+  // pages are this visit's only.
+  const pageKey = ["inbox", source, person, unread, muted] as const;
+  const pageQuery = useQuery({ queryKey: pageKey, queryFn: () => api.inbox(queryRef.current), refetchInterval: 15_000 }, queryClient);
+  const page = pageQuery.data ?? null;
+  const error = pageQuery.error?.message;
+  const refetch = pageQuery.refetch;
+  const setPage = (fn: (p: InboxPage | undefined) => InboxPage | undefined) => queryClient.setQueryData<InboxPage>(pageKey, fn);
   const [older, setOlder] = useState<InboxRow[]>([]);
   const [olderCursor, setOlderCursor] = useState<string | null | undefined>(undefined);
-  useEffect(() => { setOlder([]); setOlderCursor(undefined); }, [pageKey]);
+  useEffect(() => { setOlder([]); setOlderCursor(undefined); }, [source, person, unread, muted]);
   const cursor = olderCursor === undefined ? page?.older ?? null : olderCursor;
   const loadOlder = async () => {
     if (!cursor) return;
@@ -377,9 +381,11 @@ function InboxRowView({ row, selected, onOpen, onMarkRead, onChanged }: {
 export function ThreadView({ conversation, onClose, back, onChanged, onRead }: {
   conversation: string; onClose: () => void; back?: boolean; onChanged?: () => void; onRead?: (ids: string[]) => void;
 }) {
-  // From the shared cache, polled while open: a thread opened again shows at once.
-  const { data, error, refresh: load } = useCached<InboxThread>(`inbox-thread:${conversation}`, () => api.inboxThread(conversation), { poll: 10_000 });
-  const t = data ?? null;
+  // A query, polled while open: a thread opened again shows at once.
+  const threadQuery = useQuery({ queryKey: ["inbox-thread", conversation], queryFn: () => api.inboxThread(conversation), refetchInterval: 10_000 }, queryClient);
+  const t = threadQuery.data ?? null;
+  const error = threadQuery.error?.message;
+  const load = threadQuery.refetch;
   const [replying, setReplying] = useState(false);
   useEffect(() => { setReplying(false); }, [conversation]);
   const unread = t?.unread.join(",") ?? "";

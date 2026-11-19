@@ -4,13 +4,17 @@ import { App } from "./App";
 import "./styles.css";
 import { registerServiceWorker } from "./lib/sw";
 import "./lib/motionProbe"; // `?probe=motion`: a timing log of the dock slide (off otherwise)
-import { cacheHydrate } from "./lib/cache";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { queryClient, startPersistence } from "./lib/queryClient";
 
-// The last chats and Inbox this app saw (lib/cache.ts) are read from disk first — at most a short wait
-// — so the installed app opens on them after the phone ended it, while every view refetches.
-void cacheHydrate().finally(() => createRoot(document.getElementById("root")!).render(
+// The app's one QueryClient (lib/queryClient.ts). The last chats and Inbox it saw are read from disk
+// first — at most a short wait — so the installed app opens on them after the phone ended it, while
+// every view refetches.
+void startPersistence().finally(() => createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <App />
+    <QueryClientProvider client={queryClient}>
+      <App />
+    </QueryClientProvider>
   </StrictMode>,
 ));
 

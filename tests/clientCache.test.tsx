@@ -1,15 +1,18 @@
-// The browser's shared read cache (web/src/lib/cache.ts): a view opened again paints its last data at
-// once and fetches again in the background; a live update (the chat's SSE steps) is written through,
-// so the next open starts from it. Before this, every page change on the phone showed "Loading…" for
-// one round trip, because each view kept its data in its own component state.
+// The app's one read cache is TanStack Query (web/src/lib/queryClient.ts): a view opened again paints
+// its last data at once and fetches again in the background; a live update (the chat's SSE steps) is
+// written into the chat's query with setQueryData, so the next open starts from it. Before this,
+// every page change on the phone showed "Loading…" for one round trip, because each view kept its
+// data in its own component state.
 import { afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { useQuery } from "@tanstack/react-query";
+import { persistQueryClientRestore, persistQueryClientSave } from "@tanstack/react-query-persist-client";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import type { Row } from "@/store";
-import { ChatPanel, chatCacheKey, chatToDisk } from "@/views/Chat";
-import { PERSIST_MAX, _resetCache, cacheFetch, cacheGet, cacheHydrate, cacheSave, cacheSet, persistSnapshot, useCached, type CacheBackend } from "@/lib/cache";
+import { ChatPanel, chatQueryKey, chatToDisk, type ChatCache } from "@/views/Chat";
+import { CACHE_SCHEMA, PERSIST_MAX, capPersisted, createPersister, queryClient, shouldPersist, type KeyValue } from "@/lib/queryClient";
 import { TURN_PAGE_SIZE } from "@/workstream";
 import type { AgentTurn } from "../shared/agent";
 
@@ -48,7 +51,8 @@ function deferred<T>() {
 }
 
 function Probe({ k, fetcher, onData }: { k: string; fetcher: () => Promise<string>; onData: (d: string | undefined) => void }) {
-  const { data } = useCached(k, fetcher);
+  const { data, error } = useQuery({ queryKey: ["probe", k], queryFn: fetcher }, queryClient);
+  if (error) return <span data-slot="probe">{`${data ?? "none"} (${error.message})`}</span>;
   onData(data);
   return <span data-slot="probe">{data ?? "loading"}</span>;
 }
@@ -74,22 +78,11 @@ test("C1 hit: a second reader of a key paints the cached value at once, then the
   expect(container!.textContent).toBe("v2"); // the background refresh lands
 });
 
-test("C2 a failed refresh keeps the last good value; one fetch per key at a time, plus one trailing", async () => {
-  cacheSet("k", "good");
-  await cacheFetch("k", () => Promise.reject(new Error("offline"))).catch(() => {});
-  expect(cacheGet<string>("k")).toBe("good");
-
-  let calls = 0;
-  const a = deferred<string>();
-  const f = () => { calls++; return calls === 1 ? a.promise : Promise.resolve(`fresh ${calls}`); };
-  const p1 = cacheFetch("d", f), p2 = cacheFetch("d", f), p3 = cacheFetch("d", f);
-  expect(calls).toBe(1); // in flight: no duplicate request
-  a.resolve("stale");
-  expect(await p1).toBe("stale");
-  expect(await p2).toBe("fresh 2"); // a caller during the flight gets ONE fresh request after it
-  expect(await p3).toBe("fresh 2");
-  expect(calls).toBe(2);
-  expect(cacheGet<string>("d")).toBe("fresh 2");
+test("C2 a failed refresh keeps the last good data and says why", async () => {
+  queryClient.setQueryData(["probe", "k"], "good");
+  await mount(<Probe k="k" fetcher={() => Promise.reject(new Error("offline"))} onData={() => {}} />);
+  expect(container!.textContent).toBe("good (offline)");
+  expect(queryClient.getQueryData<string>(["probe", "k"])).toBe("good");
 });
 
 test("C3 a chat opened again paints its cached turns at once, then merges the newest page", async () => {
@@ -107,7 +100,7 @@ test("C3 a chat opened again paints its cached turns at once, then merges the ne
   expect(asked()).toEqual(["ask 1", "ask 2"]);
   await act(async () => { apiFake.heldTurnPages.splice(0).forEach((r) => r()); await flush(); await flush(); });
   expect(asked()).toEqual(["ask 1", "ask 2", "ask 3"]);
-  expect(cacheGet<{ turns: AgentTurn[] }>(chatCacheKey("r", "cached"))!.turns.map((t) => t.id)).toEqual(["run-1", "run-2", "run-3"]);
+  expect(queryClient.getQueryData<ChatCache>(chatQueryKey("r", "cached"))!.turns.map((t) => t.id)).toEqual(["run-1", "run-2", "run-3"]);
 });
 
 test("C4 a live step from the stream is written through to the cache, so the next open starts with it", async () => {
@@ -115,7 +108,7 @@ test("C4 a live step from the stream is written through to the cache, so the nex
   await mount(<ChatPanel row={{ ...row, agentStatus: "running" }} />);
   const s = opened().at(-1)!;
   await act(async () => { emit(s, "step", { repo: "r", branch: "cached", runId: "run-2", steps: [{ kind: "text", text: "live words", at: 5 }] }); await flush(); });
-  const cached = cacheGet<{ turns: AgentTurn[] }>(chatCacheKey("r", "cached"))!;
+  const cached = queryClient.getQueryData<ChatCache>(chatQueryKey("r", "cached"))!;
   expect(cached.turns.find((t) => t.id === "run-2")!.steps).toEqual([{ kind: "text", text: "live words", at: 5 }] as AgentTurn["steps"]);
   await unmount();
 
@@ -142,38 +135,41 @@ test("C5 each conversation starts from its own entry: a panel switched to anothe
   expect(asked()).toEqual(["ask 9"]);
 });
 
-test("C6 persistence: only opted-in entries go to disk, shrunk, newest PERSIST_MAX; a boot reads them back", async () => {
+test("C6 persistence: only chat and Inbox queries go to disk, shrunk, newest PERSIST_MAX; a restart reads them back", async () => {
   const disk = new Map<string, unknown>();
-  const backend: CacheBackend = { load: async (k) => disk.get(k), save: async (k, v) => { disk.set(k, v); } };
-  _resetCache(backend);
-  cacheSet("memory-only", 1);
-  const chat = { turns: [turn(1, { steps: [{ kind: "text", text: "big", at: 1 }] })] as AgentTurn[], older: null, dbDown: false, queued: [] };
-  cacheSet(chatCacheKey("r", "a"), chat, { persist: chatToDisk });
-  const long = { ...chat, turns: Array.from({ length: 2 * TURN_PAGE_SIZE + 1 }, (_, i) => turn(i)) as AgentTurn[] };
-  cacheSet(chatCacheKey("r", "long"), long, { persist: chatToDisk }); // scrolled far back: not written
-  for (let i = 0; i < PERSIST_MAX + 3; i++) cacheSet(`inbox:${i}`, { rows: [i] }, { persist: true });
+  const kv: KeyValue = { get: async (k) => disk.get(k), set: async (k, v) => { disk.set(k, v); }, del: async (k) => { disk.delete(k); } };
+  const persister = createPersister(kv, () => "client:test");
+  const save = () => persistQueryClientSave({ queryClient, persister, buster: CACHE_SCHEMA, dehydrateOptions: { shouldDehydrateQuery: shouldPersist } });
 
-  const snap = persistSnapshot();
-  const keys = snap.entries.map(([k]) => k);
-  expect(keys).not.toContain("memory-only");
-  expect(keys).not.toContain(chatCacheKey("r", "long"));
+  queryClient.setQueryData(["pr", "r", 1], { title: "memory only" });
+  const chat: ChatCache = { turns: [turn(1, { steps: [{ kind: "text", text: "big", at: 1 }] })] as AgentTurn[], older: null, dbDown: false, queued: [] };
+  queryClient.setQueryData(chatQueryKey("r", "a"), chat);
+  const long: ChatCache = { ...chat, turns: Array.from({ length: 2 * TURN_PAGE_SIZE + 1 }, (_, i) => turn(i)) as AgentTurn[] };
+  queryClient.setQueryData(chatQueryKey("r", "long"), long); // scrolled far back: not written
+  for (let i = 0; i < PERSIST_MAX + 3; i++) queryClient.setQueryData(["inbox", `${i}`], { rows: [i] }, { updatedAt: 10_000 + i });
+  await save();
+  await persister.flush();
+
+  const written = disk.get("client:test") as Parameters<typeof capPersisted>[0];
+  const keys = written.clientState.queries.map((q) => JSON.stringify(q.queryKey));
+  expect(keys).not.toContain(JSON.stringify(["pr", "r", 1]));
+  expect(keys).not.toContain(JSON.stringify(chatQueryKey("r", "long")));
+  expect(keys).toContain(JSON.stringify(chatQueryKey("r", "a")));
   expect(keys.length).toBe(PERSIST_MAX);
-  expect(keys.at(-1)).toBe(`inbox:${PERSIST_MAX + 2}`); // the newest are kept
-  await cacheSave();
-  expect(disk.size).toBe(1);
+  expect(keys).not.toContain(JSON.stringify(["inbox", "0"])); // the oldest go first
+  const savedChat = written.clientState.queries.find((q) => q.queryKey[0] === "chat")!.state.data as ChatCache;
+  expect(savedChat.turns[0]!.steps).toBeUndefined(); // shrunk
 
-  // A fresh boot (the app ended in the background) reads them back; an entry fetched first wins.
-  const saved = [...disk.values()][0];
-  _resetCache({ load: async () => saved, save: async () => {} });
-  cacheSet(`inbox:${PERSIST_MAX + 2}`, { rows: ["fresh"] });
-  await cacheHydrate(1000);
-  expect(cacheGet<unknown>(`inbox:${PERSIST_MAX + 1}`)).toEqual({ rows: [PERSIST_MAX + 1] });
-  expect(cacheGet<unknown>(`inbox:${PERSIST_MAX + 2}`)).toEqual({ rows: ["fresh"] });
+  // A restart (the app ended in the background) reads them back.
+  queryClient.clear();
+  await persistQueryClientRestore({ queryClient, persister, buster: CACHE_SCHEMA });
+  expect(queryClient.getQueryData<unknown>(["inbox", `${PERSIST_MAX + 2}`])).toEqual({ rows: [PERSIST_MAX + 2] });
+  expect(queryClient.getQueryData<ChatCache>(chatQueryKey("r", "a"))!.turns[0]!.id).toBe("run-1");
 
   // A record of another schema is ignored.
-  _resetCache({ load: async () => ({ ...(saved as object), schema: -1 }), save: async () => {} });
-  await cacheHydrate(1000);
-  expect(cacheGet(`inbox:${PERSIST_MAX + 1}`)).toBeUndefined();
+  queryClient.clear();
+  await persistQueryClientRestore({ queryClient, persister, buster: "other" });
+  expect(queryClient.getQueryData(["inbox", `${PERSIST_MAX + 2}`])).toBeUndefined();
 });
 
 test("C7 a persisted chat is written without steps (the newest page brings them again)", () => {
@@ -183,12 +179,12 @@ test("C7 a persisted chat is written without steps (the newest page brings them 
 });
 
 test("C8 the first fresh page replaces a cache seed: a turn the bridge no longer has does not stay", async () => {
-  cacheSet(chatCacheKey("r", "cached"), { turns: [turn(1), turn(2)] as AgentTurn[], older: "stale", dbDown: false, queued: [] });
+  queryClient.setQueryData<ChatCache>(chatQueryKey("r", "cached"), { turns: [turn(1), turn(2)] as AgentTurn[], older: "stale", dbDown: false, queued: [] });
   apiFake.turnsData.set("r::cached", [turn(2), turn(3)]);
   apiFake.holdTurnPages = true;
   await mount(<ChatPanel row={row} />);
   expect(asked()).toEqual(["ask 1", "ask 2"]); // the seed, at once
   await act(async () => { apiFake.heldTurnPages.splice(0).forEach((r) => r()); await flush(); await flush(); });
   expect(asked()).toEqual(["ask 2", "ask 3"]);
-  expect(cacheGet<{ older: string | null }>(chatCacheKey("r", "cached"))!.older).toBeNull();
+  expect(queryClient.getQueryData<ChatCache>(chatQueryKey("r", "cached"))!.older).toBeNull();
 });

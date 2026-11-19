@@ -9,7 +9,8 @@ import { ScreenshotsCard } from "@/components/Screenshots";
 import { WorkstreamActions } from "./WorkstreamActions";
 import { PreviewCell, PreviewPanel } from "./PreviewControl";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useCached } from "@/lib/cache";
+import { useQuery } from "@tanstack/react-query";
+import { queryClient } from "@/lib/queryClient";
 import { useChangeSummary } from "@/lib/workstreamHooks";
 import { FilesChanged } from "./FilesChanged";
 
@@ -26,7 +27,7 @@ export function LocalDetail({ repo, branch, sub }: { repo: string; branch: strin
   // From the shared cache: polled only while the agent works (keeps commits/size fresh).
   const summary = useChangeSummary(wt ? { repo, wt, status: row?.agentStatus } : null);
 
-  const diff = useCached(sub === "files" && wt ? `local-diff:${repo}:${wt}` : null, () => api.localDiff(repo, wt!).then((d) => d.diff, () => "")).data ?? null;
+  const diff = useQuery({ queryKey: ["local-diff", repo, wt], queryFn: () => api.localDiff(repo, wt!).then((d) => d.diff, () => ""), enabled: sub === "files" && Boolean(wt) }, queryClient).data ?? null;
 
   const go = (t: LocalTab) => navigate(`/${repo}/local/${encodeURIComponent(branch)}${t === "overview" ? "" : `/${t}`}`);
 
