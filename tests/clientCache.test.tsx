@@ -167,8 +167,8 @@ test("C6 persistence: only opted-in entries go to disk, shrunk, newest PERSIST_M
   _resetCache({ load: async () => saved, save: async () => {} });
   cacheSet(`inbox:${PERSIST_MAX + 2}`, { rows: ["fresh"] });
   await cacheHydrate(1000);
-  expect(cacheGet(`inbox:${PERSIST_MAX + 1}`)).toEqual({ rows: [PERSIST_MAX + 1] });
-  expect(cacheGet(`inbox:${PERSIST_MAX + 2}`)).toEqual({ rows: ["fresh"] });
+  expect(cacheGet<unknown>(`inbox:${PERSIST_MAX + 1}`)).toEqual({ rows: [PERSIST_MAX + 1] });
+  expect(cacheGet<unknown>(`inbox:${PERSIST_MAX + 2}`)).toEqual({ rows: ["fresh"] });
 
   // A record of another schema is ignored.
   _resetCache({ load: async () => ({ ...(saved as object), schema: -1 }), save: async () => {} });
@@ -178,7 +178,7 @@ test("C6 persistence: only opted-in entries go to disk, shrunk, newest PERSIST_M
 
 test("C7 a persisted chat is written without steps (the newest page brings them again)", () => {
   const out = chatToDisk({ turns: [turn(1, { steps: [{ kind: "text", text: "x", at: 1 }] })] as AgentTurn[], older: "c", dbDown: false, queued: [] })!;
-  expect(out.turns[0].steps).toBeUndefined();
+  expect(out.turns[0]!.steps).toBeUndefined();
   expect(out.older).toBe("c");
 });
 
