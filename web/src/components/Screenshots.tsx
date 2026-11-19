@@ -1,7 +1,7 @@
 // The `orca-shot` screenshots a workstream's workers reported, as thumbnails: a row of them under a
 // worker report in the chat, and the agent page's Screenshots card (every turn's, newest first).
 // Each is the shared ExpandableImage — click for the lightbox, hover for Copy.
-import { useEffect, useState } from "react";
+import { useCached } from "@/lib/cache";
 import { api } from "../api";
 import { VCard } from "@/components/console";
 import { ExpandableImage } from "@/components/ExpandableImage";
@@ -38,13 +38,9 @@ export function ShotThumbs({ shots, className }: { shots: ShotRef[]; className?:
 /** The agent page's Screenshots: every shot the branch's turns reported, grouped by turn, newest
  *  first. Nothing at all while there are none — most workstreams never take one. `version` re-reads
  *  it (the row's agent status, so a run that just finished shows its shots). */
+const NO_SHOTS: TurnShots[] = [];
 export function ScreenshotsCard({ repo, branch, version }: { repo: string; branch: string; version?: unknown }) {
-  const [groups, setGroups] = useState<TurnShots[]>([]);
-  useEffect(() => {
-    let live = true;
-    api.shots(repo, branch).then((g) => { if (live) setGroups(Array.isArray(g) ? g : []); }).catch(() => {});
-    return () => { live = false; };
-  }, [repo, branch, version]);
+  const groups = useCached(`shots:${repo}::${branch}`, () => api.shots(repo, branch).then((g) => (Array.isArray(g) ? g : [])), { version }).data ?? NO_SHOTS;
   const count = groups.reduce((n, g) => n + g.shots.length, 0);
   if (!count) return null;
   return (

@@ -13,7 +13,7 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { ArrowLeft, BellOff, Bell, CheckCheck, Inbox as InboxIcon, Link2, Mail, MailOpen, MoreHorizontal, Reply, Send, X } from "lucide-react";
 import { navigate, useSearch } from "@/lib/route";
-import { poll } from "@/lib/poll";
+import { cacheSet, useCached } from "@/lib/cache";
 import { cn } from "@/lib/utils";
 import { useCoarse, useNarrow } from "@/lib/viewport";
 import { actionFailed, markRead as markNotificationsRead, restoreUnread } from "@/lib/notificationStore";
@@ -57,15 +57,15 @@ export function InboxPage() {
   const query: InboxQuery = { source, person, unread, muted };
   const queryRef = useRef(query);
   queryRef.current = query;
-  const [page, setPage] = useState<InboxPage | null>(null);
+  // The newest window lives in the shared cache (lib/cache.ts), per filter: the Inbox opened again
+  // shows its last rows at once, then the poll's. Older pages are this visit's only.
+  const pageKey = `inbox:${JSON.stringify(query)}`;
+  const { data: cached, error, refresh: refetch } = useCached<InboxPage>(pageKey, () => api.inbox(queryRef.current), { poll: 15_000, persist: true });
+  const page = cached ?? null;
+  const setPage = (fn: (p: InboxPage | undefined) => InboxPage | undefined) => cacheSet<InboxPage | undefined>(pageKey, fn);
   const [older, setOlder] = useState<InboxRow[]>([]);
   const [olderCursor, setOlderCursor] = useState<string | null | undefined>(undefined);
-  const [error, setError] = useState<string>();
-  const refetch = () => api.inbox(queryRef.current).then((p) => { setPage(p); setError(undefined); }, (e) => setError(e instanceof Error ? e.message : String(e)));
-  useEffect(() => {
-    setPage(null); setOlder([]); setOlderCursor(undefined);
-    return poll(refetch, 15_000);
-  }, [source, person, unread, muted]);
+  useEffect(() => { setOlder([]); setOlderCursor(undefined); }, [pageKey]);
   const cursor = olderCursor === undefined ? page?.older ?? null : olderCursor;
   const loadOlder = async () => {
     if (!cursor) return;
@@ -377,14 +377,11 @@ function InboxRowView({ row, selected, onOpen, onMarkRead, onChanged }: {
 export function ThreadView({ conversation, onClose, back, onChanged, onRead }: {
   conversation: string; onClose: () => void; back?: boolean; onChanged?: () => void; onRead?: (ids: string[]) => void;
 }) {
-  const [t, setT] = useState<InboxThread | null>(null);
-  const [error, setError] = useState<string>();
+  // From the shared cache, polled while open: a thread opened again shows at once.
+  const { data, error, refresh: load } = useCached<InboxThread>(`inbox-thread:${conversation}`, () => api.inboxThread(conversation), { poll: 10_000 });
+  const t = data ?? null;
   const [replying, setReplying] = useState(false);
-  const load = () => api.inboxThread(conversation).then((r) => { setT(r); setError(undefined); }, (e) => setError(e instanceof Error ? e.message : String(e)));
-  useEffect(() => {
-    setT(null); setReplying(false);
-    return poll(load, 10_000);
-  }, [conversation]);
+  useEffect(() => { setReplying(false); }, [conversation]);
   const unread = t?.unread.join(",") ?? "";
   useEffect(() => {
     if (!t?.unread.length) return;

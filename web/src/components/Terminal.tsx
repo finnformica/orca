@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Shortcut } from "@/components/ui/kbd";
 import { Tip } from "@/components/ui/tip";
 import { poll } from "@/lib/poll";
+import { cacheFetch, cacheSet, useCacheValue } from "@/lib/cache";
 import { type OrchestratorPrefill, orchestratorActivityAtom, orchestratorOpenAtom, orchestratorPrefillAtom, orchestratorTabAtom, orchestratorWidthAtom } from "@/lib/atoms";
 import { useCoarse, useNarrow } from "@/lib/viewport";
 import { openOrchestrator } from "@/lib/orchestratorOpen";
@@ -191,14 +192,18 @@ function OrchestratorStatusLine({ state }: { state: { running: boolean; startedA
 export type OrchestratorState = AgentStatus;
 /** `agent`: a named agent's tab (none = the Chief of Staff, the orchestrator as it always was). */
 export function useOrchestratorState(active: boolean, win: Window = window, agent?: string) {
-  const [state, setState] = useState<OrchestratorState | null>(null);
+  // In the shared cache (lib/cache.ts): the panel or the Orca page opened again shows the last status
+  // at once, then the poll's.
+  const stateKey = `orchestrator:${agent ?? ""}`;
+  const state = useCacheValue<OrchestratorState>(stateKey) ?? null;
+  const setState = useCallback((fn: (s: OrchestratorState | null) => OrchestratorState | null) => cacheSet<OrchestratorState | null>(stateKey, (s) => fn(s ?? null)), [stateKey]);
   // Stable (useCallback / useMemo): the panel passes these to its chat, which is memoized — a new
   // object each render re-rendered the whole long thread on every open and close of the panel.
-  const load = useCallback(() => api.orchestrator(agent).then(setState).catch(() => {}), [agent]);
+  const load = useCallback(() => cacheFetch(stateKey, () => api.orchestrator(agent)).catch(() => {}), [agent, stateKey]);
   useEffect(() => {
     if (!active) return;
     return poll(load, 2000, win);
-  }, [active, win]);
+  }, [active, win, load]);
   const model = state?.model ?? ORCHESTRATOR_DEFAULT_MODEL, contextPct = state?.contextPct;
   const controls: ChatControlsProps = useMemo(() => ({
     model, only: "claude", contextPct,
@@ -398,13 +403,13 @@ export function OrchestratorPanel() {
 
 /** Every named agent's status, polled every 5 s while `active` (the panel open). The Chief of Staff
  *  alone until the first answer, so a bridge without named agents shows no tab row. */
+const NO_AGENTS: AgentStatus[] = [];
 export function useAgentList(active: boolean, win: Window = window): AgentStatus[] {
-  const [team, setTeam] = useState<AgentStatus[]>([]);
   useEffect(() => {
     if (!active) return;
-    return poll(() => api.orchestratorAgents().then((r) => setTeam(r.agents)).catch(() => {}), 5000, win);
+    return poll(() => cacheFetch("orchestrator-agents", () => api.orchestratorAgents().then((r) => r.agents)).catch(() => {}), 5000, win);
   }, [active, win]);
-  return team;
+  return useCacheValue<AgentStatus[]>("orchestrator-agents") ?? NO_AGENTS;
 }
 
 /** The agents for the composer's `@` picker: every named agent, once there is more than one (as for

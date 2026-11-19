@@ -52,6 +52,7 @@ import { useServerIdentity } from "@/lib/identity";
 import { openOrchestrator } from "@/lib/orchestratorOpen";
 import { subscribeTurns } from "@/lib/events";
 import { onRefresh } from "@/lib/refresh";
+import { cacheGet, cacheSet } from "@/lib/cache";
 import { onOrchestratorDelivered, useOrchestratorOutbox } from "@/lib/orchestratorOutbox";
 import { ChatControls, type ChatControlsProps } from "@/components/ChatControls";
 import type { OrchestratorPrefill } from "@/lib/atoms";
@@ -1138,7 +1139,22 @@ function RoomPillRow({ pill, unseen, onOpen }: { pill: RoomPill; unseen: boolean
   );
 }
 
-export function ChatPanel({ row, send, controls, prefill, outbox, author, size = "panel", autoFocus, mention }: {
+/** One conversation's last state in the shared cache (lib/cache.ts): a chat opened again paints it at
+ *  once, then re-reads the newest page, as when it is open. */
+type ChatCache = { turns: AgentTurn[]; older: string | null; dbDown: boolean; rooms?: RoomEntry[]; queued: QueuedMessage[] };
+export const chatCacheKey = (repo: string, branch: string) => `chat:${repo}::${branch}`;
+/** What goes to disk: no steps (the newest page brings them again), and nothing for a conversation
+ *  scrolled far back (its `older` cursor must stay true to the turns kept). */
+export const chatToDisk = (c: ChatCache): ChatCache | undefined =>
+  c.turns.length > 2 * TURN_PAGE_SIZE ? undefined : { ...c, turns: c.turns.map(({ steps: _s, ...t }) => t as AgentTurn) };
+
+type ChatPanelProps = Parameters<typeof ChatPanelFor>[0];
+/** A new conversation is a new panel: its state starts from ITS cache entry, never the last chat's. */
+export function ChatPanel(props: ChatPanelProps) {
+  return <ChatPanelFor key={`${props.row.repo}::${props.row.branch}`} {...props} />;
+}
+
+function ChatPanelFor({ row, send, controls, prefill, outbox, author, size = "panel", autoFocus, mention }: {
   row: Row; send?: (text: string, images: File[]) => Promise<void>; controls?: ChatControlsProps;
   /** The orchestrator's panel only: named agents for the composer's `@` picker. A send with recipient
    *  chips goes to `sendTo` (each chosen agent, only them), never to this chat; `onOpen` is the
@@ -1195,16 +1211,19 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
   // you reach the top (`older` is the cursor for it, null once the first turn is loaded). The
   // orchestrator's conversation is hundreds of turns and used to load whole — megabytes over the
   // tailnet and a long first render — to show the last few.
-  const [turns, setTurns] = useState<AgentTurn[] | null>(null);
-  const [older, setOlder] = useState<string | null>(null);
+  const cacheKey = chatCacheKey(row.repo, row.branch);
+  const [seed] = useState(() => cacheGet<ChatCache>(cacheKey)); // the last state, painted at once
+  const [turns, setTurns] = useState<AgentTurn[] | null>(seed?.turns ?? null);
+  const [older, setOlder] = useState<string | null>(seed?.older ?? null);
   const [loadingOlder, setLoadingOlder] = useState(false);
-  const [dbDown, setDbDown] = useState(false); // answered from the bridge's local journal, not the database
+  const [dbDown, setDbDown] = useState(seed?.dbDown ?? false); // answered from the bridge's local journal, not the database
   const scroller = useRef<HTMLDivElement>(null);
   const follow = useRef(true); // at the bottom → keep following; scrolled up → leave the reader be
   const [atTail, setAtTail] = useState(true); // `follow`, as state, for the jump-to-latest button
   const [unseen, setUnseen] = useState(false); // something arrived below while you were scrolled up
-  const turnsRef = useRef<AgentTurn[] | null>(null); // read by the tail without re-arming it
-  const olderRef = useRef<string | null>(null);
+  const turnsRef = useRef<AgentTurn[] | null>(seed?.turns ?? null); // read by the tail without re-arming it
+  const olderRef = useRef<string | null>(seed?.older ?? null);
+  const fromCache = useRef(Boolean(seed)); // the turns shown are the cache's until the first page lands
   const loadingOlderRef = useRef(false);
   const anchor = useRef<{ top: number; height: number } | null>(null); // scroll position to restore after a prepend
   // The MOUNTED window over the loaded turns (workstream.ts: CHAT_WINDOW, capWindow). Paging bounds
@@ -1238,22 +1257,27 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
     setDbDown(Boolean((raw as { dbUnavailable?: boolean }).dbUnavailable));
     const page = asTurnPage<AgentTurn>(raw);
     const had = turnsRef.current;
-    if (!had || !had.length) { olderRef.current = page.older; setOlder(page.older); }
+    // The first page after a cache seed is the truth, as on a first open: it replaces the seed (and
+    // its cursor) rather than merging, so nothing the seed held and the bridge no longer has stays.
+    const reseed = fromCache.current;
+    fromCache.current = false;
+    if (!had || !had.length || reseed) { olderRef.current = page.older; setOlder(page.older); }
     // A page turn without steps (past the newest few the bridge ships them for) keeps the ones
     // already pushed or caught up, rather than folding them away.
     setTurns((prev) => {
       if (!prev) return page.turns;
       const had = new Map(prev.map((t) => [t.id, t.steps]));
-      return mergeLatestPage(prev, page.turns.map((t) => (t.steps || !had.get(t.id) ? t : { ...t, steps: had.get(t.id) })));
+      const fresh = page.turns.map((t) => (t.steps || !had.get(t.id) ? t : { ...t, steps: had.get(t.id) }));
+      return reseed ? fresh : mergeLatestPage(prev, fresh);
     });
     void loadRooms();
   };
   // The chat's rooms (shared/rooms.ts): agent-to-agent traffic, read with every fresh page. A failed
   // read keeps the last good list.
   const owner = useMemo(() => chatOwner(row.repo, row.branch), [row.repo, row.branch]);
-  const [roomEntries, setRoomEntries] = useState<RoomEntry[]>([]);
+  const [roomEntries, setRoomEntries] = useState<RoomEntry[]>(seed?.rooms ?? []);
   // "loading" until the first answer, then "ok" — or "failed", which keeps every turn in the chat.
-  const [roomsState, setRoomsState] = useState<"loading" | "ok" | "failed">("loading");
+  const [roomsState, setRoomsState] = useState<"loading" | "ok" | "failed">(seed?.rooms ? "ok" : "loading");
   const loadRooms = async () => {
     const got = await Promise.resolve().then(() => api.rooms(row.repo, row.branch)).catch(() => null);
     if (got && Array.isArray(got.entries) && !got.dbUnavailable) { setRoomEntries(got.entries); setRoomsState("ok"); }
@@ -1430,7 +1454,12 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
     if (outbox) api.inboxNotices(noticeSince).then((r) => setNotices(r.notices), () => {});
   }, [outbox, noticeSince]);
   useEffect(() => { loadNotices(); }, [loadNotices]);
-  const [queued, setQueued] = useState<QueuedMessage[]>([]);
+  const [queued, setQueued] = useState<QueuedMessage[]>(seed?.queued ?? []);
+  // Every change — a fresh page, a pushed step, the queue — goes to the shared cache, so this chat
+  // opened again starts where it is now.
+  useEffect(() => {
+    if (turns) cacheSet<ChatCache>(cacheKey, { turns, older, dbDown, rooms: roomsState === "ok" ? roomEntries : undefined, queued }, { persist: chatToDisk });
+  }, [cacheKey, turns, older, dbDown, roomEntries, roomsState, queued]);
   // Only the NEWEST read applies: a slow read from before a dispatch must not restore the entry.
   const queuedSeq = useRef(0);
   const loadQueued = () => {

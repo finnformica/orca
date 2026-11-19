@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { afterDockMotion } from "@/lib/dock";
 import { ExternalLink, GitMerge } from "lucide-react";
 import { api } from "../api";
-import type { PrDetail as PrDetailData } from "../../../server/gh";
 import { addPreviewLabel, useWorkstreams, useWorkstreamsLoaded, type Row } from "../store";
 import { navigate, type PrTab } from "@/lib/route";
 import { WorkstreamActions } from "./WorkstreamActions";
@@ -19,6 +18,7 @@ import { useNarrow } from "@/lib/viewport";
 import { ChecksCard, CiChip, ConversationCard } from "./PrPanels";
 import { Detail, VCard } from "@/components/console";
 import { useSummary } from "@/lib/workstreamHooks";
+import { useCached } from "@/lib/cache";
 import { Markdown } from "@/components/Markdown";
 import { FilesChanged } from "./FilesChanged";
 
@@ -55,36 +55,28 @@ export function useStickyHeader(ready: boolean) {
 }
 
 export function PrDetail({ repo, number, sub }: { repo: string; number: number; sub: PrTab }) {
-  const [pr, setPr] = useState<PrDetailData | null>(null);
-  const [diff, setDiff] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // From the shared cache (lib/cache.ts): a PR opened again shows its last detail at once, then the
+  // fresh one. `error` is the last failed read; it shows only while there is nothing to show.
+  const { data: prData, error, refresh: reloadPr } = useCached(`pr:${repo}#${number}`, () => api.prDetail(repo, number));
+  const pr = prData ?? null;
+  const diff = useCached(sub === "files" ? `pr-diff:${repo}#${number}` : null, () => api.prDiff(repo, number).then((d) => d.diff, () => "")).data ?? null;
   const liveRow = useWorkstreams().find((r) => r.repo === repo && r.prNumber === number); // your own PR, if tracked
   const loaded = useWorkstreamsLoaded(); // until then, no liveRow does not mean "not yours"
   const summary = useSummary(liveRow); // its commits, for the Details card's Source
   const header = useStickyHeader(true); // the header renders at once, before GitHub answers
   const narrow = useNarrow();
 
-  // `attempt` re-runs the fetch for Retry. A load that is taking a while says so, rather than an
-  // indefinite "Loading…" that looks like a hang.
-  const [attempt, setAttempt] = useState(0);
+  // Retry fetches again. A load that is taking a while says so, rather than an indefinite "Loading…"
+  // that looks like a hang.
   const [slow, setSlow] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   useEffect(() => {
-    let live = true;
-    setPr(null);
-    setError(null);
     setSlow(false);
-    const t = setTimeout(() => { if (live) setSlow(true); }, 8_000);
-    api.prDetail(repo, number)
-      .then((d) => { if (live) setPr(d); })
-      .catch((e) => { if (live) setError(e instanceof Error ? e.message : String(e)); })
-      .finally(() => clearTimeout(t));
-    return () => { live = false; clearTimeout(t); };
-  }, [repo, number, attempt]);
-  const retry = <Button size="sm" variant="outline" onClick={() => setAttempt((n) => n + 1)}>Retry</Button>;
-
-  useEffect(() => {
-    if (sub === "files" && diff === null) api.prDiff(repo, number).then((d) => setDiff(d.diff)).catch(() => setDiff(""));
-  }, [sub, repo, number, diff]);
+    if (pr) return;
+    const t = setTimeout(() => setSlow(true), 8_000);
+    return () => clearTimeout(t);
+  }, [repo, number, Boolean(pr), retrying]);
+  const retry = <Button size="sm" variant="outline" onClick={() => { setRetrying(true); void reloadPr().finally(() => setRetrying(false)); }}>Retry</Button>;
 
   const go = (t: PrTab) => navigate(t === "overview" ? `/${repo}/prs/${number}` : `/${repo}/prs/${number}/${t}`);
 
@@ -92,7 +84,7 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
   // live row (your workstream) or the URL (a coworker's PR). Only what needs the PR detail waits,
   // and the Overview says why with this note: loading, slow, or failed, each with Retry.
   const loadNote = !pr && (
-    error ? (
+    error && !retrying ? (
       <div data-slot="pr-error" className="flex flex-wrap items-center gap-3 text-sm">
         <p className="text-destructive">Couldn't load PR #{number}: {error}</p>{retry}
       </div>

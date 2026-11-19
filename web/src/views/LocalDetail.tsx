@@ -1,7 +1,5 @@
-import { useEffect, useState } from "react";
-import type { ChangeSummary } from "../../../server/git";
 import { api } from "../api";
-import { summary as fetchSummary, useWorkstreams, useWorkstreamsLoaded } from "../store";
+import { useWorkstreams, useWorkstreamsLoaded } from "../store";
 import { navigate, type LocalTab } from "@/lib/route";
 import { HEADER_TABS, STICKY_HEADER, useStickyHeader } from "./PrDetail";
 import { AGENT_TABS, AgentHeader, ChatCard, DetailsCard, HeaderSource, RowStatus } from "./AgentPage";
@@ -11,7 +9,8 @@ import { ScreenshotsCard } from "@/components/Screenshots";
 import { WorkstreamActions } from "./WorkstreamActions";
 import { PreviewCell, PreviewPanel } from "./PreviewControl";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { poll } from "@/lib/poll";
+import { useCached } from "@/lib/cache";
+import { useChangeSummary } from "@/lib/workstreamHooks";
 import { FilesChanged } from "./FilesChanged";
 
 // The agent page for a local session (a worktree + its agent, pre-PR), Vercel's deployment page:
@@ -20,22 +19,14 @@ import { FilesChanged } from "./FilesChanged";
 export function LocalDetail({ repo, branch, sub }: { repo: string; branch: string; sub: LocalTab }) {
   const row = useWorkstreams().find((r) => r.repo === repo && r.branch === branch && !r.mergedAt);
   const loaded = useWorkstreamsLoaded();
-  const [summary, setSummary] = useState<ChangeSummary | null>(null);
-  const [diff, setDiff] = useState<string | null>(null);
   const wt = row?.worktreePath;
   const header = useStickyHeader(Boolean(row));
   const narrow = useNarrow();
 
-  useEffect(() => {
-    if (!wt) { setSummary(null); return; }
-    const reload = () => fetchSummary(repo, wt).then(setSummary).catch(() => {});
-    if (row?.agentStatus !== "running") return void reload();
-    return poll(reload, 8000); // keep commits/size fresh only while the agent works
-  }, [repo, wt, row?.agentStatus]);
+  // From the shared cache: polled only while the agent works (keeps commits/size fresh).
+  const summary = useChangeSummary(wt ? { repo, wt, status: row?.agentStatus } : null);
 
-  useEffect(() => {
-    if (sub === "files" && wt && diff === null) api.localDiff(repo, wt).then((d) => setDiff(d.diff)).catch(() => setDiff(""));
-  }, [sub, repo, wt, diff]);
+  const diff = useCached(sub === "files" && wt ? `local-diff:${repo}:${wt}` : null, () => api.localDiff(repo, wt!).then((d) => d.diff, () => "")).data ?? null;
 
   const go = (t: LocalTab) => navigate(`/${repo}/local/${encodeURIComponent(branch)}${t === "overview" ? "" : `/${t}`}`);
 
