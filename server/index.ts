@@ -60,7 +60,7 @@ import * as verbs from "./verbs";
 import * as repos from "./repos";
 import { linkOrigins } from "./origin";
 import { BusyError, checkGate, compact, launchOptions, launchQueued, newWorktree, placement, removeWorktree, startPreview } from "./verbs";
-import { HIDDEN_FOREVER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, attachmentRefs, replyAttachments, workstreamShots, mergeSafe, prDescriptionPrompt, sweepText, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
+import { HIDDEN_FOREVER, MERGED_WEEK_MS, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, attachmentRefs, replyAttachments, workstreamShots, mergeSafe, prDescriptionPrompt, sweepText, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
 import { AGENT_PROVIDERS, attachCommand, isAgentProvider, providerBinary, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn } from "../shared/agent";
 import { providerOfModel } from "../shared/models";
 import * as prShots from "./prShots";
@@ -609,9 +609,23 @@ async function boardAnswer(req: Request, url: URL, cfg: OrcaConfig): Promise<Res
     const [agents, prs, enrichment, mergedPart] = await Promise.all([
       part("/api/agents", r.name), part("/api/prs", r.name), part("/api/enrichment", r.name), merged,
     ]);
-    return [r.name, { agents, prs, enrichment, ...(mergedPart ? { merged: mergedPart } : {}) }] as const;
+    return [r.name, { agents, prs, enrichment: await rowEnrichment(r, enrichment, agents, prs, mergedPart), ...(mergedPart ? { merged: mergedPart } : {}) }] as const;
   }));
   return json({ repos: Object.fromEntries(entries) });
+}
+
+/** The board's enrichment: only the branches that have a row (a worktree, an open PR, or a PR
+ *  merged in the store's 7-day window). Enrichment is never pruned, so the repo's whole map holds
+ *  every old branch's portable transcript: 2.7 MB on each poll, two thirds of it for branches no
+ *  row shows. When the agents or PR part failed, the store keeps its last good rows, so the whole
+ *  map goes. */
+async function rowEnrichment(repo: RepoConfig, enrichment: BoardPart, agents: BoardPart, prs: BoardPart, merged: BoardPart | undefined): Promise<BoardPart> {
+  if (!enrichment.ok || !agents.ok || !prs.ok || !enrichment.v || typeof enrichment.v !== "object") return enrichment;
+  const mergedRows = merged?.ok ? merged.v as { branch: string }[]
+    : await prSync.mergedPrs(repo, Date.now() - MERGED_WEEK_MS).catch(() => undefined);
+  if (!mergedRows) return enrichment;
+  const branches = new Set([...agents.v as { branch: string }[], ...prs.v as { branch: string }[], ...mergedRows].map((x) => x.branch));
+  return { ok: true, v: Object.fromEntries(Object.entries(enrichment.v as Record<string, unknown>).filter(([b]) => branches.has(b))) };
 }
 
 /** The Draft lane for a repo as THIS instance sees it: its own worktrees (reaped, statused,

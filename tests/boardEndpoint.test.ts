@@ -72,8 +72,11 @@ beforeAll(async () => {
     try { if ((await fetch(`${base}/api/config`)).ok) break; } catch { /* not up yet */ }
     await new Promise((r) => setTimeout(r, 50));
   }
-  const res = await fetch(`${base}/api/enrichment`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ repo: "s", branch: "local-work", fields: { prompt: "make it fast" } }) });
-  expect(res.status).toBe(200);
+  // A row's enrichment, a merged PR's, and an old branch with no row (no worktree, no PR).
+  for (const [repo, branch, prompt] of [["s", "local-work", "make it fast"], ["r", "done-5", "merged work"], ["s", "gone", "old transcript"]]) {
+    const res = await fetch(`${base}/api/enrichment`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ repo, branch, fields: { prompt } }) });
+    expect(res.status).toBe(200);
+  }
 }, 60_000);
 
 afterAll(async () => {
@@ -90,7 +93,10 @@ test("B1: one answer holds every repo's agents, PRs and enrichment, each as its 
     const repo = b.repos[name]!;
     expect(repo.merged).toBeUndefined(); // merged PRs only when asked
     expect(repo.agents).toEqual({ ok: true, v: await getJson(`/api/agents?repo=${name}`) });
-    expect(repo.enrichment).toEqual({ ok: true, v: await getJson(`/api/enrichment?repo=${name}`) });
+    // The per-repo answer, cut to the branches that have a row (B3).
+    const rowBranches = new Set([...repo.agents.v as { branch: string }[], ...repo.prs.v as { branch: string }[]].map((x) => x.branch).concat(name === "r" ? ["done-5"] : []));
+    const all = await getJson<Record<string, unknown>>(`/api/enrichment?repo=${name}`);
+    expect(repo.enrichment).toEqual({ ok: true, v: Object.fromEntries(Object.entries(all).filter(([b]) => rowBranches.has(b))) });
     const prs = await getJson<{ number: number; branch: string }[]>(`/api/prs?repo=${name}`);
     expect(repo.prs.ok).toBe(true);
     // syncedAt moves between two reads; the rows themselves are the same.
@@ -108,4 +114,12 @@ test("B2: merged=<since> adds the merged PRs, the same 7-day window as /api/prs/
   expect(merged.map((m) => m.number)).toEqual([5]);
   expect(b.repos.r!.merged).toEqual({ ok: true, v: merged });
   expect(b.repos.s!.merged).toEqual({ ok: true, v: [] }); // no remote: no merged PRs to read, as /api/config's hasRemote
+});
+
+test("B3: the enrichment part holds only branches with a row: a worktree, an open PR or a PR merged this week", async () => {
+  const b = await board(); // no merged PRs asked for: the merged branch keeps its enrichment anyway
+  expect(Object.keys(b.repos.s!.enrichment.v as object)).toEqual(["local-work"]);
+  expect(b.repos.r!.enrichment.v).toMatchObject({ "done-5": { prompt: "merged work" } });
+  // The per-repo route still answers every branch (the old path, and an older client).
+  expect(await getJson<Record<string, unknown>>("/api/enrichment?repo=s")).toMatchObject({ gone: { prompt: "old transcript" } });
 });
