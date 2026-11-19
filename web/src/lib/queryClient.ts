@@ -106,9 +106,34 @@ export function createPersister(kv: KeyValue, record: () => string = () => `clie
   };
 }
 
+// ---- the first render ----
+// main.tsx renders only after the restore (below). The board store does not wait: it sent its burst
+// (4 requests a repo, 52 for 13 repos) the moment /api/config answered, BEFORE the page mounted, so
+// the page's own fetch (the Inbox, a chat) queued behind all of them on the browser's 6 HTTP/1.1
+// connections: /api/inbox went from 112 ms to 486 ms, the Inbox's first row 300-550 ms later. On a
+// page that does not draw from the board (store.ts `boardFirst`), the store now starts its first load
+// after the first render (`afterFirstRender`), as it did before #517.
+
+/** How long a board load waits at most for the first render (a mount that never reports). */
+export const FIRST_RENDER_MAX_MS = 1_000;
+let firstRender: Promise<void> = Promise.resolve(); // no app is booting (tests): never wait
+let markRendered: () => void = () => {};
+/** Resolves once the app's first render has run its effects. At once unless `startPersistence`
+ *  armed it (main.tsx's boot). */
+export const afterFirstRender = (): Promise<void> => firstRender;
+/** main.tsx calls this from an effect after <App />: every page effect has sent its fetch by then. */
+export const firstRenderDone = (): void => markRendered();
+function armFirstRender(): void {
+  firstRender = new Promise<void>((resolve) => {
+    markRendered = resolve;
+    setTimeout(resolve, FIRST_RENDER_MAX_MS);
+  });
+}
+
 /** Restore the persisted chats and Inbox, then keep saving them. Resolves when the restore is done,
- *  or after `waitMs`, so a slow disk never holds the first paint. */
+ *  or after `waitMs`, so a slow disk never holds the first paint. Arms `afterFirstRender`. */
 export function startPersistence(waitMs = 300, kv: KeyValue | null = idbKeyValue()): Promise<void> {
+  armFirstRender();
   if (!kv) return Promise.resolve();
   const [, restored] = persistQueryClient({
     queryClient, persister: createPersister(kv), maxAge: PERSIST_MAX_AGE_MS, buster: CACHE_SCHEMA,

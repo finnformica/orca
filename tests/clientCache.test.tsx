@@ -12,7 +12,7 @@ import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import type { Row } from "@/store";
 import { ChatPanel, chatQueryKey, chatToDisk, type ChatCache } from "@/views/Chat";
-import { CACHE_SCHEMA, PERSIST_MAX, capPersisted, createPersister, queryClient, shouldPersist, type KeyValue } from "@/lib/queryClient";
+import { CACHE_SCHEMA, PERSIST_MAX, afterFirstRender, capPersisted, createPersister, firstRenderDone, queryClient, shouldPersist, startPersistence, type KeyValue } from "@/lib/queryClient";
 import { TURN_PAGE_SIZE } from "@/workstream";
 import type { AgentTurn } from "../shared/agent";
 
@@ -187,4 +187,26 @@ test("C8 the first fresh page replaces a cache seed: a turn the bridge no longer
   await act(async () => { apiFake.heldTurnPages.splice(0).forEach((r) => r()); await flush(); await flush(); });
   expect(asked()).toEqual(["ask 2", "ask 3"]);
   expect(queryClient.getQueryData<ChatCache>(chatQueryKey("r", "cached"))!.older).toBeNull();
+});
+
+test("C9 boot order: the board's first load waits for the first render, so a page's own fetch goes first", async () => {
+  // No app booting (every other test): no wait at all.
+  let done = false;
+  void afterFirstRender().then(() => { done = true; });
+  await Promise.resolve();
+  expect(done).toBe(true);
+  // main.tsx's boot arms it (startPersistence); only the mark after <App /> releases it.
+  await startPersistence(0, null);
+  done = false;
+  const gate = afterFirstRender().then(() => { done = true; });
+  await new Promise((r) => setTimeout(r, 20));
+  expect(done).toBe(false);
+  firstRenderDone();
+  await gate;
+  expect(done).toBe(true);
+  // Only a page that does not draw from the board waits; on a board page the rows ARE the page's data.
+  for (const name of ["overview", "agents", "board"] as const) expect(store.boardFirst({ name })).toBe(true);
+  expect(store.boardFirst({ name: "pr", repo: "r", number: 1, sub: "chat" })).toBe(true);
+  expect(store.boardFirst({ name: "local", repo: "r", branch: "b", sub: "chat" })).toBe(true);
+  for (const name of ["inbox", "orchestrator", "memory", "settings", "integrations"] as const) expect(store.boardFirst({ name })).toBe(false);
 });
