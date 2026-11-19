@@ -9,7 +9,7 @@ import { join } from "node:path";
 import * as db from "../server/db";
 import { freePort } from "../server/preview";
 import { runCmd } from "../server/run";
-import { installFakeGh, makeScratchRepo, setDonePrListFixture, setPrFixture, setPrListFixture } from "./helpers";
+import { installFakeGh, makeScratchRepo, restorePath, setDonePrListFixture, setPrFixture, setPrListFixture } from "./helpers";
 import { native } from "./happydom";
 import { freshSchema, type TestDb } from "./pg";
 
@@ -38,7 +38,13 @@ const getJson = async <T>(path: string): Promise<T> => {
 };
 const board = (q = "") => getJson<Board>(`/api/board${q}`);
 
+// bun test runs every file in one process: the fixtures this file points the fake GitHub at must
+// not reach the files after it (a leaked merged list broke workflow P4 and the merge queue's M1-M3).
+const ENV_KEYS = ["ORCA_PRLIST_FIXTURE", "ORCA_PRLIST_DONE_FIXTURE", "ORCA_GH_FIXTURE", "ORCA_DATABASE_URL"] as const;
+let savedEnv: Record<string, string | undefined> = {};
+
 beforeAll(async () => {
+  savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
   withRemote = await makeScratchRepo();
   await runCmd(["git", "-C", withRemote, "remote", "add", "origin", "https://github.com/acme/app.git"]);
   noRemote = await makeScratchRepo();
@@ -83,6 +89,8 @@ afterAll(async () => {
   bridge?.kill();
   await db.close();
   await pg?.drop();
+  for (const [k, v] of Object.entries(savedEnv)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  restorePath();
   for (const d of [withRemote, noRemote, wtR, wtS, state]) if (d) await rm(d, { recursive: true, force: true });
 });
 
