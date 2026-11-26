@@ -688,6 +688,18 @@ async function terminalOwner(req: Request, cfg: OrcaConfig): Promise<Response | 
 
 async function api(req: Request, url: URL): Promise<Response> {
   const p = url.pathname;
+  // The health watchdog's check (deploy/health-check.sh): one `SELECT 1` through the same pool and
+  // retry as every query, so a bridge that answers but cannot reach its database is a 503. On
+  // 2026-11-26 /api/config answered from the cached config for 2 hours while every query failed.
+  // Before the config load and any forward: it is about THIS bridge's pool only.
+  if (req.method === "GET" && p === "/api/health/db") {
+    try {
+      await db.ping();
+      return json({ database: "ok" });
+    } catch (e) {
+      return json({ database: db.databaseStatus(), error: db.errorText(e) }, 503);
+    }
+  }
   // Read per request, not once at startup: the configuration lives in the database now, so adding a
   // repo or changing a setting takes effect on the next call rather than the next deploy. Cached in
   // config.ts and invalidated on write, so this is a map lookup in the common case.

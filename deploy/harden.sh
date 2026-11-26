@@ -14,9 +14,13 @@
 #      user@<uid of ORCA_USER>.service OOMScoreAdjust=-900 (on 2026-10-18 the OOM killer picked the
 #      user manager, and every agent scope failed after that).
 #   3. a health watchdog: orca-health.timer runs deploy/health-check.sh (a root-owned copy in
-#      /usr/local/lib/orca) every minute. 3 failed /api/config checks in a row restart orca; it
-#      skips the first 2 minutes after a start and any deploy in progress. It also restarts a
+#      /usr/local/lib/orca) every minute. 3 failed /api/health/db checks in a row (no answer, or
+#      an answer that is not 2xx: the database is down for the bridge) restart orca; it skips the
+#      first 2 minutes after a start and any deploy in progress. It also restarts a
 #      user@<uid>.service that is inactive or failed while lingering is on.
+#   4. /etc/needrestart/conf.d/50-orca-postgres.conf: needrestart does not restart PostgreSQL after
+#      a library upgrade (2026-11-26: unattended-upgrades restarted it at 06:21 UTC). Restart it
+#      by hand in a quiet window.
 #
 # It never restarts orca, postgres or the user manager: the drop-ins apply at their next restart.
 # Env: ORCA_USER (default orca), ORCA_SERVICE_NAME (default orca), ORCA_SWAPFILE (default /swapfile),
@@ -77,6 +81,7 @@ FILES=(
   "$HEALTH_BIN"
   /etc/systemd/system/orca-health.service
   /etc/systemd/system/orca-health.timer
+  /etc/needrestart/conf.d/50-orca-postgres.conf
 )
 content() { # the content of one file in FILES
   case "$1" in
@@ -85,9 +90,12 @@ content() { # the content of one file in FILES
     "$HEALTH_BIN") cat "$HERE/health-check.sh" ;;
     */orca-health.service) printf '%s\n' '[Unit]' 'Description=Orca health watchdog (restart a bridge that does not answer)' \
       "After=$SERVICE.service" '' '[Service]' 'Type=oneshot' "Environment=ORCA_SERVICE_NAME=$SERVICE" "Environment=ORCA_USER=$ORCA_USER" \
-      "Environment=ORCA_HEALTH_URL=http://127.0.0.1:$port/api/config" "Environment=ORCA_DEPLOY_LOCK=$orca_home/.orca/deploy.lock" "ExecStart=$HEALTH_BIN" ;;
+      "Environment=ORCA_HEALTH_URL=http://127.0.0.1:$port/api/health/db" "Environment=ORCA_DEPLOY_LOCK=$orca_home/.orca/deploy.lock" "ExecStart=$HEALTH_BIN" ;;
     */orca-health.timer) printf '%s\n' '[Unit]' 'Description=Run the Orca health watchdog every minute' '' \
       '[Timer]' 'OnBootSec=2min' 'OnUnitActiveSec=1min' 'AccuracySec=5s' '' '[Install]' 'WantedBy=timers.target' ;;
+    */needrestart/conf.d/50-orca-postgres.conf) printf '%s\n' \
+      '# Orca: do not let needrestart restart PostgreSQL after a library upgrade (2026-11-26 outage). Restart it by hand in a quiet window.' \
+      '$nrconf{override_rc}{qr(^postgresql)} = 0;' ;;
   esac
 }
 
@@ -129,7 +137,7 @@ else
   fix "swap file $SWAPFILE (${swap_mb} MB), in /etc/fstab" make_swap
 fi
 
-# ---- 2 and 3. the drop-ins and the health watchdog ----
+# ---- 2, 3 and 4. the drop-ins, the health watchdog and the needrestart rule ----
 [ -n "$uid" ] || note "skipped" "no user $ORCA_USER: no user@<uid>.service drop-in (set ORCA_USER)"
 reload=0
 for f in "${FILES[@]}"; do
