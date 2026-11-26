@@ -78,7 +78,7 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
   `db.DbUnavailable`, and one background probe retries with exponential backoff (capped at
   `ORCA_DB_RETRY_MAX_MS`, 30s). Migrations, the boot-time reconcile and orchestrator recovery run on the
   first successful connect (`db.onAvailable`); a refused migration ledger still exits (`db.onFatal`).
-  A dropped connection (`ERR_POSTGRES_CONNECTION_CLOSED`) is still `withRetry`'s retry, not an outage. If the reopened pool fails too, the database is marked down. **Every background duty catches
+  A dropped connection (`ERR_POSTGRES_CONNECTION_CLOSED`, SQLSTATE 57P01/57P02) is still `withRetry`'s retry, not an outage. If the reopened pool fails too, the database is marked down. SQLSTATE 57P03 (shutting down / starting up) is an outage, and `open()` NEVER keeps a pool whose connect or migrations failed (only `MigrationRefused` is final): 2026-11-26, a reopen during a Postgres restart kept its rejected `ready` and failed every query for 2 hours (docs/RECOVERY.md). The health watchdog checks `GET /api/health/db` (`SELECT 1`, 503 when down), never `/api/config`, which answers from the cached config. **Every background duty catches
   through ONE helper, `db.logUnlessDown(label)`:** a database error (`db.isDbError`) logs nothing, and
   any other error logs one `label: message` line with no stack. The `[db] connection dropped` line
   prints at most once per outage. Duties skip their work while the database is down (`primary.held()`).

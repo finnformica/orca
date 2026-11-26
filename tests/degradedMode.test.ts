@@ -154,6 +154,11 @@ test("D1 the bridge boots without the database and answers /api/config from the 
     expect(cfg.database).toMatch(/^unreachable since \d{4}-\d\d-\d\dT/);
     const health = (await (await get(`http://127.0.0.1:${port}/api/health`)).json()) as { database: string };
     expect(health.database).toMatch(/^unreachable since /);
+    // The health watchdog's check (deploy/health-check.sh, `curl -f`): /api/config answers 200 from
+    // the cached config, so only this one says the database is down (2026-11-26, docs/RECOVERY.md).
+    const dbCheck = await get(`http://127.0.0.1:${port}/api/health/db`);
+    expect(dbCheck.status).toBe(503);
+    expect(((await dbCheck.json()) as { database: string }).database).toMatch(/^unreachable since /);
     // A DB-backed read degrades to empty + the marker, rather than a 500.
     const turns = await get(`http://127.0.0.1:${port}/api/turns?repo=r&branch=b&limit=50`);
     expect(turns.status).toBe(200);

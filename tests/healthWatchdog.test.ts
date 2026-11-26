@@ -1,5 +1,5 @@
 // The health watchdog (deploy/health-check.sh, docs/RECOVERY.md): a bridge that is alive but does
-// not answer is restarted after 3 failed /api/config checks in a row — never in its first 2
+// not answer, or answers with its database down, is restarted after 3 failed /api/health/db checks in a row — never in its first 2
 // minutes after a start, never under a deploy. Driven against fake `systemctl`, `curl` and
 // `logger` on PATH (the PATH-shim pattern of tests/helpers.ts) and the real `flock` for the lock.
 import { afterEach, beforeEach, expect, test } from "bun:test";
@@ -28,7 +28,16 @@ beforeEach(async () => {
 esac`);
   await writeFile(join(dir, "manager-state"), "active\n");
   await mkdir(join(dir, "linger"));
-  await bin("curl", `exit "$(cat "$SHIM/curl-exit")"`);
+  // Like the real curl: with "$SHIM/http-status" set, the bridge answered that status, which is a
+  // failure (exit 22) only under -f. Else the exit code of "$SHIM/curl-exit" (28: timed out).
+  await bin("curl", `echo "$*" >> "$SHIM/curl-calls"
+status="$(cat "$SHIM/http-status" 2>/dev/null)"
+if [ -n "$status" ]; then
+  case "$status" in 2??) exit 0 ;; esac
+  for a in "$@"; do case "$a" in -f|-f?*) exit 22 ;; esac; done
+  exit 0
+fi
+exit "$(cat "$SHIM/curl-exit")"`);
   await bin("logger", `echo "$*" >> "$SHIM/journal"`);
   await writeFile(join(dir, "uptime"), "1000.00 900.00\n"); // up 1000 s
   await set({ state: "active", startedS: 400, autodeploy: "inactive", curlExit: 28 }); // 600 s old, no answer
@@ -46,7 +55,7 @@ function check(env: Record<string, string> = {}): number {
     env: {
       ...process.env, PATH: `${dir}:${process.env.PATH}`, SHIM: dir,
       ORCA_HEALTH_STATE: join(dir, "state"), ORCA_UPTIME_FILE: join(dir, "uptime"),
-      ORCA_DEPLOY_LOCK: join(dir, "deploy.lock"), ORCA_HEALTH_URL: "http://127.0.0.1:1/api/config",
+      ORCA_DEPLOY_LOCK: join(dir, "deploy.lock"), ORCA_HEALTH_URL: "http://127.0.0.1:1/api/health/db",
       ORCA_USER: userInfo().username, ORCA_LINGER_DIR: join(dir, "linger"), ...env,
     },
   });
@@ -62,12 +71,36 @@ test("three failed checks in a row restart orca and log each step to the journal
   expect(check()).toBe(0);
   expect(await restarts()).toBe(1);
   const journal = await read("journal");
-  expect(journal).toContain("-t orca-health -- no answer from http://127.0.0.1:1/api/config within 10 s (1 of 3)");
+  expect(journal).toContain("-t orca-health -- no answer from http://127.0.0.1:1/api/health/db within 10 s (1 of 3)");
   expect(journal).toContain("(3 of 3)");
   expect(journal).toContain("restarting orca after 3 failed checks in a row");
   // The count starts again after a restart.
   check(); check();
   expect(await restarts()).toBe(1);
+});
+
+// 2026-11-26: a Postgres restart left the bridge's pool broken for 2 hours. The bridge answered every
+// request, only with its database down, and the old check counted any answer as healthy.
+test("an answer that is not 2xx (the bridge is up, its database is not) counts as a failure", async () => {
+  await writeFile(join(dir, "http-status"), "503\n");
+  check(); check();
+  expect(await restarts()).toBe(0);
+  check();
+  expect(await restarts()).toBe(1);
+  const journal = await read("journal");
+  expect(journal).toContain("error status from http://127.0.0.1:1/api/health/db: the bridge answers, its database does not (1 of 3)");
+  expect(journal).toContain("restarting orca after 3 failed checks in a row");
+});
+
+test("a 2xx answer clears the count; the default check is /api/health/db", async () => {
+  await writeFile(join(dir, "http-status"), "503\n");
+  check(); check();
+  await writeFile(join(dir, "http-status"), "200\n");
+  check({ ORCA_HEALTH_URL: "" });
+  await writeFile(join(dir, "http-status"), "503\n");
+  check(); check();
+  expect(await restarts()).toBe(0);
+  expect((await read("curl-calls")).split("\n")[2]).toContain("http://127.0.0.1:8787/api/health/db");
 });
 
 test("with a slot of deploy/orca@.service live, that slot is the one restarted", async () => {

@@ -134,9 +134,16 @@ export function isConnectFailure(err: unknown): boolean {
   const code = (err as { code?: string }).code ?? "";
   // CONNECTION_FAILED: the socket closed before the connection was established (a tailnet route that
   // went away mid-handshake). FailedToOpenSocket: Bun could not even open one (no route to the host).
+  // SQLSTATE 57P03 cannot_connect_now: the server answered the connect but refuses sessions — it is
+  // shutting down, starting up or in recovery (2026-11-26: needrestart restarted Postgres, and the
+  // reopen landed in its 2 s of shutdown). An outage that ends by itself: degraded mode and the
+  // background probe, never a plain error (docs/RECOVERY.md).
+  if ((err as { errno?: string }).errno === "57P03" || CANNOT_CONNECT_NOW.test(err.message)) return true;
   return /^ERR_POSTGRES_CONNECTION_(REFUSED|TIMEOUT|FAILED)$/.test(code) || /FailedToOpenSocket/.test(`${code} ${err.name}`)
     || /ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|ENOTFOUND|Failed to connect|FailedToOpenSocket/.test(err.message);
 }
+
+const CANNOT_CONNECT_NOW = /the database system is (shutting down|starting up|not yet accepting connections|in recovery mode)/;
 
 /** When the database went away, or null while it is reachable. */
 export const unavailableSince = (): number | null => (downSince !== null && downUrl === databaseUrl() ? downSince : null);
@@ -181,11 +188,16 @@ function markDown(err: unknown): DbUnavailable {
     for (const fn of [...unavailableListeners]) void Promise.resolve().then(fn).catch(() => {});
   }
   // Drop the pool: its migrate promise is rejected for good, and the next probe needs a fresh one.
-  const closing = handle;
-  handle = null; handleUrl = null; ready = null;
-  void closing?.end().catch(() => {});
+  dropPool(handle);
   scheduleRetry();
   return new DbUnavailable(downSince);
+}
+
+/** Forget `sql` as the pool, if it still is the pool, and close it. */
+function dropPool(sql: Bun.SQL | null): void {
+  if (!sql || handle !== sql) return;
+  handle = null; handleUrl = null; ready = null;
+  void sql.end().catch(() => {});
 }
 
 function scheduleRetry(): void {
@@ -223,8 +235,13 @@ export async function open(): Promise<Bun.SQL> {
   try {
     await ready;
   } catch (e) {
-    if (!isConnectFailure(e)) throw e;
-    throw markDown(e);
+    if (isConnectFailure(e)) throw markDown(e);
+    // Never keep a pool whose connect or migrations failed. `ready` stays rejected, and every later
+    // open() awaited that same rejection: on 2026-11-26 one 57P03 from a reopen in Postgres's 2 s of
+    // shutdown failed every query for 2 hours. Drop it, so the next query connects again. A refused
+    // migration ledger is the exception: that answer is final (the boot path exits on it).
+    if (!(e instanceof MigrationRefused)) dropPool(sql);
+    throw e;
   }
   if (downSince !== null || !announced) {
     // Reachable — for the first time, or again. Clear the state first, so a listener's own queries
@@ -303,6 +320,11 @@ export function isDroppedConnection(err: unknown): boolean {
   // how Bun.SQL gets one. Reached the chat composer as "not sent" on 2026-10-13.
   if ((err as { errno?: string }).errno === "0A000" || /cached plan must not change result type/.test(err.message)) return true;
   if (/Connection closed|ECONNRESET|EPIPE/.test(err.message)) return true;
+  // SQLSTATE 57P01 admin_shutdown (a fast shutdown, pg_terminate_backend) and 57P02 crash_shutdown:
+  // the server ended this session. The reopen gets a fresh connection, or 57P03 while the server is
+  // still going down, which `isConnectFailure` classes as an outage.
+  const errno = (err as { errno?: string }).errno;
+  if (errno === "57P01" || errno === "57P02") return true;
   return code === "ERR_POSTGRES_SERVER_ERROR" && /terminating connection|administrator command/i.test(err.message);
 }
 
@@ -338,6 +360,12 @@ export async function withRetry<T>(fn: (sql: Bun.SQL) => Promise<T>): Promise<T>
       throw again;
     }
   }
+}
+
+/** One `SELECT 1` through `withRetry`: whether this bridge's pool reaches the database now
+ *  (GET /api/health/db, the health watchdog's check). Throws as any query does. */
+export async function ping(): Promise<void> {
+  await withRetry(async (sql) => sql`SELECT 1`);
 }
 
 /** The "[db] connection dropped" line, at most once per outage: once, then not again until the

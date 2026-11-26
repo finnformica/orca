@@ -8,8 +8,12 @@
 #   - skips while orca is not active (Restart=always owns that case), in its first
 #     ORCA_HEALTH_GRACE_S seconds after a start (boot or deploy), or while a deploy holds the
 #     deploy lock or orca-autodeploy.service runs — each skip clears the count;
-#   - curls ORCA_HEALTH_URL with a 10 s timeout; an answer clears the count;
-#   - else adds one failure; at ORCA_HEALTH_FAILURES failures in a row it restarts orca.
+#   - curls ORCA_HEALTH_URL (GET /api/health/db: one SELECT 1 through the bridge's own pool) with a
+#     10 s timeout; a 2xx answer clears the count;
+#   - else (no answer, or any other status: the bridge is up but its database is not) adds one
+#     failure; at ORCA_HEALTH_FAILURES failures in a row it restarts orca.
+# On 2026-11-26 a Postgres restart left the bridge's pool broken for 2 hours: /api/config still
+# answered 200 from the cached config, so a check of /api/config never saw it (docs/RECOVERY.md).
 # Every failure and restart goes to the journal with the tag orca-health.
 #
 # It also restarts the orca user's systemd manager (user@<uid>.service) when lingering is on and the
@@ -22,7 +26,7 @@ SERVICE="${ORCA_SERVICE_NAME:-orca}"
 if [ -z "${ORCA_SERVICE_NAME:-}" ]; then
   for s in orca@a orca@b; do systemctl is-active -q "$s" 2>/dev/null && SERVICE="$s"; done
 fi
-URL="${ORCA_HEALTH_URL:-http://127.0.0.1:8787/api/config}"
+URL="${ORCA_HEALTH_URL:-http://127.0.0.1:8787/api/health/db}"
 GRACE_S="${ORCA_HEALTH_GRACE_S:-120}"
 LIMIT="${ORCA_HEALTH_FAILURES:-3}"
 LOCK="${ORCA_DEPLOY_LOCK:-/home/orca/.orca/deploy.lock}"
@@ -66,13 +70,20 @@ if [ "$(systemctl show -p ActiveState --value orca-autodeploy.service 2>/dev/nul
   clear_count; exit 0
 fi
 
-if curl -fsS -o /dev/null --max-time 10 "$URL" 2>/dev/null; then
+# -f: an HTTP status of 400 or more is a failure (curl exit 22), not an answer.
+curl -fsS -o /dev/null --max-time 10 "$URL" 2>/dev/null
+rc=$?
+if [ "$rc" = 0 ]; then
   clear_count; exit 0
 fi
 
 n=$(( $(cat "$COUNT" 2>/dev/null || echo 0) + 1 ))
 echo "$n" > "$COUNT"
-log "no answer from $URL within 10 s ($n of $LIMIT)"
+if [ "$rc" = 22 ]; then
+  log "error status from $URL: the bridge answers, its database does not ($n of $LIMIT)"
+else
+  log "no answer from $URL within 10 s ($n of $LIMIT)"
+fi
 if [ "$n" -ge "$LIMIT" ]; then
   log "restarting $SERVICE after $n failed checks in a row"
   clear_count
