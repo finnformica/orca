@@ -9,11 +9,14 @@ import "./apiFake";
 import * as store from "@/store";
 import { ChatComposer } from "@/components/ChatComposer";
 import { NARROW_QUERY } from "@/lib/viewport";
-import { CLIPBOARD_EMPTY, ClipboardUnavailable, clipboardError, pastedFileName, pastedFiles, readClipboard, type ClipboardEntry } from "@/lib/clipboardFiles";
+import { CLIPBOARD_EMPTY, ClipboardUnavailable, clipboardError, isFilePathText, pastedFileName, pastedFiles, readClipboard, type ClipboardEntry } from "@/lib/clipboardFiles";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const png = (name = "image.png") => new File([new Uint8Array([137, 80, 78, 71])], name, { type: "image/png" });
+// Finn's case (2026-11-27): a bank statement copied in the iOS Files app.
+const XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+const xlsx = () => new File([new Uint8Array(17 * 1024)], "account_statement.xlsx", { type: XLSX });
 const fileItem = (f: File) => ({ kind: "file", type: f.type, getAsFile: () => f });
 const entry = (parts: Record<string, Blob>): ClipboardEntry => ({ types: Object.keys(parts), getType: async (t) => parts[t]! });
 
@@ -26,9 +29,24 @@ describe("pastedFiles", () => {
     const f = png();
     expect(pastedFiles({ items: [], files: [f] })).toEqual([f]);
   });
+  test("an .xlsx in `.files` only (WebKit's paste of a copied file) attaches", () => {
+    const f = xlsx();
+    expect(pastedFiles({ items: [], files: [f] })).toEqual([f]);
+    expect(pastedFiles({ items: [fileItem(f)], files: [f] })).toEqual([f]);
+  });
   test("text only, or no data, is no file", () => {
     expect(pastedFiles({ items: [{ kind: "string", type: "text/plain", getAsFile: () => null }], files: [] })).toEqual([]);
     expect(pastedFiles(null)).toEqual([]);
+  });
+});
+
+describe("isFilePathText", () => {
+  test("a copied file's path is not text to keep", () => {
+    expect(isFilePathText("file:///private/var/mobile/Library/Mobile%20Documents/account_statement.xlsx")).toBe(true);
+    expect(isFilePathText("/private/var/mobile/Containers/Shared/AppGroup/x/account_statement.xlsx\n")).toBe(true);
+    expect(isFilePathText("see file:///tmp/a.xlsx")).toBe(false);
+    expect(isFilePathText("https://example.com/a.xlsx")).toBe(false);
+    expect(isFilePathText("")).toBe(false);
   });
 });
 
@@ -53,6 +71,12 @@ describe("readClipboard", () => {
   test("text only gives the plain text", async () => {
     const r = await readClipboard({ read: async () => [entry({ "text/html": new Blob(["<b>hi</b>"]), "text/plain": new Blob(["hi"]) })] });
     expect(r).toEqual({ files: [], text: "hi" });
+  });
+  test("a copied .xlsx (no readable type, or only its path) reads as empty, never as a path", async () => {
+    expect(await readClipboard({ read: async () => [{ types: [], getType: async () => { throw new Error("none"); } }] })).toEqual({ files: [], text: "" });
+    expect(await readClipboard({ read: async () => [] })).toEqual({ files: [], text: "" });
+    const path = "file:///private/var/mobile/account_statement.xlsx";
+    expect(await readClipboard({ read: async () => [entry({ "text/uri-list": new Blob([path]), "text/plain": new Blob([path]) })] })).toEqual({ files: [], text: "" });
   });
   test("no read() (plain http, an old browser) throws ClipboardUnavailable", async () => {
     await expect(readClipboard({})).rejects.toBeInstanceOf(ClipboardUnavailable);
@@ -128,6 +152,20 @@ test("a paste event with the image only in `.files` attaches it too", async () =
   expect(chips()).toBe(1);
 });
 
+test("a paste event with an .xlsx (iOS long-press Paste of a copied file) attaches it", async () => {
+  const el = await mount();
+  await pasteEvent(el, { items: [], files: [xlsx()] });
+  expect(chips()).toBe(1);
+  expect(container!.querySelector('[data-slot="chat-composer-attachments"]')?.textContent).toContain("account_statement.xlsx");
+});
+
+test("a paste of only a file's path puts no path in the box and says how to attach", async () => {
+  const el = await mount();
+  await pasteEvent(el, { items: [], files: [], getData: (t: string) => (t === "text/plain" ? "file:///private/var/mobile/account_statement.xlsx" : "") });
+  expect(el.value).toBe("");
+  expect(container!.querySelector('[data-slot="chat-composer-error"]')?.textContent).toBe(CLIPBOARD_EMPTY);
+});
+
 test("desktop: the paperclip is a plain button, no menu", async () => {
   await mount();
   const attach = container!.querySelector('[data-slot="composer-attach"]')!;
@@ -150,6 +188,26 @@ test("phone: Paste from clipboard with text puts the text in the box", async () 
   await pasteFromMenu();
   expect(el.value).toBe("hello");
   expect(chips()).toBe(0);
+});
+
+test("phone: Paste from clipboard with a copied .xlsx says to use Photo or file", async () => {
+  phone();
+  setClipboard(async () => [{ types: [], getType: async () => { throw new Error("none"); } }]);
+  const el = await mount();
+  await pasteFromMenu();
+  expect(chips()).toBe(0);
+  expect(el.value).toBe("");
+  expect(container!.querySelector('[data-slot="chat-composer-error"]')?.textContent).toBe(CLIPBOARD_EMPTY);
+});
+
+test("phone: an .xlsx picked with Photo or file attaches", async () => {
+  phone();
+  await mount();
+  const input = container!.querySelector<HTMLInputElement>('input[type="file"]')!;
+  Object.defineProperty(input, "files", { configurable: true, value: [xlsx()] });
+  await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); await flush(); });
+  expect(chips()).toBe(1);
+  expect(container!.querySelector('[data-slot="chat-composer-attachments"]')?.textContent).toContain("account_statement.xlsx");
 });
 
 test("phone: a refused read shows why in the error line", async () => {

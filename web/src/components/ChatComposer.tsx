@@ -2,7 +2,7 @@ import { useContext, useEffect, useId, useLayoutEffect, useRef, useState, type C
 import { createPortal } from "react-dom";
 import { ArrowUp, ClipboardPaste, GitBranch, ImagePlus, KeyRound, Loader2, Mic, Paperclip, Square, X } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { CLIPBOARD_EMPTY, clipboardError, pastedFiles, readClipboard } from "@/lib/clipboardFiles";
+import { CLIPBOARD_EMPTY, clipboardError, isFilePathText, pastedFiles, readClipboard } from "@/lib/clipboardFiles";
 import { Button } from "@/components/ui/button";
 import { AgentPill } from "@/components/AgentPill";
 import { ComposerAttachment } from "@/components/ComposerAttachment";
@@ -358,6 +358,8 @@ export function ChatComposer({
     const files = pastedFiles(e.clipboardData);
     if (files.length) { e.preventDefault(); addImages(files); return; }
     const text = e.clipboardData.getData("text/plain") ?? "";
+    // A copied file that came through only as its path (a native app's copy): say how to attach it.
+    if (isFilePathText(text)) { e.preventDefault(); setError(CLIPBOARD_EMPTY); return; }
     // A multi-line paste onto a line already opened as a markdown quote ("> " or a bare ">") keeps
     // the whole block one blockquote. `execCommand` makes this a native edit, so one Undo still
     // undoes the whole paste; a browser with no `execCommand` falls back to a plain insert.

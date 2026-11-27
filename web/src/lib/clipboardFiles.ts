@@ -6,6 +6,12 @@
 // `supportedPlainTextPasteboardTypes`; image types are in the rich list only). A copied photo or
 // screenshot holds only an image: iOS shows no Paste and fires no paste event. The composer's
 // "Paste from clipboard" item reads the clipboard itself with `navigator.clipboard.read()`.
+//
+// A non-image file (an .xlsx, a PDF) copied in the Files app is out of reach of both: WebKit's
+// `clipboard.read()` gives only text/plain, text/html, text/uri-list and image/png, and a native
+// app can put the file as a path in text. When a paste event does fire with the file, WebKit puts
+// it in `clipboardData.files` / `items`, which `pastedFiles` reads. Otherwise the file picker
+// ("Photo or file", then Choose File) is the way, and the composer says so (CLIPBOARD_EMPTY).
 
 export type PasteItem = { kind: string; type: string; getAsFile(): File | null };
 export type PasteData = { items?: ArrayLike<PasteItem> | null; files?: ArrayLike<File> | null };
@@ -22,6 +28,13 @@ export function pastedFiles(data: PasteData | null | undefined): File[] {
   return fromItems.length ? fromItems : Array.from(data.files ?? []);
 }
 
+/** Text that is only a copied file's path (`file://…`, or an iOS app container path): the file
+ *  itself did not come through, and the path means nothing to an agent. */
+export function isFilePathText(text: string): boolean {
+  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  return lines.length > 0 && lines.every((l) => /^file:\/\//i.test(l) || /^\/(private\/)?var\/mobile\//.test(l));
+}
+
 export type ClipboardEntry = { types: readonly string[]; getType(type: string): Promise<Blob> };
 export type ClipboardReader = { read?: () => Promise<readonly ClipboardEntry[]> };
 
@@ -36,7 +49,7 @@ export function pastedFileName(type: string, n: number): string {
 }
 
 /** The clipboard as files (every item with a non-text type; iOS gives a photo as `image/png`) or,
- *  with none, its plain text. Call it straight from the tap: WebKit refuses a read after an `await`
+ *  with none, its plain text — never a bare file path (`isFilePathText`), which reads as empty. Call it straight from the tap: WebKit refuses a read after an `await`
  *  breaks the user gesture, so `read()` is the first thing this does. */
 export async function readClipboard(clipboard: ClipboardReader | undefined): Promise<{ files: File[]; text: string }> {
   if (!clipboard?.read) throw new ClipboardUnavailable();
@@ -52,7 +65,7 @@ export async function readClipboard(clipboard: ClipboardReader | undefined): Pro
       text = await (await entry.getType("text/plain")).text();
     }
   }
-  return { files, text };
+  return { files, text: isFilePathText(text) ? "" : text };
 }
 
 /** No `navigator.clipboard.read` here: an old browser, or a page that is not a secure context
@@ -61,7 +74,8 @@ export class ClipboardUnavailable extends Error {
   constructor() { super("clipboard read unavailable"); this.name = "ClipboardUnavailable"; }
 }
 
-export const CLIPBOARD_EMPTY = "The clipboard has no image or text. Use Photo or file to attach it.";
+/** Nothing usable came through: an empty clipboard, or a copied file iOS does not give a web page. */
+export const CLIPBOARD_EMPTY = "Nothing to paste. iOS gives a web page only images and text, not a copied file. Tap Photo or file, then Choose File.";
 
 /** The composer's error line for a failed clipboard read. */
 export function clipboardError(err: unknown): string {
