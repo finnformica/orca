@@ -1,6 +1,8 @@
 import { useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { ArrowUp, GitBranch, KeyRound, Loader2, Mic, Paperclip, Square, X } from "lucide-react";
+import { ArrowUp, ClipboardPaste, GitBranch, ImagePlus, KeyRound, Loader2, Mic, Paperclip, Square, X } from "lucide-react";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { CLIPBOARD_EMPTY, clipboardError, isFilePathText, pastedFiles, readClipboard } from "@/lib/clipboardFiles";
 import { Button } from "@/components/ui/button";
 import { AgentPill } from "@/components/AgentPill";
 import { ComposerAttachment } from "@/components/ComposerAttachment";
@@ -14,7 +16,7 @@ import { clearDraft, draftFiles, loadDraft, saveDraft } from "@/lib/composerDraf
 import { joinPrefill } from "@/lib/palette";
 import { endTypeahead } from "@/lib/orchestratorOpen";
 import type { OrchestratorPrefill } from "@/lib/atoms";
-import { enterSends, isCoarse, isMobile, keepComposerFocus } from "@/lib/viewport";
+import { enterSends, isCoarse, isMobile, keepComposerFocus, useIsMobile } from "@/lib/viewport";
 import { Textarea } from "@/components/ui/textarea";
 import { appendTranscript, MAX_RECORD_MS, recordClock, useVoiceRecorder } from "@/lib/voice";
 import { notifyLocal } from "@/lib/notificationStore";
@@ -153,6 +155,8 @@ export function ChatComposer({
   const [hydrated, setHydrated] = useState(!persistKey);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  // A phone's paperclip is a menu: Photo or file, and Paste from clipboard (lib/clipboardFiles says why).
+  const phone = useIsMobile();
   const textRef = useRef<HTMLTextAreaElement>(null);
 
   // The paste guard: text that looks like a key (sk-…, ghp_…, xox…, AKIA…, a long random string) is
@@ -351,13 +355,11 @@ export function ChatComposer({
     if (added.length) setImages((prev) => [...prev, ...added]);
   };
   const onPaste = (e: ClipboardEvent) => {
-    // Pasted screenshots often arrive only via `items` (getAsFile), not `.files`.
-    const files = [...e.clipboardData.items]
-      .filter((it) => it.kind === "file")
-      .map((it) => it.getAsFile())
-      .filter((f): f is File => Boolean(f));
+    const files = pastedFiles(e.clipboardData);
     if (files.length) { e.preventDefault(); addImages(files); return; }
     const text = e.clipboardData.getData("text/plain") ?? "";
+    // A copied file that came through only as its path (a native app's copy): say how to attach it.
+    if (isFilePathText(text)) { e.preventDefault(); setError(CLIPBOARD_EMPTY); return; }
     // A multi-line paste onto a line already opened as a markdown quote ("> " or a bare ">") keeps
     // the whole block one blockquote. `execCommand` makes this a native edit, so one Undo still
     // undoes the whole paste; a browser with no `execCommand` falls back to a plain insert.
@@ -373,6 +375,21 @@ export function ChatComposer({
     // The paste guard warns at once; the send is what it holds (below).
     const found = heldIn(text);
     if (found.length) { guardSend.current = undefined; setGuarded(true); setGuardError(null); setSecretName((n) => n || found[0]!.suggestedName); }
+  };
+  // The phone's Paste: iOS gives a plain textarea no Paste for an image, so read the clipboard on
+  // the tap. `readClipboard` calls `read()` before any await, inside the tap's user gesture.
+  const pasteFromClipboard = () => {
+    setError(null);
+    readClipboard(navigator.clipboard).then(({ files, text }) => {
+      if (files.length) { addImages(files); return; }
+      if (!text) { setError(CLIPBOARD_EMPTY); return; }
+      const el = textRef.current;
+      const cur = latest.current;
+      const at = el?.selectionStart ?? cur.length;
+      setValue(cur.slice(0, at) + text + cur.slice(el?.selectionEnd ?? at));
+      const found = heldIn(text);
+      if (found.length) { guardSend.current = undefined; setGuarded(true); setGuardError(null); setSecretName((n) => n || found[0]!.suggestedName); }
+    }, (err: unknown) => setError(clipboardError(err)));
   };
   const onDrop = (e: DragEvent) => {
     if (e.dataTransfer.files.length) { e.preventDefault(); addImages(e.dataTransfer.files); }
@@ -721,11 +738,27 @@ export function ChatComposer({
           <div data-slot="chat-composer-actions" className="ml-auto flex shrink-0 items-center gap-1">
             {onCancel && <Button type="button" size="sm" variant="ghost" onClick={cancel}>Cancel</Button>}
             {voiceOn && <VoiceButton phase={voice.phase} elapsed={voice.elapsed} onClick={voice.toggle} />}
-            {action ?? (
-              <Button type="button" size="icon" variant="ghost" data-slot="composer-attach" className="text-muted-foreground size-8" onClick={() => fileRef.current?.click()}>
+            {action ?? (phone ? (
+              <DropdownMenu modal={false}>
+                <DropdownMenuTrigger asChild>
+                  <Button type="button" size="icon" variant="ghost" data-slot="composer-attach" aria-label="Attach" className="text-muted-foreground size-8 pointer-coarse:min-w-11">
+                    <Paperclip className="size-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" side="top" data-slot="composer-attach-menu" onCloseAutoFocus={(e) => e.preventDefault()}>
+                  <DropdownMenuItem data-slot="composer-attach-file" onSelect={() => fileRef.current?.click()}>
+                    <ImagePlus /> Photo or file
+                  </DropdownMenuItem>
+                  <DropdownMenuItem data-slot="composer-paste" onSelect={pasteFromClipboard}>
+                    <ClipboardPaste /> Paste from clipboard
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : (
+              <Button type="button" size="icon" variant="ghost" data-slot="composer-attach" aria-label="Attach" className="text-muted-foreground size-8" onClick={() => fileRef.current?.click()}>
                 <Paperclip className="size-4" />
               </Button>
-            )}
+            ))}
             {alt && (() => {
               const button = (
                 <Button type="button" size="sm" variant="outline" className="h-8" disabled={!canSubmit} onMouseDown={keepComposerFocus} onClick={() => void submit(alt.onSubmit)}>
